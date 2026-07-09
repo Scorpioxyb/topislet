@@ -424,12 +424,12 @@ final class MediaRemoteAdapterStreamSource {
                     self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: nil)
                     return
                 }
-                let responseLookupKey = self.trackLookupKey(nextTrack)
-                let currentLookupKey = self.latestSnapshot?.currentTrack.map(self.trackLookupKey)
-                guard responseLookupKey == currentLookupKey || currentLookupKey == nil else {
-                    self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: responseLookupKey)
+                let currentTrack = self.latestSnapshot?.currentTrack
+                guard currentTrack.map({ self.metadataResponse(nextTrack, matches: $0) }) ?? true else {
+                    self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: self.trackLookupKey(nextTrack))
                     return
                 }
+                let responseLookupKey = self.trackLookupKey(nextTrack)
                 self.mergedPayload.merge(payload) { _, new in new }
                 _ = self.remember(snapshot: nextSnapshot)
                 onChange()
@@ -572,6 +572,34 @@ final class MediaRemoteAdapterStreamSource {
             track.sourceBundleIdentifier ?? track.sourceProcessIdentifier.map { "pid:\($0)" } ?? "",
             track.title
         ].joined(separator: "\u{1f}")
+    }
+
+    private func metadataResponse(
+        _ response: MediaRemoteNowPlayingTrack,
+        matches current: MediaRemoteNowPlayingTrack
+    ) -> Bool {
+        guard (response.sourceBundleIdentifier ?? "") == (current.sourceBundleIdentifier ?? ""),
+              response.title == current.title else {
+            return false
+        }
+
+        let currentArtist = current.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let responseArtist = response.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentArtist != "汽水音乐",
+           responseArtist != "汽水音乐",
+           currentArtist != responseArtist {
+            return false
+        }
+
+        if let currentAlbum = current.album?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let responseAlbum = response.album?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !currentAlbum.isEmpty,
+           !responseAlbum.isEmpty,
+           currentAlbum != responseAlbum {
+            return false
+        }
+
+        return true
     }
 
     private func reusableArtwork(for payload: [String: Any]) -> Data? {

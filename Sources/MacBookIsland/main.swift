@@ -2006,6 +2006,21 @@ struct AlbumArt: View {
     let track: MusicTrack
     let size: CGFloat
 
+    private var artworkIdentity: String {
+        let artworkKey: String
+        if let artworkData = track.artworkData {
+            let prefix = artworkData.prefix(16)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            artworkKey = "data:\(artworkData.count):\(prefix)"
+        } else if let artworkURL = track.artworkURL {
+            artworkKey = "url:\(artworkURL.absoluteString)"
+        } else {
+            artworkKey = "none"
+        }
+        return "\(track.title)\u{1f}\(track.artist)\u{1f}\(artworkKey)"
+    }
+
     var body: some View {
         ZStack {
             if let artworkData = track.artworkData,
@@ -2028,6 +2043,7 @@ struct AlbumArt: View {
                 fallbackArtwork
             }
         }
+        .id(artworkIdentity)
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
     }
