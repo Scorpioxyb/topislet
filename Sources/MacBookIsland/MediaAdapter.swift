@@ -189,7 +189,10 @@ final class MusicAdapterCoordinator {
         MusicState(track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"), isPlaying: false, progress: 0, lyricIndex: 0)
     }
 
-    func performControl(_ command: MusicControlCommand) -> MusicControlOutcome {
+    func performControl(
+        _ command: MusicControlCommand,
+        allowFocusedFallback: Bool = true
+    ) -> MusicControlOutcome {
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
             latestNowPlayingTrack = nil
@@ -216,7 +219,7 @@ final class MusicAdapterCoordinator {
         if canSafelySendMediaKeyControlToQishui() {
             didPost = mediaKeyController.post(command)
             usedFocusRetargeting = false
-        } else if let qishuiApp = runningQishuiApplication() {
+        } else if allowFocusedFallback, let qishuiApp = runningQishuiApplication() {
             didPost = focusedMediaKeyController.post(command, to: qishuiApp)
             usedFocusRetargeting = didPost
         } else {
@@ -226,7 +229,9 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水实时适配器",
                 availability: .qishuiMediaRemoteCached,
                 headline: "暂不发送\(command.label)",
-                detail: "未检测到汽水音乐进程；不会把命令发送给当前视频播放器。",
+                detail: allowFocusedFallback
+                    ? "未检测到汽水音乐进程；不会把命令发送给当前视频播放器。"
+                    : "当前启用严格控制策略，媒体焦点不在汽水音乐时不会短暂激活汽水，也不会把命令发送给当前视频播放器。",
                 checkedAt: Date()
             )
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)

@@ -374,7 +374,10 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         let previousSignature = musicSignature(music)
         activeFeature = .music
-        let outcome = musicAdapter.performControl(.playPause)
+        let outcome = musicAdapter.performControl(
+            .playPause,
+            allowFocusedFallback: appSettings.allowFocusedQishuiControl
+        )
         musicSourceStatus = outcome.status
         if outcome.didSendCommand {
             music = musicAdapter.currentState()
@@ -390,7 +393,10 @@ final class IslandModel: ObservableObject {
     func nextTrack() {
         noteDirectControlInteraction()
         let previousSignature = musicSignature(music)
-        let outcome = musicAdapter.performControl(.nextTrack)
+        let outcome = musicAdapter.performControl(
+            .nextTrack,
+            allowFocusedFallback: appSettings.allowFocusedQishuiControl
+        )
         musicSourceStatus = outcome.status
         if outcome.didSendCommand {
             musicAdapter.invalidateQishuiCache()
@@ -407,7 +413,10 @@ final class IslandModel: ObservableObject {
     func previousTrack() {
         noteDirectControlInteraction()
         let previousSignature = musicSignature(music)
-        let outcome = musicAdapter.performControl(.previousTrack)
+        let outcome = musicAdapter.performControl(
+            .previousTrack,
+            allowFocusedFallback: appSettings.allowFocusedQishuiControl
+        )
         musicSourceStatus = outcome.status
         if outcome.didSendCommand {
             musicAdapter.invalidateQishuiCache()
@@ -1287,6 +1296,21 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
+                Toggle("允许短暂激活汽水完成控制", isOn: $settings.allowFocusedQishuiControl)
+
+                Text(settings.allowFocusedQishuiControl
+                    ? "实用模式：其他媒体抢占系统播放焦点时，会短暂激活汽水发送播放控制，然后恢复原 App。"
+                    : "严格模式：其他媒体抢占系统播放焦点时，只保留显示，不主动激活汽水。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("显示音乐诊断信息", isOn: $settings.showMusicDiagnostics)
+            } header: {
+                Text("控制与诊断")
+            }
+
+            Section {
                 Picker("默认功能", selection: $model.activeFeature) {
                     ForEach(IslandFeature.allCases, id: \.rawValue) { feature in
                         Label(feature.label, systemImage: feature.iconName)
@@ -1345,6 +1369,7 @@ private struct MusicSettingsPane: View {
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
                 LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
+                LabeledContent("控制策略", value: model.appSettings.allowFocusedQishuiControl ? "实用模式" : "严格模式")
             }
 
             Section {
@@ -1357,11 +1382,16 @@ private struct MusicSettingsPane: View {
                 }
             }
 
-            Section {
-                Text(model.musicSourceStatus.detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if model.appSettings.showMusicDiagnostics {
+                Section {
+                    LabeledContent("最近检查", value: model.musicSourceStatus.checkedAt.formatted(date: .omitted, time: .standard))
+                    Text(model.musicSourceStatus.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } header: {
+                    Text("诊断")
+                }
             }
         }
         .formStyle(.grouped)
