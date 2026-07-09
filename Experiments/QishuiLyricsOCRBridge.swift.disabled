@@ -1,0 +1,151 @@
+import AppKit
+import CoreGraphics
+import Foundation
+import ScreenCaptureKit
+import Vision
+
+struct QishuiLyricsSnapshot: Equatable {
+    enum Availability: Equatable {
+        case unavailable
+        case noLyricsWindow
+        case screenRecordingRequired(String)
+        case recognized(String)
+        case recognitionEmpty
+        case failed(String)
+    }
+
+    let availability: Availability
+    let checkedAt: Date
+
+    var lyricLine: String? {
+        if case let .recognized(text) = availability {
+            return text
+        }
+        return nil
+    }
+}
+
+@MainActor
+final class QishuiLyricsOCRBridge {
+    private let bundleIdentifier = "com.soda.music"
+    private var lastRecognizedLine: String?
+    private var lastAttempt = Date.distantPast
+    private let minimumInterval: TimeInterval = 2.0
+
+    func captureLyricsIfNeeded(force: Bool = false) async -> QishuiLyricsSnapshot {
+        if !force, Date().timeIntervalSince(lastAttempt) < minimumInterval {
+            if let lastRecognizedLine {
+                return QishuiLyricsSnapshot(availability: .recognized(lastRecognizedLine), checkedAt: Date())
+            }
+            return QishuiLyricsSnapshot(availability: .unavailable, checkedAt: Date())
+        }
+
+        lastAttempt = Date()
+        return await captureLyrics()
+    }
+
+    private func captureLyrics() async -> QishuiLyricsSnapshot {
+        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+            return QishuiLyricsSnapshot(
+                availability: .screenRecordingRequired("Screen Recording permission is not granted."),
+                checkedAt: Date()
+            )
+        }
+
+        do {
+            let content = try await SCShareableContent.current
+            guard let window = bestLyricsWindow(in: content.windows) else {
+                return QishuiLyricsSnapshot(availability: .noLyricsWindow, checkedAt: Date())
+            }
+
+            let configuration = SCStreamConfiguration()
+            let scale = NSScreen.main?.backingScaleFactor ?? 2
+            configuration.width = max(1, Int(window.frame.width * scale))
+            configuration.height = max(1, Int(window.frame.height * scale))
+            configuration.showsCursor = false
+            configuration.capturesAudio = false
+
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            let line = try recognizeLyricLine(in: image)
+
+            guard let line, !line.isEmpty else {
+                return QishuiLyricsSnapshot(availability: .recognitionEmpty, checkedAt: Date())
+            }
+
+            lastRecognizedLine = line
+            return QishuiLyricsSnapshot(availability: .recognized(line), checkedAt: Date())
+        } catch {
+            let message = String(describing: error)
+            if message.localizedCaseInsensitiveContains("permission")
+                || message.localizedCaseInsensitiveContains("denied")
+                || message.localizedCaseInsensitiveContains("not authorized") {
+                return QishuiLyricsSnapshot(
+                    availability: .screenRecordingRequired(message),
+                    checkedAt: Date()
+                )
+            }
+
+            return QishuiLyricsSnapshot(availability: .failed(message), checkedAt: Date())
+        }
+    }
+
+    private func bestLyricsWindow(in windows: [SCWindow]) -> SCWindow? {
+        let mainScreenWidth = NSScreen.main?.frame.width ?? 0
+        let candidates = windows.filter { window in
+            guard window.isOnScreen,
+                  window.windowLayer == 0,
+                  let app = window.owningApplication,
+                  app.bundleIdentifier == bundleIdentifier else {
+                return false
+            }
+
+            let title = window.title ?? ""
+            let bounds = window.frame
+            return title.isEmpty
+                && bounds.height > 16
+                && bounds.height <= 80
+                && (mainScreenWidth == 0 || bounds.width >= mainScreenWidth * 0.7)
+        }
+
+        return candidates
+            .sorted { lhs, rhs in
+                if lhs.frame.minY != rhs.frame.minY {
+                    return lhs.frame.minY < rhs.frame.minY
+                }
+                return lhs.frame.width > rhs.frame.width
+            }
+            .first
+    }
+
+    private func recognizeLyricLine(in image: CGImage) throws -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US", "ja-JP", "ko-KR"]
+        request.usesLanguageCorrection = true
+        request.minimumTextHeight = 0.08
+
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        try handler.perform([request])
+
+        let lines = (request.results ?? [])
+            .compactMap { observation in
+                observation.topCandidates(1).first?.string
+            }
+            .map(cleanOCRText)
+            .filter { text in
+                text.count >= 2 && !text.localizedCaseInsensitiveContains("汽水音乐")
+            }
+
+        guard !lines.isEmpty else { return nil }
+        return lines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cleanOCRText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

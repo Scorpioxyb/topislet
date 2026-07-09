@@ -1,0 +1,14 @@
+.build/
+.DS_Store
+*.app/
+Reports/
+DerivedData/
+*.xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Local investigation extracts from third-party app bundles. Keep them on disk if useful,
+# but do not track proprietary generated JavaScript in this product repository.
+desktopLyrics-*.js
+player-*.js
+index.js
+package.json
