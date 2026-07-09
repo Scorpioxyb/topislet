@@ -1362,6 +1362,24 @@ private struct GeneralSettingsPane: View {
 private struct MusicSettingsPane: View {
     @ObservedObject var model: IslandModel
 
+    private var diagnosticText: String {
+        [
+            "track=\(model.music.track.title) - \(model.music.track.artist)",
+            "source=\(model.musicSourceStatus.sourceName)",
+            "availability=\(model.musicSourceStatus.availability.rawValue)",
+            "isPlaying=\(model.music.isPlaying)",
+            "progress=\(String(format: "%.6f", model.music.progress))",
+            "elapsedTime=\(model.music.elapsedTime.map { String(format: "%.3f", $0) } ?? "nil")",
+            "duration=\(model.music.duration.map { String(format: "%.3f", $0) } ?? "nil")",
+            "canSeek=\(model.music.canSeek)",
+            "pending=\(model.music.isPlaybackPending)",
+            "artworkBytes=\(model.music.track.artworkData?.count ?? 0)",
+            "artworkURL=\(model.music.track.artworkURL?.absoluteString ?? "nil")",
+            "checkedAt=\(model.musicSourceStatus.checkedAt.ISO8601Format())",
+            "detail=\(model.musicSourceStatus.detail)"
+        ].joined(separator: "\n")
+    }
+
     var body: some View {
         Form {
             Section {
@@ -1385,10 +1403,22 @@ private struct MusicSettingsPane: View {
             if model.appSettings.showMusicDiagnostics {
                 Section {
                     LabeledContent("最近检查", value: model.musicSourceStatus.checkedAt.formatted(date: .omitted, time: .standard))
+                    LabeledContent("UI Progress", value: String(format: "%.4f", model.music.progress))
+                    LabeledContent("UI Elapsed", value: model.music.elapsedTime.map(mediaTimeText) ?? "nil")
+                    LabeledContent("UI Duration", value: model.music.duration.map(mediaTimeText) ?? "nil")
+                    LabeledContent("Can Seek", value: model.music.canSeek ? "true" : "false")
+                    LabeledContent("Pending", value: model.music.isPlaybackPending ? "true" : "false")
+                    LabeledContent("Artwork Bytes", value: String(model.music.track.artworkData?.count ?? 0))
                     Text(model.musicSourceStatus.detail)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Button("复制诊断信息") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(diagnosticText, forType: .string)
+                    }
                 } header: {
                     Text("诊断")
                 }
