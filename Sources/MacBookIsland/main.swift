@@ -380,10 +380,10 @@ final class IslandModel: ObservableObject {
         )
         musicSourceStatus = outcome.status
         if outcome.didSendCommand {
-            music = musicAdapter.currentState()
+            applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
             startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
         } else if outcome.shouldAdvancePreview {
-            music = musicAdapter.playPause(music)
+            applyMusicUpdate(musicAdapter.playPause(music), status: outcome.status, forceMusic: true)
         }
         if mode == .collapsed {
             mode = .compact
@@ -402,7 +402,7 @@ final class IslandModel: ObservableObject {
             musicAdapter.invalidateQishuiCache()
             startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
         } else if outcome.shouldAdvancePreview {
-            music = musicAdapter.nextTrack()
+            applyMusicUpdate(musicAdapter.nextTrack(), status: outcome.status, forceMusic: true)
         }
         activeFeature = .music
         if mode == .collapsed {
@@ -422,7 +422,7 @@ final class IslandModel: ObservableObject {
             musicAdapter.invalidateQishuiCache()
             startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
         } else if outcome.shouldAdvancePreview {
-            music = musicAdapter.previousTrack()
+            applyMusicUpdate(musicAdapter.previousTrack(), status: outcome.status, forceMusic: true)
         }
         activeFeature = .music
         if mode == .collapsed {
@@ -431,8 +431,8 @@ final class IslandModel: ObservableObject {
     }
 
     func showMusicSourceStatus() {
-        musicSourceStatus = musicAdapter.refreshSourceStatus()
-        music = musicAdapter.currentState()
+        let status = musicAdapter.refreshSourceStatus()
+        applyMusicUpdate(musicAdapter.currentState(), status: status, forceMusic: true)
     }
 
     func showAccessibilityStatus() {
@@ -450,8 +450,7 @@ final class IslandModel: ObservableObject {
         activeFeature = .music
         mode = .expanded
         let result = musicAdapter.forceRefreshNowPlaying()
-        music = result.music
-        musicSourceStatus = result.status
+        applyMusicUpdate(result.music, status: result.status, forceMusic: true)
     }
 
     func seekMusic(to progress: Double) {
@@ -459,8 +458,7 @@ final class IslandModel: ObservableObject {
         activeFeature = .music
         let previousSignature = musicSignature(music)
         let result = musicAdapter.seek(to: progress)
-        music = result.music
-        musicSourceStatus = result.status
+        applyMusicUpdate(result.music, status: result.status, forceMusic: true)
         startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
     }
 
@@ -598,6 +596,12 @@ final class IslandModel: ObservableObject {
         forceMusic: Bool = false
     ) {
         if shouldIgnoreUntrustedProgressReset(newMusic) {
+            var timelinePreservingUpdate = music
+            timelinePreservingUpdate.isPlaying = newMusic.isPlaying
+            timelinePreservingUpdate.isPlaybackPending = newMusic.isPlaybackPending
+            if timelinePreservingUpdate != music {
+                music = timelinePreservingUpdate
+            }
             if let newStatus,
                shouldPublishMusicStatus(newStatus) {
                 musicSourceStatus = newStatus

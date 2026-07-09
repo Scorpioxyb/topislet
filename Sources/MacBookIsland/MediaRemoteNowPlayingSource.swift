@@ -15,12 +15,48 @@ struct MediaRemoteNowPlayingTrack: Equatable {
     let sourceName: String
 }
 
+enum MediaRemoteSampleOrigin: Equatable {
+    case unknown
+    case streamEvent
+    case synchronousRead
+    case cached
+}
+
+enum MediaRemoteSampleSource: Equatable {
+    case unknown
+    case adapterStream
+    case systemMediaRemote
+}
+
 struct MediaRemoteNowPlayingSnapshot: Equatable {
     let isAvailable: Bool
     let isVerifiedQishuiSource: Bool
     let currentTrack: MediaRemoteNowPlayingTrack?
     let diagnostic: String
     let checkedAt: Date
+    let sampleID: UInt64
+    let sampleOrigin: MediaRemoteSampleOrigin
+    let sampleSource: MediaRemoteSampleSource
+
+    init(
+        isAvailable: Bool,
+        isVerifiedQishuiSource: Bool,
+        currentTrack: MediaRemoteNowPlayingTrack?,
+        diagnostic: String,
+        checkedAt: Date,
+        sampleID: UInt64 = 0,
+        sampleOrigin: MediaRemoteSampleOrigin = .unknown,
+        sampleSource: MediaRemoteSampleSource = .unknown
+    ) {
+        self.isAvailable = isAvailable
+        self.isVerifiedQishuiSource = isVerifiedQishuiSource
+        self.currentTrack = currentTrack
+        self.diagnostic = diagnostic
+        self.checkedAt = checkedAt
+        self.sampleID = sampleID
+        self.sampleOrigin = sampleOrigin
+        self.sampleSource = sampleSource
+    }
 }
 
 final class MediaRemoteNowPlayingSource {
@@ -32,6 +68,7 @@ final class MediaRemoteNowPlayingSource {
     private var handle: UnsafeMutableRawPointer?
     private var observers: [NSObjectProtocol] = []
     private var didRegisterNotifications = false
+    private var sampleID: UInt64 = 0
 
     private typealias NowPlayingInfoCallback = @convention(block) (CFDictionary?) -> Void
     private typealias GetNowPlayingInfo = @convention(c) (DispatchQueue, @escaping NowPlayingInfoCallback) -> Void
@@ -82,6 +119,7 @@ final class MediaRemoteNowPlayingSource {
     }
 
     func snapshot() -> MediaRemoteNowPlayingSnapshot {
+        sampleID &+= 1
         let checkedAt = Date()
         guard loadFramework() else {
             return MediaRemoteNowPlayingSnapshot(
@@ -89,7 +127,10 @@ final class MediaRemoteNowPlayingSource {
                 isVerifiedQishuiSource: false,
                 currentTrack: nil,
                 diagnostic: "MediaRemote 私有框架不可用；已降级到汽水窗口 AX。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: .synchronousRead,
+                sampleSource: .systemMediaRemote
             )
         }
 
@@ -120,7 +161,10 @@ final class MediaRemoteNowPlayingSource {
                 isVerifiedQishuiSource: false,
                 currentTrack: nil,
                 diagnostic: "MediaRemote 当前来源不是汽水音乐或无法确认来源：\(source)。不会把其他播放器冒充为汽水。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: .synchronousRead,
+                sampleSource: .systemMediaRemote
             )
         }
 
@@ -130,7 +174,10 @@ final class MediaRemoteNowPlayingSource {
                 isVerifiedQishuiSource: true,
                 currentTrack: nil,
                 diagnostic: "MediaRemote 已确认汽水音乐来源，但当前没有暴露歌名；已降级到 AX 兜底。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: .synchronousRead,
+                sampleSource: .systemMediaRemote
             )
         }
 
@@ -161,7 +208,10 @@ final class MediaRemoteNowPlayingSource {
             isVerifiedQishuiSource: true,
             currentTrack: track,
             diagnostic: "已通过 macOS Now Playing 事件源确认汽水音乐；来源 \(infoBundleID ?? displayID ?? "pid \(sourcePID ?? 0)")，封面 \(artworkData.map { "\($0.count) bytes" } ?? "未提供")。",
-            checkedAt: checkedAt
+            checkedAt: checkedAt,
+            sampleID: sampleID,
+            sampleOrigin: .synchronousRead,
+            sampleSource: .systemMediaRemote
         )
     }
 

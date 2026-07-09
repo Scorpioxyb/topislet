@@ -21,6 +21,8 @@ final class MediaRemoteAdapterStreamSource {
     private var lastArtworkRequestAt: Date?
     private var lastRestartAt: Date?
     private let lastVerifiedQishuiSnapshotTTL: TimeInterval = 5 * 60
+    private var sampleID: UInt64 = 0
+    private var sampleOrigin: MediaRemoteSampleOrigin = .unknown
     private var isStopping = false
     private var changeHandler: ChangeHandler?
 
@@ -113,13 +115,17 @@ final class MediaRemoteAdapterStreamSource {
                 isVerifiedQishuiSource: false,
                 currentTrack: nil,
                 diagnostic: "MediaRemote Adapter 单次读取失败。",
-                checkedAt: Date()
+                checkedAt: Date(),
+                sampleID: sampleID,
+                sampleOrigin: sampleOrigin,
+                sampleSource: .adapterStream
             )
             latestRawSnapshot = snapshot
             latestSnapshot = snapshot
             return snapshot
         }
 
+        advanceSample(origin: .synchronousRead)
         let rawSnapshot = snapshot(from: payload, existingArtwork: nil)
         return remember(snapshot: rawSnapshot)
     }
@@ -130,6 +136,7 @@ final class MediaRemoteAdapterStreamSource {
             return nil
         }
 
+        advanceSample(origin: .synchronousRead)
         mergedPayload.merge(payload) { _, new in new }
         let rawSnapshot = snapshot(from: payload, existingArtwork: reusableArtwork(for: payload))
         let effectiveSnapshot = remember(snapshot: rawSnapshot)
@@ -198,6 +205,7 @@ final class MediaRemoteAdapterStreamSource {
             mergedPayload = payload
         }
 
+        advanceSample(origin: .streamEvent)
         let rawSnapshot = snapshot(from: mergedPayload, existingArtwork: reusableArtwork(for: mergedPayload))
         let effectiveSnapshot = remember(snapshot: rawSnapshot)
         if let track = rawSnapshot.currentTrack {
@@ -253,7 +261,10 @@ final class MediaRemoteAdapterStreamSource {
             isVerifiedQishuiSource: true,
             currentTrack: track,
             diagnostic: "\(rawSnapshot.diagnostic) 已保持最近一次汽水音乐可信状态用于显示；控制会走汽水聚焦兜底，进度按最近可信播放态本地推进。",
-            checkedAt: now
+            checkedAt: now,
+            sampleID: cachedSnapshot.sampleID,
+            sampleOrigin: .cached,
+            sampleSource: .adapterStream
         )
     }
 
@@ -299,7 +310,10 @@ final class MediaRemoteAdapterStreamSource {
                 isVerifiedQishuiSource: false,
                 currentTrack: nil,
                 diagnostic: "MediaRemote Adapter 暂无播放数据。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: sampleOrigin,
+                sampleSource: .adapterStream
             )
         }
 
@@ -313,7 +327,10 @@ final class MediaRemoteAdapterStreamSource {
                 isVerifiedQishuiSource: false,
                 currentTrack: nil,
                 diagnostic: "MediaRemote Adapter 当前来源不是汽水音乐：\(source)。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: sampleOrigin,
+                sampleSource: .adapterStream
             )
         }
 
@@ -323,7 +340,10 @@ final class MediaRemoteAdapterStreamSource {
                 isVerifiedQishuiSource: true,
                 currentTrack: nil,
                 diagnostic: "MediaRemote Adapter 已确认汽水来源，但未给出歌名。",
-                checkedAt: checkedAt
+                checkedAt: checkedAt,
+                sampleID: sampleID,
+                sampleOrigin: sampleOrigin,
+                sampleSource: .adapterStream
             )
         }
 
@@ -367,8 +387,16 @@ final class MediaRemoteAdapterStreamSource {
             isVerifiedQishuiSource: true,
             currentTrack: track,
             diagnostic: "已通过 MediaRemote Adapter 实时读取汽水音乐；来源 \(bundleID ?? "pid \(pid ?? 0)")，封面 \(artworkData.map { "\($0.count) bytes" } ?? "补充中")。",
-            checkedAt: checkedAt
+            checkedAt: checkedAt,
+            sampleID: sampleID,
+            sampleOrigin: sampleOrigin,
+            sampleSource: .adapterStream
         )
+    }
+
+    private func advanceSample(origin: MediaRemoteSampleOrigin) {
+        sampleID &+= 1
+        sampleOrigin = origin
     }
 
     private func requestFreshMetadataIfNeeded(
@@ -430,10 +458,25 @@ final class MediaRemoteAdapterStreamSource {
                     return
                 }
                 let responseLookupKey = self.trackLookupKey(nextTrack)
-                self.mergedPayload.merge(payload) { _, new in new }
-                _ = self.remember(snapshot: nextSnapshot)
+                self.mergeMetadata(from: payload)
+                let mergedSnapshot = self.snapshot(
+                    from: self.mergedPayload,
+                    existingArtwork: nextTrack.artworkData
+                )
+                _ = self.remember(snapshot: mergedSnapshot)
                 onChange()
                 self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: responseLookupKey)
+            }
+        }
+    }
+
+    private func mergeMetadata(from payload: [String: Any]) {
+        for key in ["artist", "album", "artworkData"] {
+            guard let value = payload[key] else { continue }
+            if value is NSNull {
+                mergedPayload.removeValue(forKey: key)
+            } else {
+                mergedPayload[key] = value
             }
         }
     }
