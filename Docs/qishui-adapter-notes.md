@@ -4,7 +4,7 @@
 
 - 汽水音乐 Bundle ID 是 `com.soda.music`。
 - 早期浅层 Accessibility 树只能稳定看到主窗口和系统窗口按钮；后续通过深层汽水内容窗口 AX 扫描，已能读取当前可见歌名、封面、歌词和进度，但播放/暂停状态仍只能间接推断。
-- V1 已加入安全媒体控制边界：只有当前媒体焦点确认在汽水音乐时才发送播放/暂停、上一首、下一首；焦点被视频播放器抢占时阻断控制，避免误控。
+- V1 已加入安全媒体控制边界：当前媒体焦点确认在汽水音乐时直接发送播放/暂停、上一首、下一首；焦点被视频播放器抢占时，短暂激活汽水发送控制并恢复原 App，避免误控视频。
 - 桌面歌词界面来自 `/Applications/汽水音乐.app/Contents/Resources/desktopLyrics.asar`。
 - `desktopLyrics.asar` 内部通过 `window.transportPort` 连接主进程服务，不是通过 Accessibility 读取 UI。
 - 桌面歌词订阅的共享状态包括 `player`、`queue`、`desktopLyrics`。
@@ -28,7 +28,7 @@
 - 2026-07-09 V1.5 新增 `MediaRemoteAdapterStreamSource`：通过 `/usr/bin/perl` 加载 `MediaRemoteAdapter.framework`，绕过 macOS 15.4+ 普通 App 读取 Now Playing metadata 的 entitlement 限制，以常驻 `stream` 方式接收真实播放数据；封面在曲目变化时用单次 `get` 补齐。当前 `--adapter-status` 已能读取汽水真实歌名、歌手、播放态、进度、时长和封面 bytes。
 - 2026-07-09 修复 QuickPlayer/QuickTime 并存场景：当视频播放器抢占 macOS 当前媒体会话时，`MediaRemoteAdapterStreamSource` 不再用非汽水来源的空状态覆盖汽水岛，而是短时保留最近一次可信汽水快照用于显示并冻结进度；同时控制命令在未确认媒体焦点回到汽水前会被拦截，避免误控视频播放器。
 - 2026-07-09 抖音/Chrome 视频页测试暴露底层性能问题：旧实现会在 UI tick 和实时事件回调中同步拉取 MediaRemote/AX，且启动自动打开的设置 `Form` 会跟随模型刷新持续重排，导致 App CPU 一度约 84%-97%，灵动岛点击像是失效。当前已改为常驻 stream 事件驱动，普通 tick 只做轻量状态读取和低频进度发布；启动不再自动打开设置窗口，设置/校准窗口关闭后释放 SwiftUI 内容；手动刷新/诊断才允许同步重探测。
-- 2026-07-09 用户进一步确认真正的产品问题是“其他媒体开启后，灵动岛对汽水不管用”。`MediaRemoteAdapter send/seek` 的底层语义是发送给当前 Now Playing 应用，不能直接定向汽水。`MRNowPlayingClient` 定向控制探针发现：`swift -e` 解释器可通过 `MRMediaRemoteGetNowPlayingClients` 看到 `com.soda.music` 并调用 `MRMediaRemoteSendCommandToClient`，但普通编译二进制和当前 App 拿到的 clients 为空。因此该路径暂作为诊断/研究线保留，不作为 V1 已交付能力。
+- 2026-07-09 用户进一步确认真正的产品问题是“其他媒体开启后，灵动岛对汽水不管用”。`MediaRemoteAdapter send/seek` 的底层语义是发送给当前 Now Playing 应用，不能直接定向汽水。`MRNowPlayingClient` 定向控制探针发现：`swift -e` 解释器可通过 `MRMediaRemoteGetNowPlayingClients` 看到 `com.soda.music` 并调用 `MRMediaRemoteSendCommandToClient`，但普通编译二进制和当前 App 拿到的 clients 为空。因此该路径暂作为诊断/研究线保留。V1 运行时采用已验证的聚焦兜底：短暂激活汽水音乐、发送媒体键、再恢复原 App，实测可让汽水真实暂停/恢复。
 
 ## 架构含义
 
@@ -46,7 +46,7 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 3. 只读分析 `window.transportPort` 和 `sharedState` 的主进程来源，继续观察是否存在可读的本地状态、日志、缓存或 IPC 通道。
 4. 如果没有稳定只读来源，发布版只承诺运行检测、AX 可见内容同步、媒体键控制和基础音乐态容器。
 5. 不修改汽水音乐 asar，不注入 Electron；MediaRemote 私有 API 只作为本机原型和外部分发前的技术验证路径。
-6. 本机原型优先启用 MediaRemote Adapter 常驻流做事件驱动同步；控制侧在普通二进制无法稳定使用 `MRNowPlayingClient` 前，只能在确认当前媒体焦点是汽水时发送媒体键。发布版必须评估 adapter 打包、系统更新和 App Store 风险。
+6. 本机原型优先启用 MediaRemote Adapter 常驻流做事件驱动同步；控制侧在普通二进制无法稳定使用 `MRNowPlayingClient` 前，采用“当前媒体焦点确认汽水则直接发送，否则临时激活汽水发送”的兜底方案。发布版必须评估 adapter 打包、系统更新和 App Store 风险。
 7. 能力按来源声明：`track/artwork/lyrics/playbackState/control`，没有稳定汽水来源就标记 unavailable，不用系统来源冒充汽水官方 API。
 8. 同步体验采用事件唤醒优先：MediaRemote 汽水 Now Playing 通知优先；汽水 AX 通知兜底；通知不可靠或窗口不可见时，用低频轮询兜底；控制按钮点击后继续短 burst 回读。
 9. UI 主线程不得做同步进程启动、MediaRemote 阻塞读取或 AX 深扫描；这些只允许在手动诊断或明确后台任务中执行。
@@ -54,7 +54,7 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 ## 控制边界
 
 - 旧媒体键属于系统级事件，若同时有多个播放器，macOS 可能把事件交给当前活跃的媒体会话。
-- 播放/暂停、上一首、下一首目前只在当前媒体焦点明确就是汽水时发送系统媒体键；`MRNowPlayingClient` 定向控制在普通 App 二进制里尚未验证通过。
+- 播放/暂停、上一首、下一首目前采用两段式：当前媒体焦点明确是汽水时直接发送系统媒体键；焦点被其他媒体抢占时短暂激活汽水再发送。`MRNowPlayingClient` 定向控制在普通 App 二进制里尚未验证通过。
 - 进度跳转目前仍依赖当前媒体源；当媒体焦点不是汽水时必须阻断，直到找到可验证的定向 seek 方案。
 
 ## 已验证命令

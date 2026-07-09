@@ -104,6 +104,32 @@ if let controlIndex = CommandLine.arguments.firstIndex(of: "--qishui-control") {
     exit(didSend ? 0 : 2)
 }
 
+if let focusControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-focused-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(focusControlIndex + 1)
+        ? CommandLine.arguments[focusControlIndex + 1]
+        : "playPause"
+    guard let controlCommand = command(named: rawCommand) else {
+        print("error=unsupported_control_command")
+        print("supported=playPause,next,previous")
+        exit(64)
+    }
+
+    guard let qishuiApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.soda.music").first else {
+        print("qishuiRunning=false")
+        exit(2)
+    }
+
+    let source = MediaRemoteAdapterStreamSource()
+    print("BEFORE")
+    printMediaRemoteSnapshot(source.refreshOnce())
+    let didSend = QishuiFocusedMediaKeyController().post(controlCommand, to: qishuiApp)
+    print("focusedQishuiControlSent=\(didSend)")
+    usleep(420_000)
+    print("AFTER")
+    printMediaRemoteSnapshot(source.refreshOnce())
+    exit(didSend ? 0 : 2)
+}
+
 if let watchIndex = CommandLine.arguments.firstIndex(of: "--mediaremote-watch") {
     let seconds = CommandLine.arguments.indices.contains(watchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[watchIndex + 1]) ?? 20)

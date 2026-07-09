@@ -124,6 +124,7 @@ final class MusicAdapterCoordinator {
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
     private let mediaRemoteSource = MediaRemoteNowPlayingSource()
     private let mediaKeyController = SystemMediaKeyController()
+    private let focusedMediaKeyController = QishuiFocusedMediaKeyController()
     private let nowPlayingBridge = NowPlayingAXBridge()
     private let automaticRefreshInterval: TimeInterval = 5.0
     private var latestNowPlayingTrack: NowPlayingAXTrack?
@@ -209,8 +210,13 @@ final class MusicAdapterCoordinator {
 
         _ = refreshSourceStatus()
         let didPost: Bool
+        let usedFocusRetargeting: Bool
         if canSafelySendMediaKeyControlToQishui() {
             didPost = mediaKeyController.post(command)
+            usedFocusRetargeting = false
+        } else if let qishuiApp = runningQishuiApplication() {
+            didPost = focusedMediaKeyController.post(command, to: qishuiApp)
+            usedFocusRetargeting = didPost
         } else {
             pendingPlaybackState = nil
             pendingPlaybackStateIssuedAt = nil
@@ -218,7 +224,7 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水实时适配器",
                 availability: .qishuiMediaRemoteCached,
                 headline: "暂不发送\(command.label)",
-                detail: "当前 macOS 媒体焦点没有确认在汽水音乐上。为避免误控抖音、QuickTime 或浏览器视频，本次没有发送媒体键；后续会继续研究可在普通 App 二进制中使用的汽水定向控制。",
+                detail: "未检测到汽水音乐进程；不会把命令发送给当前视频播放器。",
                 checkedAt: Date()
             )
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
@@ -247,7 +253,9 @@ final class MusicAdapterCoordinator {
             availability: didPost ? .qishuiControlSent : .accessibilityRequired,
             headline: didPost ? "已发送\(command.label)" : "媒体键发送失败",
             detail: didPost
-                ? "已向当前汽水音乐媒体源发送\(command.label)媒体键；等待汽水直接适配源回读真实状态。"
+                ? (usedFocusRetargeting
+                    ? "当前系统媒体焦点不在汽水音乐；已短暂激活汽水发送\(command.label)，随后恢复原 App，避免误控视频播放器。"
+                    : "已向当前汽水音乐媒体源发送\(command.label)媒体键；等待汽水直接适配源回读真实状态。")
                 : "系统没有创建媒体键事件，可能需要重新授权辅助功能权限。",
             checkedAt: Date()
         )
@@ -823,6 +831,10 @@ final class MusicAdapterCoordinator {
         return track.sourceName == "MediaRemote Now Playing"
     }
 
+    private func runningQishuiApplication() -> NSRunningApplication? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.soda.music").first
+    }
+
     private func qishuiPlaybackLabel(_ track: QishuiDirectTrack) -> String {
         if let isPlaying = track.isPlaying ?? inferredQishuiIsPlaying {
             return isPlaying ? "播放中" : "已暂停"
@@ -874,6 +886,29 @@ private final class SystemMediaKeyController {
 
         event.post(tap: .cghidEventTap)
         return true
+    }
+}
+
+final class QishuiFocusedMediaKeyController {
+    @discardableResult
+    func post(_ command: MusicControlCommand, to qishuiApp: NSRunningApplication) -> Bool {
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let shouldRestorePrevious = previousApp?.processIdentifier != qishuiApp.processIdentifier
+
+        if shouldRestorePrevious {
+            qishuiApp.activate(options: [])
+            usleep(180_000)
+        }
+
+        let didPost = SystemMediaKeyController().post(command)
+
+        if shouldRestorePrevious, let previousApp {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                previousApp.activate(options: [])
+            }
+        }
+
+        return didPost
     }
 }
 
