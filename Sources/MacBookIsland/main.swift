@@ -356,8 +356,13 @@ final class IslandModel: ObservableObject {
             guard now.timeIntervalSince(lastIslandModeTapAt) > islandModeTapCooldown else { return }
         }
         guard mode != targetMode else { return }
+        refreshDisplayedMusicFromAdapter()
         lastIslandModeTapAt = now
         mode = targetMode
+    }
+
+    private func refreshDisplayedMusicFromAdapter() {
+        applyMusicUpdate(musicAdapter.currentState(), status: nil)
     }
 
     private func noteDirectControlInteraction() {
@@ -582,6 +587,14 @@ final class IslandModel: ObservableObject {
         status newStatus: MusicSourceStatus?,
         forceMusic: Bool = false
     ) {
+        if shouldIgnoreUntrustedProgressReset(newMusic) {
+            if let newStatus,
+               shouldPublishMusicStatus(newStatus) {
+                musicSourceStatus = newStatus
+            }
+            return
+        }
+
         if forceMusic || shouldPublishMusicUpdate(newMusic) {
             music = newMusic
         }
@@ -590,6 +603,28 @@ final class IslandModel: ObservableObject {
            shouldPublishMusicStatus(newStatus) {
             musicSourceStatus = newStatus
         }
+    }
+
+    private func shouldIgnoreUntrustedProgressReset(_ newMusic: MusicState) -> Bool {
+        guard music.duration != nil,
+              music.elapsedTime != nil,
+              music.progress > 0.01 else {
+            return false
+        }
+
+        let newHasTrustedTiming = newMusic.duration != nil && newMusic.elapsedTime != nil
+        guard !newHasTrustedTiming,
+              newMusic.progress <= 0.0001,
+              !newMusic.canSeek else {
+            return false
+        }
+
+        let newTitle = newMusic.track.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTitle.isEmpty else { return true }
+
+        // AX fallback can briefly emit current-looking metadata without a trusted timeline.
+        // Do not let that reset an already trusted MediaRemote progress bar to zero.
+        return true
     }
 
     private func shouldPublishMusicUpdate(_ newMusic: MusicState) -> Bool {
