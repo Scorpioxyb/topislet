@@ -2086,6 +2086,7 @@ struct ProgressPill: View {
                     .fill(Color.white.opacity(isDragging ? 0.96 : 0.88))
                     .frame(width: progressWidth, height: isDragging ? 5 : 4)
                     .frame(maxHeight: .infinity, alignment: .center)
+                    .animation(nil, value: displayedProgress)
 
                 if onSeek != nil {
                     Circle()
@@ -2095,6 +2096,12 @@ struct ProgressPill: View {
                         .offset(x: knobX)
                         .frame(maxHeight: .infinity, alignment: .center)
                         .animation(.spring(response: 0.18, dampingFraction: 0.75), value: isDragging)
+                        .animation(nil, value: displayedProgress)
+                }
+            }
+            .transaction { transaction in
+                if !isDragging {
+                    transaction.animation = nil
                 }
             }
             .contentShape(Rectangle())
@@ -2121,6 +2128,11 @@ struct ProgressPill: View {
             )
         }
         .frame(width: width, height: onSeek == nil ? 4 : 22)
+        .transaction { transaction in
+            if !isDragging {
+                transaction.animation = nil
+            }
+        }
         .onChange(of: progress) { _, newProgress in
             guard let pending = dragProgress else { return }
             if abs(pending - newProgress) < 0.025 {
