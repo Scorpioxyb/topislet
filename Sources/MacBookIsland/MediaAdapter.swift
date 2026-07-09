@@ -41,6 +41,17 @@ enum MusicControlCommand {
             return 18
         }
     }
+
+    var mediaRemoteCommandID: UInt32 {
+        switch self {
+        case .playPause:
+            return 2
+        case .nextTrack:
+            return 4
+        case .previousTrack:
+            return 5
+        }
+    }
 }
 
 struct MusicSourceStatus: Equatable {
@@ -197,20 +208,22 @@ final class MusicAdapterCoordinator {
         }
 
         _ = refreshSourceStatus()
-        guard canSafelySendMediaKeyControlToQishui() else {
+        let didPost: Bool
+        if canSafelySendMediaKeyControlToQishui() {
+            didPost = mediaKeyController.post(command)
+        } else {
             pendingPlaybackState = nil
             pendingPlaybackStateIssuedAt = nil
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
                 availability: .qishuiMediaRemoteCached,
                 headline: "暂不发送\(command.label)",
-                detail: "当前 macOS 媒体焦点没有确认在汽水音乐上。为避免误控 QuickPlayer/QuickTime 等视频播放器，本次没有发送媒体键；让汽水音乐重新成为系统播放源后会恢复控制。",
+                detail: "当前 macOS 媒体焦点没有确认在汽水音乐上。为避免误控抖音、QuickTime 或浏览器视频，本次没有发送媒体键；后续会继续研究可在普通 App 二进制中使用的汽水定向控制。",
                 checkedAt: Date()
             )
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
-        let didPost = mediaKeyController.post(command)
         if command == .playPause, didPost {
             let currentPlaybackState = latestMediaRemoteSnapshot?.currentTrack?.isPlaying
                 ?? latestQishuiSnapshot?.currentTrack?.isPlaying
@@ -234,7 +247,7 @@ final class MusicAdapterCoordinator {
             availability: didPost ? .qishuiControlSent : .accessibilityRequired,
             headline: didPost ? "已发送\(command.label)" : "媒体键发送失败",
             detail: didPost
-                ? "已向 macOS 发送\(command.label)媒体键；后台不会打开控制中心，等待汽水直接适配源回读真实状态。"
+                ? "已向当前汽水音乐媒体源发送\(command.label)媒体键；等待汽水直接适配源回读真实状态。"
                 : "系统没有创建媒体键事件，可能需要重新授权辅助功能权限。",
             checkedAt: Date()
         )
@@ -283,13 +296,14 @@ final class MusicAdapterCoordinator {
             return (currentMusicState(), cachedStatus)
         }
 
-        guard mediaRemoteAdapterStreamSource.hasCurrentVerifiedQishuiSource()
-            || track.sourceName == "MediaRemote Now Playing" else {
+        let canSeekDirectly = mediaRemoteAdapterStreamSource.hasCurrentVerifiedQishuiSource()
+            || track.sourceName == "MediaRemote Now Playing"
+        guard canSeekDirectly else {
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
                 availability: .qishuiMediaRemoteCached,
                 headline: "暂不跳转播放进度",
-                detail: "当前 macOS 媒体焦点没有确认在汽水音乐上。为避免把进度跳转发送给 QuickPlayer/QuickTime 等视频播放器，本次没有发送跳转请求。",
+                detail: "当前版本的进度跳转仍依赖系统当前媒体源；检测到媒体焦点不在汽水时，已阻止把跳转发送给视频播放器。",
                 checkedAt: Date()
             )
             return (currentMusicState(), cachedStatus)
@@ -554,7 +568,7 @@ final class MusicAdapterCoordinator {
                 lyricIndex: 0,
                 elapsedTime: liveTrack.elapsedTime,
                 duration: liveTrack.duration,
-                canSeek: !isCachedMediaFocus && (liveTrack.duration.map { $0 > 0 } ?? false),
+                canSeek: liveTrack.duration.map { $0 > 0 } ?? false,
                 isPlaybackPending: pendingPlaybackState != nil
             )
         }

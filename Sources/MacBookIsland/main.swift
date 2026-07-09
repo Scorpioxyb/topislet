@@ -51,6 +51,19 @@ func printMediaRemoteSnapshot(_ snapshot: MediaRemoteNowPlayingSnapshot) {
     print("diagnostic=\(snapshot.diagnostic)")
 }
 
+func command(named rawValue: String) -> MusicControlCommand? {
+    switch rawValue.lowercased() {
+    case "playpause", "toggle", "play-pause", "play_pause":
+        return .playPause
+    case "next", "nexttrack", "next-track", "next_track":
+        return .nextTrack
+    case "previous", "prev", "previoustrack", "previous-track", "previous_track":
+        return .previousTrack
+    default:
+        return nil
+    }
+}
+
 if CommandLine.arguments.contains("--mediaremote-status") {
     let source = MediaRemoteNowPlayingSource()
     printMediaRemoteSnapshot(source.snapshot())
@@ -61,6 +74,34 @@ if CommandLine.arguments.contains("--adapter-status") {
     let source = MediaRemoteAdapterStreamSource()
     printMediaRemoteSnapshot(source.refreshOnce())
     exit(0)
+}
+
+if CommandLine.arguments.contains("--qishui-clients") {
+    for line in QishuiMediaRemoteClientController().clientDiagnostics() {
+        print(line)
+    }
+    exit(0)
+}
+
+if let controlIndex = CommandLine.arguments.firstIndex(of: "--qishui-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(controlIndex + 1)
+        ? CommandLine.arguments[controlIndex + 1]
+        : "playPause"
+    guard let controlCommand = command(named: rawCommand) else {
+        print("error=unsupported_control_command")
+        print("supported=playPause,next,previous")
+        exit(64)
+    }
+
+    let source = MediaRemoteAdapterStreamSource()
+    print("BEFORE")
+    printMediaRemoteSnapshot(source.refreshOnce())
+    let didSend = QishuiMediaRemoteClientController().post(controlCommand)
+    print("directQishuiClientSent=\(didSend)")
+    usleep(220_000)
+    print("AFTER")
+    printMediaRemoteSnapshot(source.refreshOnce())
+    exit(didSend ? 0 : 2)
 }
 
 if let watchIndex = CommandLine.arguments.firstIndex(of: "--mediaremote-watch") {
@@ -525,7 +566,7 @@ final class IslandModel: ObservableObject {
     }
 
     private func shouldPublishMusicUpdate(_ newMusic: MusicState) -> Bool {
-        if newMusic.track != music.track
+        if hasTrackDisplayChange(newMusic.track, music.track)
             || newMusic.isPlaying != music.isPlaying
             || newMusic.lyricIndex != music.lyricIndex
             || newMusic.duration != music.duration
@@ -547,6 +588,15 @@ final class IslandModel: ObservableObject {
         }
         lastMusicProgressPublishAt = now
         return true
+    }
+
+    private func hasTrackDisplayChange(_ lhs: MusicTrack, _ rhs: MusicTrack) -> Bool {
+        lhs.title != rhs.title
+            || lhs.artist != rhs.artist
+            || lhs.lyrics != rhs.lyrics
+            || lhs.hasArtwork != rhs.hasArtwork
+            || lhs.artworkData != rhs.artworkData
+            || lhs.artworkURL != rhs.artworkURL
     }
 
     private func shouldPublishMusicStatus(_ newStatus: MusicSourceStatus) -> Bool {
@@ -850,8 +900,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let calibratedTopHeight = topHeight + CGFloat(model.layout.notchHeightAdjustment)
-        model.notchWidth = max(120, min(notchWidth, 240))
-        model.topBandHeight = max(30, min(calibratedTopHeight, 42))
+        let nextNotchWidth = max(120, min(notchWidth, 240))
+        let nextTopBandHeight = max(30, min(calibratedTopHeight, 42))
+        if abs(model.notchWidth - nextNotchWidth) > 0.25 {
+            model.notchWidth = nextNotchWidth
+        }
+        if abs(model.topBandHeight - nextTopBandHeight) > 0.25 {
+            model.topBandHeight = nextTopBandHeight
+        }
     }
 
     private func calibrationDisplayIdentity(for screen: NSScreen) -> String {

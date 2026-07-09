@@ -132,8 +132,15 @@ final class LayoutCalibrationSettings: ObservableObject {
 
     func useDisplay(name: String, identity: String) {
         let nextDisplayKey = Self.safeDisplayKey(identity)
-        currentDisplayName = name.isEmpty ? "当前屏幕" : name
-        guard nextDisplayKey != currentDisplayKey else { return }
+        let nextDisplayName = name.isEmpty ? "当前屏幕" : name
+        guard nextDisplayKey != currentDisplayKey else {
+            if currentDisplayName != nextDisplayName {
+                currentDisplayName = nextDisplayName
+            }
+            return
+        }
+
+        currentDisplayName = nextDisplayName
 
         isLoading = true
         currentDisplayKey = nextDisplayKey
