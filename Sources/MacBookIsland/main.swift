@@ -362,7 +362,8 @@ final class IslandModel: ObservableObject {
     }
 
     private func refreshDisplayedMusicFromAdapter() {
-        applyMusicUpdate(musicAdapter.currentState(), status: nil)
+        let update = musicAdapter.refreshPlaybackPositionNow()
+        applyMusicUpdate(update.music, status: update.status, forceMusic: true)
     }
 
     private func noteDirectControlInteraction() {

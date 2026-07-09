@@ -127,10 +127,12 @@ final class MusicAdapterCoordinator {
     private let focusedMediaKeyController = QishuiFocusedMediaKeyController()
     private let nowPlayingBridge = NowPlayingAXBridge()
     private let automaticRefreshInterval: TimeInterval = 5.0
+    private let playbackPositionRefreshInterval: TimeInterval = 2.0
     private var latestNowPlayingTrack: NowPlayingAXTrack?
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastSourceRefreshAt: Date?
+    private var lastPlaybackPositionRefreshAt: Date?
     private var pendingPlaybackState: Bool?
     private var pendingPlaybackStateIssuedAt: Date?
     private var previousQishuiProgress: QishuiProgressSample?
@@ -263,13 +265,20 @@ final class MusicAdapterCoordinator {
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
-        let status = refreshSourceStatusIfNeeded()
+        let status = shouldRefreshPlaybackPosition(state)
+            ? refreshPlaybackPositionStatus()
+            : refreshSourceStatusIfNeeded()
         let music = currentMusicState()
         return (music, status)
     }
 
     func currentState() -> MusicState {
         currentMusicState()
+    }
+
+    func refreshPlaybackPositionNow() -> (music: MusicState, status: MusicSourceStatus) {
+        let status = refreshPlaybackPositionStatus()
+        return (currentMusicState(), status)
     }
 
     func refreshNowPlaying(promptForPermission: Bool = false) -> (music: MusicState, status: MusicSourceStatus) {
@@ -499,6 +508,23 @@ final class MusicAdapterCoordinator {
             return nil
         }
         return refreshSourceStatus()
+    }
+
+    private func shouldRefreshPlaybackPosition(_ state: MusicState) -> Bool {
+        guard state.isPlaying,
+              state.duration != nil,
+              state.elapsedTime != nil else { return false }
+
+        let now = Date()
+        guard lastPlaybackPositionRefreshAt.map({ now.timeIntervalSince($0) >= playbackPositionRefreshInterval }) ?? true else {
+            return false
+        }
+        return true
+    }
+
+    private func refreshPlaybackPositionStatus() -> MusicSourceStatus {
+        lastPlaybackPositionRefreshAt = Date()
+        return refreshSourceStatus(allowSynchronousRefresh: true)
     }
 
     private func applyNowPlayingSnapshot(_ snapshot: NowPlayingAXSnapshot) {
