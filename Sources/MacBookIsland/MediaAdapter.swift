@@ -114,7 +114,7 @@ final class MusicAdapterCoordinator {
     private let mediaRemoteSource = MediaRemoteNowPlayingSource()
     private let mediaKeyController = SystemMediaKeyController()
     private let nowPlayingBridge = NowPlayingAXBridge()
-    private let automaticRefreshInterval: TimeInterval = 0.5
+    private let automaticRefreshInterval: TimeInterval = 5.0
     private var latestNowPlayingTrack: NowPlayingAXTrack?
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
@@ -243,7 +243,6 @@ final class MusicAdapterCoordinator {
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
         let status = refreshSourceStatusIfNeeded()
-
         let music = currentMusicState()
         return (music, status)
     }
@@ -253,7 +252,7 @@ final class MusicAdapterCoordinator {
     }
 
     func refreshNowPlaying(promptForPermission: Bool = false) -> (music: MusicState, status: MusicSourceStatus) {
-        let status = refreshSourceStatus(promptForPermission: promptForPermission)
+        let status = refreshSourceStatus(promptForPermission: promptForPermission, allowSynchronousRefresh: true)
         guard status.availability != .qishuiNotRunning,
               status.availability != .accessibilityRequired else {
             return (currentMusicState(), status)
@@ -353,7 +352,11 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    func refreshSourceStatus(promptForPermission: Bool = false) -> MusicSourceStatus {
+    func refreshSourceStatus(
+        promptForPermission: Bool = false,
+        allowSynchronousRefresh: Bool = false
+    ) -> MusicSourceStatus {
+        _ = promptForPermission
         guard qishuiAdapter.isRunning() else {
             latestNowPlayingTrack = nil
             latestMediaRemoteSnapshot = nil
@@ -374,8 +377,11 @@ final class MusicAdapterCoordinator {
             return cachedStatus
         }
 
-        if let adapterSnapshot = mediaRemoteAdapterStreamSource.refreshPlaybackPosition()
-            ?? mediaRemoteAdapterStreamSource.snapshot(),
+        let adapterSnapshot = allowSynchronousRefresh
+            ? (mediaRemoteAdapterStreamSource.refreshPlaybackPosition() ?? mediaRemoteAdapterStreamSource.snapshot())
+            : mediaRemoteAdapterStreamSource.snapshot()
+
+        if let adapterSnapshot,
            let track = adapterSnapshot.currentTrack {
             latestMediaRemoteSnapshot = adapterSnapshot
             lastSourceRefreshAt = adapterSnapshot.checkedAt
@@ -388,6 +394,11 @@ final class MusicAdapterCoordinator {
                 detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。\(adapterSnapshot.diagnostic)",
                 checkedAt: adapterSnapshot.checkedAt
             )
+            return cachedStatus
+        }
+
+        guard allowSynchronousRefresh else {
+            lastSourceRefreshAt = Date()
             return cachedStatus
         }
 
@@ -532,7 +543,10 @@ final class MusicAdapterCoordinator {
         let statusLine = fallbackStatusLine(for: cachedStatus.availability)
         if let snapshot = latestMediaRemoteSnapshot,
            let track = snapshot.currentTrack {
-            let liveTrack = liveMediaRemoteTrack(from: track, checkedAt: snapshot.checkedAt)
+            let isCachedMediaFocus = cachedStatus.availability == .qishuiMediaRemoteCached
+            let liveTrack = isCachedMediaFocus
+                ? track
+                : liveMediaRemoteTrack(from: track, checkedAt: snapshot.checkedAt)
             return MusicState(
                 track: realTrack(from: liveTrack, statusLine: statusLine),
                 isPlaying: liveTrack.isPlaying ?? false,
@@ -540,7 +554,7 @@ final class MusicAdapterCoordinator {
                 lyricIndex: 0,
                 elapsedTime: liveTrack.elapsedTime,
                 duration: liveTrack.duration,
-                canSeek: liveTrack.duration.map { $0 > 0 } ?? false,
+                canSeek: !isCachedMediaFocus && (liveTrack.duration.map { $0 > 0 } ?? false),
                 isPlaybackPending: pendingPlaybackState != nil
             )
         }

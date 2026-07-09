@@ -213,8 +213,10 @@ final class IslandModel: ObservableObject {
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
+    private var lastMusicProgressPublishAt: Date = .distantPast
     private let islandModeTapCooldown: TimeInterval = 0.72
     private let directControlSuppressionWindow: TimeInterval = 0.28
+    private let musicProgressPublishInterval: TimeInterval = 0.85
 
     var collapsedWingWidth: CGFloat { 40 }
     var compactWingWidth: CGFloat { 126 }
@@ -252,10 +254,9 @@ final class IslandModel: ObservableObject {
     init() {
         isVisible = appSettings.showIslandOnLaunch
         music = musicAdapter.initialState
-        musicSourceStatus = musicAdapter.refreshSourceStatus()
+        musicSourceStatus = musicAdapter.refreshSourceStatus(allowSynchronousRefresh: true)
         musicAdapter.startRealtimeObservation { [weak self] music, status in
-            self?.music = music
-            self?.musicSourceStatus = status
+            self?.applyMusicUpdate(music, status: status)
         }
         layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -443,7 +444,7 @@ final class IslandModel: ObservableObject {
     }
 
     private func startTicker() {
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.tick()
             }
@@ -452,10 +453,7 @@ final class IslandModel: ObservableObject {
 
     private func tick() {
         let mediaUpdate = musicAdapter.tick(music)
-        music = mediaUpdate.music
-        if let sourceStatus = mediaUpdate.sourceStatus {
-            musicSourceStatus = sourceStatus
-        }
+        applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
 
         guard timerState.isRunning else {
             lastTimerUpdateAt = nil
@@ -497,8 +495,7 @@ final class IslandModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     let update = self.musicAdapter.refreshControlFollowUp()
-                    self.music = update.music
-                    self.musicSourceStatus = update.status
+                    self.applyMusicUpdate(update.music, status: update.status, forceMusic: true)
                     if self.shouldStopMusicControlRefreshBurst(
                         music: update.music,
                         status: update.status,
@@ -510,6 +507,53 @@ final class IslandModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func applyMusicUpdate(
+        _ newMusic: MusicState,
+        status newStatus: MusicSourceStatus?,
+        forceMusic: Bool = false
+    ) {
+        if forceMusic || shouldPublishMusicUpdate(newMusic) {
+            music = newMusic
+        }
+
+        if let newStatus,
+           shouldPublishMusicStatus(newStatus) {
+            musicSourceStatus = newStatus
+        }
+    }
+
+    private func shouldPublishMusicUpdate(_ newMusic: MusicState) -> Bool {
+        if newMusic.track != music.track
+            || newMusic.isPlaying != music.isPlaying
+            || newMusic.lyricIndex != music.lyricIndex
+            || newMusic.duration != music.duration
+            || newMusic.canSeek != music.canSeek
+            || newMusic.isPlaybackPending != music.isPlaybackPending {
+            lastMusicProgressPublishAt = Date()
+            return true
+        }
+
+        let oldSecond = music.elapsedTime.map { Int($0.rounded(.down)) }
+        let newSecond = newMusic.elapsedTime.map { Int($0.rounded(.down)) }
+        let progressDelta = abs(newMusic.progress - music.progress)
+        let now = Date()
+        guard oldSecond != newSecond || progressDelta >= 0.006 else {
+            return false
+        }
+        guard now.timeIntervalSince(lastMusicProgressPublishAt) >= musicProgressPublishInterval else {
+            return false
+        }
+        lastMusicProgressPublishAt = now
+        return true
+    }
+
+    private func shouldPublishMusicStatus(_ newStatus: MusicSourceStatus) -> Bool {
+        newStatus.sourceName != musicSourceStatus.sourceName
+            || newStatus.availability != musicSourceStatus.availability
+            || newStatus.headline != musicSourceStatus.headline
+            || newStatus.detail != musicSourceStatus.detail
     }
 
     private func shouldStopMusicControlRefreshBurst(
@@ -570,7 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeOutsideClicks()
         updatePanelVisibility()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.presentOpenFeedback()
+            self?.presentOpenFeedback(shouldShowSettings: false)
         }
     }
 
@@ -579,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        presentOpenFeedback()
+        presentOpenFeedback(shouldShowSettings: true)
         return true
     }
 
@@ -1002,6 +1046,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             window.title = "MacBook 灵动岛设置"
             window.contentView = hostingView
+            window.delegate = self
             window.isReleasedWhenClosed = false
             window.level = .floating
             window.collectionBehavior = [.moveToActiveSpace]
@@ -1015,14 +1060,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func presentOpenFeedback() {
+    private func presentOpenFeedback(shouldShowSettings: Bool) {
         model.isVisible = true
         model.activeFeature = .music
         if model.mode == .collapsed {
             model.mode = .compact
         }
         repositionPanel(animated: true)
-        showSettings()
+        if shouldShowSettings {
+            showSettings()
+        }
     }
 
     @objc private func showCalibration() {
@@ -1044,6 +1091,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             window.title = "灵动岛布局校准"
             window.contentView = hostingView
+            window.delegate = self
             window.isReleasedWhenClosed = false
             window.level = .floating
             window.collectionBehavior = [.moveToActiveSpace]
@@ -1059,6 +1107,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindow {
+            settingsWindow?.contentView = nil
+            settingsWindow = nil
+        } else if window === calibrationWindow {
+            calibrationWindow?.contentView = nil
+            calibrationWindow = nil
+        }
     }
 }
 

@@ -27,6 +27,7 @@
 - 2026-07-09 当前实测 `./MacBookIsland.app/Contents/MacOS/MacBookIsland --mediaremote-status` 返回 `mediaRemoteAvailable=true` 但 `verifiedQishuiSource=false`、`currentTrack=nil`、来源 `unknown`。因此这一版不会冒充同步成功：MediaRemote 有汽水事件时优先使用；没有可确认来源时自动降级 AX。
 - 2026-07-09 V1.5 新增 `MediaRemoteAdapterStreamSource`：通过 `/usr/bin/perl` 加载 `MediaRemoteAdapter.framework`，绕过 macOS 15.4+ 普通 App 读取 Now Playing metadata 的 entitlement 限制，以常驻 `stream` 方式接收真实播放数据；封面在曲目变化时用单次 `get` 补齐。当前 `--adapter-status` 已能读取汽水真实歌名、歌手、播放态、进度、时长和封面 bytes。
 - 2026-07-09 修复 QuickPlayer/QuickTime 并存场景：当视频播放器抢占 macOS 当前媒体会话时，`MediaRemoteAdapterStreamSource` 不再用非汽水来源的空状态覆盖汽水岛，而是短时保留最近一次可信汽水快照用于显示并冻结进度；同时控制命令在未确认媒体焦点回到汽水前会被拦截，避免误控视频播放器。
+- 2026-07-09 抖音/Chrome 视频页测试暴露底层性能问题：旧实现会在 UI tick 和实时事件回调中同步拉取 MediaRemote/AX，且启动自动打开的设置 `Form` 会跟随模型刷新持续重排，导致 App CPU 一度约 84%-97%，灵动岛点击像是失效。当前已改为常驻 stream 事件驱动，普通 tick 只做轻量状态读取和低频进度发布；启动不再自动打开设置窗口，设置/校准窗口关闭后释放 SwiftUI 内容；手动刷新/诊断才允许同步重探测。
 
 ## 架构含义
 
@@ -47,6 +48,7 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 6. 本机原型优先启用 MediaRemote Adapter 常驻流做事件驱动同步；普通 MediaRemote 私有 API 仅保留为诊断/次级兜底。发布版必须评估 adapter 打包、系统更新和 App Store 风险。
 7. 能力按来源声明：`track/artwork/lyrics/playbackState/control`，没有稳定汽水来源就标记 unavailable，不用系统来源冒充汽水官方 API。
 8. 同步体验采用事件唤醒优先：MediaRemote 汽水 Now Playing 通知优先；汽水 AX 通知兜底；通知不可靠或窗口不可见时，用低频轮询兜底；控制按钮点击后继续短 burst 回读。
+9. UI 主线程不得做同步进程启动、MediaRemote 阻塞读取或 AX 深扫描；这些只允许在手动诊断或明确后台任务中执行。
 
 ## 控制边界
 
