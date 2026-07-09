@@ -13,7 +13,9 @@
 - 灵动岛显示真实歌名、歌手、封面。
 - 切歌后歌名、歌手、封面在同一轮同步中更新，不能长期错位。
 - 播放/暂停后按钮状态能回读，不长期停留在 pending。
-- 进度条显示真实进度，拖动后不显示调试文案。
+- 进度条只使用 MediaRemote Adapter 的可信 `elapsedTime / duration`；AX 兜底若显示 `progress=unavailable` 是预期行为，不能用 AX 的列表时间覆盖主进度。
+- 播放中连续读取 `--adapter-status` 时，`elapsedTime` 和 `progress` 应稳定递增，不应倒退或跳到旧歌进度。
+- 拖动后不显示调试文案；媒体焦点被视频占用时，进度拖动不得误控视频播放器。
 
 ## QuickPlayer/QuickTime 并存回归
 

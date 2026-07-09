@@ -29,6 +29,7 @@
 - 2026-07-09 修复 QuickPlayer/QuickTime 并存场景：当视频播放器抢占 macOS 当前媒体会话时，`MediaRemoteAdapterStreamSource` 不再用非汽水来源的空状态覆盖汽水岛，而是短时保留最近一次可信汽水快照用于显示并冻结进度；同时控制命令在未确认媒体焦点回到汽水前会被拦截，避免误控视频播放器。
 - 2026-07-09 抖音/Chrome 视频页测试暴露底层性能问题：旧实现会在 UI tick 和实时事件回调中同步拉取 MediaRemote/AX，且启动自动打开的设置 `Form` 会跟随模型刷新持续重排，导致 App CPU 一度约 84%-97%，灵动岛点击像是失效。当前已改为常驻 stream 事件驱动，普通 tick 只做轻量状态读取和低频进度发布；启动不再自动打开设置窗口，设置/校准窗口关闭后释放 SwiftUI 内容；手动刷新/诊断才允许同步重探测。
 - 2026-07-09 用户进一步确认真正的产品问题是“其他媒体开启后，灵动岛对汽水不管用”。`MediaRemoteAdapter send/seek` 的底层语义是发送给当前 Now Playing 应用，不能直接定向汽水。`MRNowPlayingClient` 定向控制探针发现：`swift -e` 解释器可通过 `MRMediaRemoteGetNowPlayingClients` 看到 `com.soda.music` 并调用 `MRMediaRemoteSendCommandToClient`，但普通编译二进制和当前 App 拿到的 clients 为空。因此该路径暂作为诊断/研究线保留。V1 运行时采用已验证的聚焦兜底：短暂激活汽水音乐、发送媒体键、再恢复原 App，实测可让汽水真实暂停/恢复。
+- 2026-07-09 进度条修正：AX 窗口树会同时暴露当前播放、列表项、旧歌和其他区域的多个 `mm:ss / mm:ss` 文本，不能作为可信进度来源。当前主进度只认 MediaRemote Adapter 的 `elapsedTime/duration`；当媒体焦点被抢走但仍保留最近可信汽水快照时，按最近可信播放态本地推进进度。AX fallback 的 `progress=unavailable` 是刻意降级，避免显示假进度。
 
 ## 架构含义
 
@@ -49,7 +50,8 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 6. 本机原型优先启用 MediaRemote Adapter 常驻流做事件驱动同步；控制侧在普通二进制无法稳定使用 `MRNowPlayingClient` 前，采用“当前媒体焦点确认汽水则直接发送，否则临时激活汽水发送”的兜底方案。发布版必须评估 adapter 打包、系统更新和 App Store 风险。
 7. 能力按来源声明：`track/artwork/lyrics/playbackState/control`，没有稳定汽水来源就标记 unavailable，不用系统来源冒充汽水官方 API。
 8. 同步体验采用事件唤醒优先：MediaRemote 汽水 Now Playing 通知优先；汽水 AX 通知兜底；通知不可靠或窗口不可见时，用低频轮询兜底；控制按钮点击后继续短 burst 回读。
-9. UI 主线程不得做同步进程启动、MediaRemote 阻塞读取或 AX 深扫描；这些只允许在手动诊断或明确后台任务中执行。
+9. 进度条只使用可信 MediaRemote Adapter 进度；AX 仅用于歌名、歌手、封面 URL 和歌词兜底，不再参与主进度计算。
+10. UI 主线程不得做同步进程启动、MediaRemote 阻塞读取或 AX 深扫描；这些只允许在手动诊断或明确后台任务中执行。
 
 ## 控制边界
 

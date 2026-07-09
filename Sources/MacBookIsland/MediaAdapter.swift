@@ -566,9 +566,7 @@ final class MusicAdapterCoordinator {
         if let snapshot = latestMediaRemoteSnapshot,
            let track = snapshot.currentTrack {
             let isCachedMediaFocus = cachedStatus.availability == .qishuiMediaRemoteCached
-            let liveTrack = isCachedMediaFocus
-                ? track
-                : liveMediaRemoteTrack(from: track, checkedAt: snapshot.checkedAt)
+            let liveTrack = liveMediaRemoteTrack(from: track, checkedAt: snapshot.checkedAt)
             return MusicState(
                 track: realTrack(from: liveTrack, statusLine: statusLine),
                 isPlaying: liveTrack.isPlaying ?? false,
@@ -576,7 +574,7 @@ final class MusicAdapterCoordinator {
                 lyricIndex: 0,
                 elapsedTime: liveTrack.elapsedTime,
                 duration: liveTrack.duration,
-                canSeek: liveTrack.duration.map { $0 > 0 } ?? false,
+                canSeek: !isCachedMediaFocus && (liveTrack.duration.map { $0 > 0 } ?? false),
                 isPlaybackPending: pendingPlaybackState != nil
             )
         }
@@ -588,7 +586,7 @@ final class MusicAdapterCoordinator {
             return MusicState(
                 track: realTrack(from: track, statusLine: statusLine),
                 isPlaying: effectiveIsPlaying,
-                progress: track.progress,
+                progress: track.progress ?? 0,
                 lyricIndex: 0,
                 elapsedTime: nil,
                 duration: nil,
@@ -755,16 +753,17 @@ final class MusicAdapterCoordinator {
             qishuiStationarySince = isPlaying ? nil : checkedAt
         } else if let previous = previousQishuiProgress,
                   previous.signature == signature,
+                  let currentProgress = track.progress,
                   checkedAt.timeIntervalSince(previous.checkedAt) >= 0.15 {
-            let progressDelta = track.progress - previous.progress
+            let progressDelta = currentProgress - previous.progress
             if progressDelta > 0.0005 {
                 inferredQishuiIsPlaying = true
                 qishuiStationarySince = nil
             } else if progressDelta < -0.01 {
                 qishuiStationarySince = nil
             } else if abs(progressDelta) <= 0.0002,
-                      track.progress > 0,
-                      track.progress < 0.995 {
+                      currentProgress > 0,
+                      currentProgress < 0.995 {
                 let stationarySince = qishuiStationarySince ?? previous.checkedAt
                 qishuiStationarySince = stationarySince
                 if checkedAt.timeIntervalSince(stationarySince) >= 1.35 {
@@ -778,11 +777,13 @@ final class MusicAdapterCoordinator {
             inferredQishuiIsPlaying = nil
         }
 
-        previousQishuiProgress = QishuiProgressSample(
-            signature: signature,
-            progress: track.progress,
-            checkedAt: checkedAt
-        )
+        if let progress = track.progress {
+            previousQishuiProgress = QishuiProgressSample(
+                signature: signature,
+                progress: progress,
+                checkedAt: checkedAt
+            )
+        }
         updatePendingPlaybackConfirmation(checkedAt: checkedAt)
     }
 

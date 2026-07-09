@@ -247,25 +247,43 @@ final class MediaRemoteAdapterStreamSource {
             return nil
         }
 
-        let track = cachedDisplayTrack(from: cachedTrack)
+        let track = cachedDisplayTrack(from: cachedTrack, cachedAt: cachedSnapshot.checkedAt, now: now)
         return MediaRemoteNowPlayingSnapshot(
             isAvailable: true,
             isVerifiedQishuiSource: true,
             currentTrack: track,
-            diagnostic: "\(rawSnapshot.diagnostic) 已保持最近一次汽水音乐可信状态用于显示；当前媒体焦点未确认回到汽水前，不发送媒体控制命令。",
+            diagnostic: "\(rawSnapshot.diagnostic) 已保持最近一次汽水音乐可信状态用于显示；控制会走汽水聚焦兜底，进度按最近可信播放态本地推进。",
             checkedAt: now
         )
     }
 
-    private func cachedDisplayTrack(from track: MediaRemoteNowPlayingTrack) -> MediaRemoteNowPlayingTrack {
+    private func cachedDisplayTrack(
+        from track: MediaRemoteNowPlayingTrack,
+        cachedAt: Date,
+        now: Date
+    ) -> MediaRemoteNowPlayingTrack {
+        let elapsed: TimeInterval?
+        let progress: Double
+        if track.isPlaying == true,
+           let cachedElapsed = track.elapsedTime,
+           let duration = track.duration,
+           duration > 0 {
+            let liveElapsed = min(max(cachedElapsed + now.timeIntervalSince(cachedAt), 0), duration)
+            elapsed = liveElapsed
+            progress = min(max(liveElapsed / duration, 0), 1)
+        } else {
+            elapsed = track.elapsedTime
+            progress = track.progress
+        }
+
         return MediaRemoteNowPlayingTrack(
             title: track.title,
             artist: track.artist,
             album: track.album,
             artworkData: track.artworkData,
             isPlaying: track.isPlaying,
-            progress: track.progress,
-            elapsedTime: track.elapsedTime,
+            progress: progress,
+            elapsedTime: elapsed,
             duration: track.duration,
             sourceBundleIdentifier: track.sourceBundleIdentifier,
             sourceProcessIdentifier: track.sourceProcessIdentifier,

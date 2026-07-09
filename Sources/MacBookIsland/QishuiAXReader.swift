@@ -205,14 +205,16 @@ final class QishuiAXReader {
 
             let artworkURL = artworkURL(from: cover)
             let lyrics = lyricsNearCover(coverFrame, nodes: nodes)
-            let progress = progressRatio(from: nodes, coverFrame: coverFrame)
+            // AX exposes multiple time labels from the page and playback queue. In practice
+            // these can point at stale/list items, so AX is not a trusted progress source.
+            let progress: Double? = nil
             cachedProfile = CachedTrackProfile(
                 cachedAt: Date(),
                 cover: cover.element,
                 title: title.node.element,
                 artists: artists.map { $0.node.element },
                 lyrics: lyrics.map { $0.node.element },
-                progressCandidates: progressCandidateNodes(from: nodes, coverFrame: coverFrame).map { $0.element }
+                progressCandidates: []
             )
             return QishuiDirectTrack(
                 title: title.text,
@@ -257,7 +259,7 @@ final class QishuiAXReader {
         }
         let lyrics = uniqueTexts(cachedProfile.lyrics.map { text(from: $0) })
             .filter(isLikelyLyricText)
-        let progress = cachedProgressRatio(from: cachedProfile.progressCandidates)
+        let progress: Double? = nil
 
         return QishuiDirectTrack(
             title: title,
@@ -349,28 +351,41 @@ final class QishuiAXReader {
         return uniqueTextNodes(lyricTexts.map { ($0.node, $0.text) })
     }
 
-    private func progressRatio(from nodes: [AXNodeRecord], coverFrame: CGRect) -> Double {
-        let staticCandidates = progressCandidates(from: nodes.filter(\.isStaticText), coverFrame: coverFrame)
+    private func progressRatio(
+        from nodes: [AXNodeRecord],
+        coverFrame: CGRect,
+        expectedDuration: Double?
+    ) -> Double? {
+        let staticCandidates = progressCandidates(
+            from: nodes.filter(\.isStaticText),
+            coverFrame: coverFrame,
+            expectedDuration: expectedDuration
+        )
         if let best = staticCandidates.sorted(by: progressCandidateSort).first {
             return best.ratio
         }
 
-        let groupCandidates = progressCandidates(from: nodes.filter { !$0.isStaticText }, coverFrame: coverFrame)
+        let groupCandidates = progressCandidates(
+            from: nodes.filter { !$0.isStaticText },
+            coverFrame: coverFrame,
+            expectedDuration: expectedDuration
+        )
         if let best = groupCandidates.sorted(by: progressCandidateSort).first {
             return best.ratio
         }
 
-        return 0
+        return nil
     }
 
     private func progressCandidates(
         from nodes: [AXNodeRecord],
-        coverFrame: CGRect
+        coverFrame: CGRect,
+        expectedDuration: Double?
     ) -> [ProgressCandidate] {
         nodes.flatMap { node -> [ProgressCandidate] in
             let texts = uniqueTexts([node.value, node.title, node.description])
             return texts.compactMap { text in
-                guard let parsed = parseProgress(text) else { return nil }
+                guard let parsed = parseProgress(text, expectedDuration: expectedDuration) else { return nil }
                 let frame = node.frame
                 let y = frame?.minY ?? 0
                 let bottomBarBias = y >= coverFrame.maxY + 120 ? 1_000.0 : 0
@@ -386,12 +401,21 @@ final class QishuiAXReader {
     }
 
     private func progressCandidateNodes(from nodes: [AXNodeRecord], coverFrame: CGRect) -> [AXNodeRecord] {
-        let staticCandidates = progressCandidates(from: nodes.filter(\.isStaticText), coverFrame: coverFrame)
+        let expectedDuration = durationSeconds(from: nodes, coverFrame: coverFrame)
+        let staticCandidates = progressCandidates(
+            from: nodes.filter(\.isStaticText),
+            coverFrame: coverFrame,
+            expectedDuration: expectedDuration
+        )
         if !staticCandidates.isEmpty {
             return staticCandidates.sorted(by: progressCandidateSort).map(\.node)
         }
 
-        return progressCandidates(from: nodes.filter { !$0.isStaticText }, coverFrame: coverFrame)
+        return progressCandidates(
+            from: nodes.filter { !$0.isStaticText },
+            coverFrame: coverFrame,
+            expectedDuration: expectedDuration
+        )
             .sorted(by: progressCandidateSort)
             .map(\.node)
     }
@@ -422,30 +446,65 @@ final class QishuiAXReader {
         return 0
     }
 
-    private func parseProgress(_ text: String) -> (ratio: Double, elapsed: Double, duration: Double)? {
+    private func durationSeconds(from nodes: [AXNodeRecord], coverFrame: CGRect) -> Double? {
+        let pattern = #"(\d{1,2}):(\d{2})\s*/\s*(\d{1,2}):(\d{2})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let staticTexts = nodes
+            .filter(\.isStaticText)
+            .compactMap { node -> (order: Int, y: CGFloat, text: String)? in
+                guard let frame = node.frame else { return nil }
+                guard frame.minY >= coverFrame.minY - 80,
+                      frame.minY <= coverFrame.maxY + 180 else { return nil }
+                return (node.order, frame.minY, cleanText(node.primaryText))
+            }
+            .sorted { lhs, rhs in
+                if lhs.y == rhs.y { return lhs.order < rhs.order }
+                return lhs.y > rhs.y
+            }
+
+        for item in staticTexts {
+            let range = NSRange(item.text.startIndex..<item.text.endIndex, in: item.text)
+            let matches = regex.matches(in: item.text, range: range)
+            guard matches.count == 1,
+                  let parsed = parseProgress(item.text, expectedDuration: nil) else { continue }
+            return parsed.duration
+        }
+        return nil
+    }
+
+    private func parseProgress(
+        _ text: String,
+        expectedDuration: Double? = nil
+    ) -> (ratio: Double, elapsed: Double, duration: Double)? {
         let pattern = #"(\d{1,2}):(\d{2})\s*/\s*(\d{1,2}):(\d{2})"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges == 5 else {
-            return nil
-        }
+        let matches = regex.matches(in: text, range: range)
+        guard !matches.isEmpty else { return nil }
 
-        func number(at index: Int) -> Double? {
+        func number(in match: NSTextCheckingResult, at index: Int) -> Double? {
             guard let range = Range(match.range(at: index), in: text) else { return nil }
             return Double(text[range])
         }
 
-        guard let elapsedMinutes = number(at: 1),
-              let elapsedSeconds = number(at: 2),
-              let durationMinutes = number(at: 3),
-              let durationSeconds = number(at: 4) else {
-            return nil
+        var best: (ratio: Double, elapsed: Double, duration: Double)?
+        for match in matches {
+            guard match.numberOfRanges == 5,
+                  let elapsedMinutes = number(in: match, at: 1),
+                  let elapsedSeconds = number(in: match, at: 2),
+                  let durationMinutes = number(in: match, at: 3),
+                  let durationSeconds = number(in: match, at: 4) else {
+                continue
+            }
+
+            let elapsed = elapsedMinutes * 60 + elapsedSeconds
+            let duration = durationMinutes * 60 + durationSeconds
+            guard duration > 0, elapsed >= 0, elapsed <= duration + 3 else { continue }
+            if let expectedDuration, abs(duration - expectedDuration) > 2 { continue }
+            best = (min(max(elapsed / duration, 0), 1), elapsed, duration)
         }
 
-        let elapsed = elapsedMinutes * 60 + elapsedSeconds
-        let duration = durationMinutes * 60 + durationSeconds
-        guard duration > 0, elapsed >= 0, elapsed <= duration + 3 else { return nil }
-        return (min(max(elapsed / duration, 0), 1), elapsed, duration)
+        return best
     }
 
     private func artworkURL(from node: AXNodeRecord) -> URL? {

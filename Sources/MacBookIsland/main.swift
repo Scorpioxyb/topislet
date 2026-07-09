@@ -18,7 +18,8 @@ func printQishuiSnapshot(_ snapshot: QishuiDirectSnapshot) {
     if let track = snapshot.currentTrack {
         print("currentTrack=\(track.title) - \(track.artist)")
         print("isPlaying=\(track.isPlaying.map(String.init) ?? "unknown")")
-        print("progress=\(track.progress)")
+        let progressText = track.progress.map { String($0) } ?? "unavailable"
+        print("progress=\(progressText)")
         print("artworkURL=\(track.artworkURL?.absoluteString ?? "nil")")
         print("lyricsCount=\(track.lyrics.count)")
         if !track.lyrics.isEmpty {
@@ -283,7 +284,7 @@ final class IslandModel: ObservableObject {
     private var lastMusicProgressPublishAt: Date = .distantPast
     private let islandModeTapCooldown: TimeInterval = 0.72
     private let directControlSuppressionWindow: TimeInterval = 0.28
-    private let musicProgressPublishInterval: TimeInterval = 0.85
+    private let musicProgressPublishInterval: TimeInterval = 0.45
 
     var collapsedWingWidth: CGFloat { 40 }
     var compactWingWidth: CGFloat { 126 }

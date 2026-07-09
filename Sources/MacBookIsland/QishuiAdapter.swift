@@ -7,7 +7,7 @@ struct QishuiDirectTrack: Equatable {
     let artworkURL: URL?
     let lyrics: [String]
     let isPlaying: Bool?
-    let progress: Double
+    let progress: Double?
     let sourceName: String
 }
 
