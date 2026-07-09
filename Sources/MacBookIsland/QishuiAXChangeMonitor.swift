@@ -6,10 +6,10 @@ import Foundation
 final class QishuiAXChangeMonitor {
     private let bundleIdentifier = "com.soda.music"
     private let axMessageTimeout: Float = 0.2
-    private let debounceInterval: TimeInterval = 0.16
-    private let reattachInterval: TimeInterval = 2.0
-    private let maxObservedElements = 180
-    private let maxObservationDepth = 6
+    private let debounceInterval: TimeInterval = 0.35
+    private let reattachInterval: TimeInterval = 12.0
+    private let maxObservedElements = 80
+    private let maxObservationDepth = 4
 
     private var observer: AXObserver?
     private var observedElements: [AXUIElement] = []
@@ -21,15 +21,10 @@ final class QishuiAXChangeMonitor {
     private let notifications = [
         "AXValueChanged",
         "AXTitleChanged",
-        "AXFocusedUIElementChanged",
         "AXFocusedWindowChanged",
         "AXSelectedChildrenChanged",
         "AXSelectedRowsChanged",
-        "AXLayoutChanged",
-        "AXCreated",
-        "AXUIElementDestroyed",
-        "AXMoved",
-        "AXResized"
+        "AXLayoutChanged"
     ]
 
     func start(onChange: @escaping (String) -> Void) {
@@ -38,7 +33,7 @@ final class QishuiAXChangeMonitor {
         reattachTimer?.invalidate()
         reattachTimer = Timer.scheduledTimer(withTimeInterval: reattachInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.refreshObservedTargets(force: true)
+                self?.refreshObservedTargets(force: false)
             }
         }
     }
