@@ -197,14 +197,17 @@ final class MediaRemoteAdapterStreamSource {
         return effectiveSnapshot
     }
 
-    func seek(to elapsedTime: TimeInterval) async -> Bool {
+    func seek(
+        to elapsedTime: TimeInterval,
+        coalescingDelayNanoseconds: UInt64
+    ) async -> Bool {
         guard let paths = adapterPaths() else { return false }
         seekCommandGeneration += 1
         let generation = seekCommandGeneration
         let currentTrack = latestRawSnapshot?.currentTrack ?? latestSnapshot?.currentTrack
         let currentTrackIdentity = currentTrack.map(trackTimelineIdentity)
         let positionMicros = max(Int64((elapsedTime * 1_000_000).rounded()), 0)
-        try? await Task.sleep(nanoseconds: 180_000_000)
+        try? await Task.sleep(nanoseconds: coalescingDelayNanoseconds)
         guard generation == seekCommandGeneration else { return true }
         guard hasCurrentVerifiedQishuiSource() else { return false }
         let expectedQishuiPID = NSRunningApplication

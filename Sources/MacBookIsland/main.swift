@@ -467,13 +467,16 @@ final class IslandModel: ObservableObject {
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
     }
 
-    func seekMusic(to progress: Double) async -> Bool {
+    func seekMusic(
+        to progress: Double,
+        interaction: MusicSeekInteraction
+    ) async -> Bool {
         noteDirectControlInteraction()
         activeFeature = .music
         musicSeekRequestID += 1
         let requestID = musicSeekRequestID
         let previousSignature = musicSignature(music)
-        let result = await musicAdapter.seek(to: progress)
+        let result = await musicAdapter.seek(to: progress, interaction: interaction)
         guard requestID == musicSeekRequestID else { return true }
         let didSeek = result.status.availability == .qishuiControlSent
         pendingMusicSeek = nil
@@ -2011,8 +2014,8 @@ private struct MusicProgressRow: View {
                     }
                     scrubPreviewProgress = progress
                 },
-                onSeek: model.music.canSeek ? { progress in
-                    await model.seekMusic(to: progress)
+                onSeek: model.music.canSeek ? { progress, interaction in
+                    await model.seekMusic(to: progress, interaction: interaction)
                 } : nil
             )
             .help(model.music.canSeek ? "拖动调整播放进度" : "当前歌曲暂不支持进度拖动")
@@ -2293,7 +2296,7 @@ struct ProgressPill: View {
     let progress: Double
     let width: CGFloat
     var onPreviewChanged: ((Double?) -> Void)? = nil
-    var onSeek: ((Double) async -> Bool)? = nil
+    var onSeek: ((Double, MusicSeekInteraction) async -> Bool)? = nil
 
     @State private var dragProgress: Double?
     @State private var isDragging = false
@@ -2335,43 +2338,61 @@ struct ProgressPill: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 0)
+                SpatialTapGesture()
+                    .exclusively(before: DragGesture(minimumDistance: 3))
                     .onChanged { value in
-                        guard onSeek != nil else { return }
+                        guard case let .second(drag) = value,
+                              onSeek != nil else { return }
                         if !isDragging {
                             seekGeneration += 1
                         }
                         isDragging = true
-                        dragProgress = min(max(value.location.x / availableWidth, 0), 1)
+                        dragProgress = min(max(drag.location.x / availableWidth, 0), 1)
                         onPreviewChanged?(dragProgress)
                     }
                     .onEnded { value in
-                        let targetProgress = min(max(value.location.x / availableWidth, 0), 1)
-                        dragProgress = targetProgress
-                        isDragging = false
-                        guard let onSeek else {
-                            dragProgress = nil
-                            onPreviewChanged?(nil)
-                            return
-                        }
-                        let generation = seekGeneration
-                        Task { @MainActor in
-                            let didSeek = await onSeek(targetProgress)
-                            guard generation == seekGeneration else { return }
-                            if didSeek {
+                        switch value {
+                        case let .first(tap):
+                            guard onSeek != nil else { return }
+                            seekGeneration += 1
+                            isDragging = false
+                            let targetProgress = min(max(tap.location.x / availableWidth, 0), 1)
+                            dragProgress = targetProgress
+                            onPreviewChanged?(targetProgress)
+                            submitSeek(to: targetProgress, interaction: .click)
+                        case let .second(drag):
+                            let targetProgress = min(max(drag.location.x / availableWidth, 0), 1)
+                            dragProgress = targetProgress
+                            isDragging = false
+                            guard onSeek != nil else {
                                 dragProgress = nil
                                 onPreviewChanged?(nil)
-                            } else {
-                                withAnimation(.easeOut(duration: 0.14)) {
-                                    dragProgress = nil
-                                }
-                                onPreviewChanged?(nil)
+                                return
                             }
+                            submitSeek(to: targetProgress, interaction: .drag)
                         }
                     }
             )
         }
         .frame(width: width, height: onSeek == nil ? 4 : 22)
+    }
+
+    private func submitSeek(to targetProgress: Double, interaction: MusicSeekInteraction) {
+        guard let onSeek else { return }
+        let generation = seekGeneration
+        Task { @MainActor in
+            let didSeek = await onSeek(targetProgress, interaction)
+            guard generation == seekGeneration else { return }
+            if didSeek {
+                dragProgress = nil
+                onPreviewChanged?(nil)
+            } else {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    dragProgress = nil
+                }
+                onPreviewChanged?(nil)
+            }
+        }
     }
 }
 

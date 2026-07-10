@@ -54,6 +54,20 @@ enum MusicControlCommand {
     }
 }
 
+enum MusicSeekInteraction {
+    case click
+    case drag
+
+    var coalescingDelayNanoseconds: UInt64 {
+        switch self {
+        case .click:
+            return 60_000_000
+        case .drag:
+            return 180_000_000
+        }
+    }
+}
+
 struct MusicSourceStatus: Equatable {
     let sourceName: String
     let availability: MusicSourceAvailability
@@ -334,7 +348,10 @@ final class MusicAdapterCoordinator {
         refreshNowPlaying(promptForPermission: true)
     }
 
-    func seek(to progress: Double) async -> (music: MusicState, status: MusicSourceStatus) {
+    func seek(
+        to progress: Double,
+        interaction: MusicSeekInteraction
+    ) async -> (music: MusicState, status: MusicSourceStatus) {
         guard let snapshot = latestMediaRemoteSnapshot,
               snapshot.isVerifiedQishuiSource,
               let track = snapshot.currentTrack,
@@ -365,7 +382,10 @@ final class MusicAdapterCoordinator {
 
         let targetProgress = min(max(progress, 0), 1)
         let targetElapsed = duration * targetProgress
-        guard await mediaRemoteAdapterStreamSource.seek(to: targetElapsed) else {
+        guard await mediaRemoteAdapterStreamSource.seek(
+            to: targetElapsed,
+            coalescingDelayNanoseconds: interaction.coalescingDelayNanoseconds
+        ) else {
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
                 availability: .systemNowPlayingUnavailable,
