@@ -125,7 +125,7 @@ if let focusControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-focuse
     printMediaRemoteSnapshot(source.refreshOnce())
     let didSend = QishuiFocusedMediaKeyController().post(controlCommand, to: qishuiApp)
     print("focusedQishuiControlSent=\(didSend)")
-    usleep(420_000)
+    RunLoop.current.run(until: Date().addingTimeInterval(1.35))
     print("AFTER")
     printMediaRemoteSnapshot(source.refreshOnce())
     exit(didSend ? 0 : 2)
@@ -296,6 +296,7 @@ final class IslandModel: ObservableObject {
     private var isMusicScrubbing = false
     private let islandModeTapCooldown: TimeInterval = 0.72
     private let directControlSuppressionWindow: TimeInterval = 0.28
+    private let automaticCollapseSuppressionWindow: TimeInterval = 0.55
     private let musicProgressPublishInterval: TimeInterval = 0.45
 
     var collapsedWingWidth: CGFloat { 40 }
@@ -380,6 +381,10 @@ final class IslandModel: ObservableObject {
 
     private func noteDirectControlInteraction() {
         lastDirectControlAt = Date()
+    }
+
+    func shouldSuppressAutomaticCollapse() -> Bool {
+        Date().timeIntervalSince(lastDirectControlAt) <= automaticCollapseSuppressionWindow
     }
 
     func playPause() {
@@ -613,9 +618,7 @@ final class IslandModel: ObservableObject {
             220_000_000,
             300_000_000,
             420_000_000,
-            600_000_000,
-            800_000_000,
-            1_100_000_000
+            600_000_000
         ]
 
         musicRefreshBurstTask = Task { [weak self] in
@@ -781,18 +784,14 @@ final class IslandModel: ObservableObject {
         previousSignature: String,
         requireTrackChange: Bool
     ) -> Bool {
+        if requireTrackChange {
+            return false
+        }
+
         guard status.availability == .qishuiDetectedAXLimited,
               !music.isPlaybackPending,
               music.track.title != "汽水音乐" else {
             return false
-        }
-
-        if requireTrackChange {
-            let didChangeTrack = musicSignature(music) != previousSignature
-            if !didChangeTrack {
-                musicAdapter.invalidateQishuiCache()
-            }
-            return didChangeTrack
         }
         return true
     }
@@ -1033,6 +1032,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func collapseExpandedIslandIfClickIsOutside(appKitLocation clickPoint: CGPoint) {
         guard model.mode == .expanded, model.isVisible, let panel else { return }
         guard model.appSettings.autoCollapseExpandedIsland else { return }
+        guard !model.shouldSuppressAutomaticCollapse() else { return }
         if let calibrationWindow,
            calibrationWindow.isVisible,
            calibrationWindow.frame.contains(clickPoint) {

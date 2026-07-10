@@ -15,7 +15,7 @@ enum MusicSourceAvailability: String, Equatable {
     case accessibilityRequired
 }
 
-enum MusicControlCommand {
+enum MusicControlCommand: Sendable {
     case playPause
     case nextTrack
     case previousTrack
@@ -149,6 +149,15 @@ private struct PendingPlaybackOperation {
     var observedOppositeState: Bool
 }
 
+private struct PendingTrackChangeOperation {
+    let command: MusicControlCommand
+    let issuedAt: Date
+    let baselineIdentity: PlaybackTrackIdentity
+    var candidateIdentity: PlaybackTrackIdentity?
+    var candidateArtworkURL: URL?
+    var candidateFirstSeenAt: Date?
+}
+
 private struct PlaybackTimelineFloor {
     let trackIdentity: PlaybackTrackIdentity
     let elapsedTime: TimeInterval
@@ -180,6 +189,10 @@ final class MusicAdapterCoordinator {
     private var lastPlaybackPositionRefreshAt: Date?
     private var pendingPlaybackOperation: PendingPlaybackOperation?
     private var pendingPlaybackTimeoutTask: Task<Void, Never>?
+    private var pendingTrackChangeOperation: PendingTrackChangeOperation?
+    private var pendingTrackChangeTimeoutTask: Task<Void, Never>?
+    private var trackControlRefreshDeadline: Date?
+    private var trackControlBaselineIdentity: PlaybackTrackIdentity?
     private var nextPlaybackOperationID = 0
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
@@ -226,6 +239,9 @@ final class MusicAdapterCoordinator {
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
         resetPendingPlaybackOperation(clearTimelineFloor: true)
+        finishPendingTrackChangeOperation()
+        trackControlRefreshDeadline = nil
+        trackControlBaselineIdentity = nil
     }
 
     func playPause(_ state: MusicState) -> MusicState {
@@ -250,6 +266,9 @@ final class MusicAdapterCoordinator {
             latestMediaRemoteSnapshot = nil
             latestQishuiSnapshot = nil
             resetPendingPlaybackOperation(clearTimelineFloor: true)
+            finishPendingTrackChangeOperation()
+            trackControlRefreshDeadline = nil
+            trackControlBaselineIdentity = nil
             previousQishuiProgress = nil
             qishuiStationarySince = nil
             inferredQishuiIsPlaying = nil
@@ -264,6 +283,7 @@ final class MusicAdapterCoordinator {
         }
 
         _ = refreshSourceStatus()
+        let controlBaseline = currentMusicState()
         let didPost: Bool
         let usedFocusRetargeting: Bool
         if canSafelySendMediaKeyControlToQishui() {
@@ -289,14 +309,9 @@ final class MusicAdapterCoordinator {
         if command == .playPause, didPost {
             let currentState = currentMusicState()
             beginPendingPlaybackOperation(from: currentState)
-        } else if command == .nextTrack || command == .previousTrack {
-            latestNowPlayingTrack = nil
-            latestMediaRemoteSnapshot = nil
-            latestQishuiSnapshot = nil
-            previousQishuiProgress = nil
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: true)
+        } else if didPost,
+                  command == .nextTrack || command == .previousTrack {
+            beginPendingTrackChangeOperation(command: command, from: controlBaseline)
         }
         cachedStatus = MusicSourceStatus(
             sourceName: "汽水音乐",
@@ -415,6 +430,20 @@ final class MusicAdapterCoordinator {
         if pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline() {
             _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
         }
+        let shouldRefreshTrackControl = pendingTrackChangeOperation != nil
+            || trackControlRefreshDeadline.map { Date() < $0 } == true
+        if shouldRefreshTrackControl {
+            qishuiAdapter.invalidateAXCache()
+            let snapshot = qishuiAdapter.snapshot()
+            if pendingTrackChangeOperation != nil {
+                updatePendingTrackChangeConfirmation(snapshot: snapshot)
+            } else {
+                applyTrackControlFollowUpSnapshot(snapshot)
+            }
+        } else if trackControlRefreshDeadline != nil {
+            trackControlRefreshDeadline = nil
+            trackControlBaselineIdentity = nil
+        }
         let status = refreshSourceStatus()
         return (currentMusicState(), status)
     }
@@ -453,6 +482,9 @@ final class MusicAdapterCoordinator {
             latestQishuiSnapshot = nil
             lastSourceRefreshAt = Date()
             resetPendingPlaybackOperation(clearTimelineFloor: true)
+            finishPendingTrackChangeOperation()
+            trackControlRefreshDeadline = nil
+            trackControlBaselineIdentity = nil
             previousQishuiProgress = nil
             qishuiStationarySince = nil
             inferredQishuiIsPlaying = nil
@@ -483,8 +515,13 @@ final class MusicAdapterCoordinator {
             } else if shouldRefreshCachedPlaybackOverride() {
                 lastCachedOverrideRefreshAttemptAt = Date()
                 let directSnapshot = qishuiAdapter.snapshot()
-                latestQishuiSnapshot = directSnapshot
-                if let directTrack = directSnapshot.currentTrack {
+                if pendingTrackChangeOperation != nil {
+                    updatePendingTrackChangeConfirmation(snapshot: directSnapshot)
+                } else {
+                    latestQishuiSnapshot = directSnapshot
+                }
+                if pendingTrackChangeOperation == nil,
+                   let directTrack = directSnapshot.currentTrack {
                     updateQishuiPlaybackInference(track: directTrack, checkedAt: directSnapshot.checkedAt)
                     if pendingPlaybackOperation == nil
                         || updatePendingPlaybackConfirmation(checkedAt: directSnapshot.checkedAt) {
@@ -526,13 +563,20 @@ final class MusicAdapterCoordinator {
         }
 
         let snapshot = qishuiAdapter.snapshot()
-        latestQishuiSnapshot = snapshot
+        if pendingTrackChangeOperation != nil {
+            updatePendingTrackChangeConfirmation(snapshot: snapshot)
+        } else {
+            latestQishuiSnapshot = snapshot
+        }
         lastSourceRefreshAt = snapshot.checkedAt
 
         guard snapshot.isRunning else {
             latestNowPlayingTrack = nil
             latestMediaRemoteSnapshot = nil
             resetPendingPlaybackOperation(clearTimelineFloor: true)
+            finishPendingTrackChangeOperation()
+            trackControlRefreshDeadline = nil
+            trackControlBaselineIdentity = nil
             previousQishuiProgress = nil
             qishuiStationarySince = nil
             inferredQishuiIsPlaying = nil
@@ -546,7 +590,8 @@ final class MusicAdapterCoordinator {
             return cachedStatus
         }
 
-        if let track = snapshot.currentTrack {
+        if pendingTrackChangeOperation == nil,
+           let track = snapshot.currentTrack {
             updateQishuiPlaybackInference(track: track, checkedAt: snapshot.checkedAt)
             if pendingPlaybackOperation == nil
                 || updatePendingPlaybackConfirmation(checkedAt: snapshot.checkedAt) {
@@ -694,6 +739,38 @@ final class MusicAdapterCoordinator {
             let effectiveTrack = isCachedMediaFocus
                 ? cachedPlaybackTrack(from: liveTrack)
                 : liveTrack
+            if isCachedMediaFocus,
+               let directTrack = latestQishuiSnapshot?.currentTrack {
+                let isSameTrack = directTrack.title == effectiveTrack.title
+                if !isSameTrack {
+                    cachedPlaybackOverride = nil
+                    playbackTimelineFloor = nil
+                    if let operation = pendingPlaybackOperation,
+                       operation.trackIdentity.title != directTrack.title {
+                        resetPendingPlaybackOperation(clearTimelineFloor: true)
+                    }
+                }
+                let pendingIsPlaying = pendingPlaybackOperation.flatMap { operation in
+                    operation.trackIdentity.title == directTrack.title
+                        ? operation.targetIsPlaying
+                        : nil
+                }
+                let effectiveIsPlaying = pendingIsPlaying
+                    ?? directTrack.isPlaying
+                    ?? inferredQishuiIsPlaying
+                    ?? effectiveTrack.isPlaying
+                    ?? false
+                return MusicState(
+                    track: realTrack(from: directTrack, statusLine: statusLine),
+                    isPlaying: effectiveIsPlaying,
+                    progress: isSameTrack ? effectiveTrack.progress : 0,
+                    lyricIndex: 0,
+                    elapsedTime: isSameTrack ? effectiveTrack.elapsedTime : nil,
+                    duration: isSameTrack ? effectiveTrack.duration : nil,
+                    canSeek: false,
+                    isPlaybackPending: pendingPlaybackOperation != nil
+                )
+            }
             return MusicState(
                 track: realTrack(from: effectiveTrack, statusLine: statusLine),
                 isPlaying: effectiveTrack.isPlaying ?? false,
@@ -867,9 +944,135 @@ final class MusicAdapterCoordinator {
     }
 
     private func shouldRefreshCachedPlaybackOverride() -> Bool {
+        if pendingTrackChangeOperation != nil {
+            return true
+        }
         guard pendingPlaybackOperation == nil,
               let lastCachedOverrideRefreshAttemptAt else { return true }
         return Date().timeIntervalSince(lastCachedOverrideRefreshAttemptAt) >= 1.0
+    }
+
+    private func beginPendingTrackChangeOperation(
+        command: MusicControlCommand,
+        from currentState: MusicState
+    ) {
+        let operation = PendingTrackChangeOperation(
+            command: command,
+            issuedAt: Date(),
+            baselineIdentity: PlaybackTrackIdentity(
+                title: currentState.track.title,
+                artist: currentState.track.artist
+            ),
+            candidateIdentity: nil,
+            candidateArtworkURL: nil,
+            candidateFirstSeenAt: nil
+        )
+        pendingTrackChangeOperation = operation
+        trackControlRefreshDeadline = Date().addingTimeInterval(3.0)
+        trackControlBaselineIdentity = operation.baselineIdentity
+        pendingTrackChangeTimeoutTask?.cancel()
+        pendingTrackChangeTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled else { return }
+            self?.expirePendingTrackChangeOperation(issuedAt: operation.issuedAt)
+        }
+    }
+
+    private func updatePendingTrackChangeConfirmation(snapshot: QishuiDirectSnapshot) {
+        guard var operation = pendingTrackChangeOperation,
+              snapshot.checkedAt >= operation.issuedAt,
+              let track = snapshot.currentTrack else { return }
+
+        let identity = PlaybackTrackIdentity(title: track.title, artist: track.artist)
+        guard !matches(identity, operation.baselineIdentity) else {
+            operation.candidateIdentity = nil
+            operation.candidateArtworkURL = nil
+            operation.candidateFirstSeenAt = nil
+            pendingTrackChangeOperation = operation
+            return
+        }
+
+        if let candidateIdentity = operation.candidateIdentity,
+           matches(identity, candidateIdentity),
+           operation.candidateArtworkURL == track.artworkURL,
+           let candidateFirstSeenAt = operation.candidateFirstSeenAt {
+            guard snapshot.checkedAt.timeIntervalSince(candidateFirstSeenAt) >= 0.36 else {
+                pendingTrackChangeOperation = operation
+                return
+            }
+        } else {
+            operation.candidateIdentity = identity
+            operation.candidateArtworkURL = track.artworkURL
+            operation.candidateFirstSeenAt = snapshot.checkedAt
+            pendingTrackChangeOperation = operation
+            return
+        }
+
+        latestQishuiSnapshot = snapshot
+        previousQishuiProgress = nil
+        qishuiStationarySince = nil
+        inferredQishuiIsPlaying = track.isPlaying
+        resetPendingPlaybackOperation(clearTimelineFloor: true)
+        finishPendingTrackChangeOperation()
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水直接适配",
+            availability: .qishuiMediaRemoteCached,
+            headline: "已确认\(operation.command.label)",
+            detail: "汽水窗口已确认曲目切换为 \(track.title) - \(track.artist)；系统媒体焦点仍可由其他 App 持有。",
+            checkedAt: snapshot.checkedAt
+        )
+    }
+
+    private func expirePendingTrackChangeOperation(issuedAt: Date) {
+        guard let operation = pendingTrackChangeOperation,
+              operation.issuedAt == issuedAt else { return }
+
+        finishPendingTrackChangeOperation()
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水直接适配",
+            availability: latestMediaRemoteSnapshot == nil
+                ? .qishuiDetectedAXLimited
+                : .qishuiMediaRemoteCached,
+            headline: "未确认\(operation.command.label)",
+            detail: "控制事件已经发送，但汽水窗口没有确认曲目变化；继续保留原歌曲，且不会把控制转交给当前视频播放器。",
+            checkedAt: Date()
+        )
+    }
+
+    private func applyTrackControlFollowUpSnapshot(_ snapshot: QishuiDirectSnapshot) {
+        guard snapshot.isRunning,
+              let track = snapshot.currentTrack else { return }
+
+        let previousIdentity = latestQishuiSnapshot?.currentTrack.map {
+            PlaybackTrackIdentity(title: $0.title, artist: $0.artist)
+        }
+        let nextIdentity = PlaybackTrackIdentity(title: track.title, artist: track.artist)
+        let didChangeFromBaseline = trackControlBaselineIdentity.map {
+            !matches($0, nextIdentity)
+        } ?? true
+        if let previousIdentity,
+           !matches(previousIdentity, nextIdentity) {
+            previousQishuiProgress = nil
+            qishuiStationarySince = nil
+            inferredQishuiIsPlaying = track.isPlaying
+            resetPendingPlaybackOperation(clearTimelineFloor: true)
+        }
+
+        latestQishuiSnapshot = snapshot
+        guard didChangeFromBaseline else { return }
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水直接适配",
+            availability: .qishuiMediaRemoteCached,
+            headline: "已刷新汽水曲目",
+            detail: "控制后的确认观察窗已读取 \(track.title) - \(track.artist)；系统媒体焦点仍可由其他 App 持有。",
+            checkedAt: snapshot.checkedAt
+        )
+    }
+
+    private func finishPendingTrackChangeOperation() {
+        pendingTrackChangeOperation = nil
+        pendingTrackChangeTimeoutTask?.cancel()
+        pendingTrackChangeTimeoutTask = nil
     }
 
     private func updateCachedPlaybackOverride(from track: QishuiDirectTrack, checkedAt: Date) {
@@ -1361,20 +1564,135 @@ final class QishuiFocusedMediaKeyController {
         let previousApp = NSWorkspace.shared.frontmostApplication
         let shouldRestorePrevious = previousApp?.processIdentifier != qishuiApp.processIdentifier
 
-        if shouldRestorePrevious {
-            qishuiApp.activate(options: [])
-            usleep(180_000)
+        guard shouldRestorePrevious else {
+            return QishuiWindowControlClicker().post(command, to: qishuiApp)
         }
 
-        let didPost = SystemMediaKeyController().post(command)
+        let qishuiProcessIdentifier = qishuiApp.processIdentifier
+        let previousProcessIdentifier = previousApp?.processIdentifier
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let qishuiApp = NSRunningApplication(processIdentifier: qishuiProcessIdentifier),
+                  qishuiApp.activate(options: []) else { return }
+            usleep(180_000)
+            let qishuiStillOwnsFocus = DispatchQueue.main.sync {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier == qishuiProcessIdentifier
+            }
+            guard qishuiStillOwnsFocus else { return }
+            _ = QishuiWindowControlClicker().post(command, to: qishuiApp)
 
-        if shouldRestorePrevious, let previousApp {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            usleep(140_000)
+            DispatchQueue.main.async {
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == qishuiProcessIdentifier,
+                      let previousProcessIdentifier,
+                      let previousApp = NSRunningApplication(processIdentifier: previousProcessIdentifier) else {
+                    return
+                }
                 previousApp.activate(options: [])
             }
         }
+        return true
+    }
+}
 
-        return didPost
+private final class QishuiWindowControlClicker {
+    @discardableResult
+    func post(_ command: MusicControlCommand, to qishuiApp: NSRunningApplication) -> Bool {
+        guard AXIsProcessTrusted(),
+              let windowFrame = focusedWindowFrame(processIdentifier: qishuiApp.processIdentifier),
+              windowFrame.width >= 400,
+              windowFrame.height >= 300 else {
+            return false
+        }
+
+        let horizontalOffset: CGFloat
+        // Qishui 2.9.1 anchors its three transport controls around the window center.
+        switch command {
+        case .previousTrack:
+            horizontalOffset = -86
+        case .playPause:
+            horizontalOffset = 0
+        case .nextTrack:
+            horizontalOffset = 86
+        }
+
+        let controlPoint = CGPoint(
+            x: windowFrame.midX + horizontalOffset,
+            y: windowFrame.maxY - 44
+        )
+        guard windowFrame.contains(controlPoint),
+              let source = CGEventSource(stateID: .hidSystemState),
+              let mouseDown = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDown,
+                mouseCursorPosition: controlPoint,
+                mouseButton: .left
+              ),
+              let mouseUp = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseUp,
+                mouseCursorPosition: controlPoint,
+                mouseButton: .left
+              ) else {
+            return false
+        }
+
+        let originalMouseLocation = CGEvent(source: nil)?.location
+        mouseDown.post(tap: .cghidEventTap)
+        usleep(20_000)
+        mouseUp.post(tap: .cghidEventTap)
+        if let originalMouseLocation,
+           let restoreMouse = CGEvent(
+            mouseEventSource: source,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: originalMouseLocation,
+            mouseButton: .left
+           ) {
+            usleep(20_000)
+            restoreMouse.post(tap: .cghidEventTap)
+        }
+        return true
+    }
+
+    private func focusedWindowFrame(processIdentifier: pid_t) -> CGRect? {
+        let appElement = AXUIElementCreateApplication(processIdentifier)
+        var windowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            &windowValue
+        ) == .success,
+        let windowValue,
+        CFGetTypeID(windowValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+
+        let window = windowValue as! AXUIElement
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            window,
+            kAXPositionAttribute as CFString,
+            &positionValue
+        ) == .success,
+        AXUIElementCopyAttributeValue(
+            window,
+            kAXSizeAttribute as CFString,
+            &sizeValue
+        ) == .success,
+        let positionValue,
+        let sizeValue,
+        CFGetTypeID(positionValue) == AXValueGetTypeID(),
+        CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else {
+            return nil
+        }
+        return CGRect(origin: origin, size: size)
     }
 }
 
