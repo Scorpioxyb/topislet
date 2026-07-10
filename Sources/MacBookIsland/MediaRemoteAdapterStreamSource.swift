@@ -1,11 +1,35 @@
 import AppKit
 import Foundation
 
+private struct MediaRemoteTrackTimelineIdentity {
+    let bundleIdentifier: String?
+    let title: String
+    let artist: String?
+    let album: String?
+    let duration: TimeInterval?
+}
+
+private struct MediaRemoteSeekTimelineAnchor {
+    let trackIdentity: MediaRemoteTrackTimelineIdentity
+    let targetElapsedTime: TimeInterval
+    var elapsedTime: TimeInterval
+    let issuedAt: Date
+    var updatedAt: Date
+    var isPlaying: Bool
+    let confirmationDeadline: Date
+    var didObserveTarget: Bool
+    var coherentSince: Date?
+}
+
 @MainActor
 final class MediaRemoteAdapterStreamSource {
     typealias ChangeHandler = @MainActor @Sendable () -> Void
 
     private let qishuiBundleIdentifier = "com.soda.music"
+    private let seekCommandQueue = DispatchQueue(label: "MacBookIsland.MediaRemoteSeek")
+    private var seekCommandGeneration = 0
+    private var seekTimelineAnchor: MediaRemoteSeekTimelineAnchor?
+    private var seekTimelineConfirmationTask: Task<Void, Never>?
     private var process: Process?
     private var outputBuffer = Data()
     private var mergedPayload: [String: Any] = [:]
@@ -107,6 +131,15 @@ final class MediaRemoteAdapterStreamSource {
         return snapshot.isVerifiedQishuiSource
     }
 
+    func hasPendingSeekTimeline() -> Bool {
+        guard let anchor = seekTimelineAnchor else { return false }
+        if anchor.didObserveTarget || Date() < anchor.confirmationDeadline {
+            return true
+        }
+        clearSeekTimelineAnchor()
+        return false
+    }
+
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
         guard let paths = adapterPaths(),
               let payload = Self.runGet(script: paths.script, framework: paths.framework, includeArtwork: true) else {
@@ -136,6 +169,21 @@ final class MediaRemoteAdapterStreamSource {
             return nil
         }
 
+        return applyPlaybackPositionPayload(payload)
+    }
+
+    func refreshPlaybackPositionAsync() async -> MediaRemoteNowPlayingSnapshot? {
+        guard let paths = adapterPaths() else { return nil }
+        let data = await Task.detached(priority: .utility) {
+            Self.runGetData(script: paths.script, framework: paths.framework, includeArtwork: false)
+        }.value
+        guard let data,
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let payload = object as? [String: Any] else { return nil }
+        return applyPlaybackPositionPayload(payload)
+    }
+
+    private func applyPlaybackPositionPayload(_ payload: [String: Any]) -> MediaRemoteNowPlayingSnapshot {
         advanceSample(origin: .synchronousRead)
         mergedPayload.merge(payload) { _, new in new }
         let rawSnapshot = snapshot(from: payload, existingArtwork: reusableArtwork(for: payload))
@@ -149,14 +197,52 @@ final class MediaRemoteAdapterStreamSource {
         return effectiveSnapshot
     }
 
-    func seek(to elapsedTime: TimeInterval) -> Bool {
+    func seek(to elapsedTime: TimeInterval) async -> Bool {
         guard let paths = adapterPaths() else { return false }
+        seekCommandGeneration += 1
+        let generation = seekCommandGeneration
+        let currentTrack = latestRawSnapshot?.currentTrack ?? latestSnapshot?.currentTrack
+        let currentTrackIdentity = currentTrack.map(trackTimelineIdentity)
         let positionMicros = max(Int64((elapsedTime * 1_000_000).rounded()), 0)
-        return Self.runCommand(
-            script: paths.script,
-            framework: paths.framework,
-            arguments: ["seek", "\(positionMicros)"]
-        )
+        try? await Task.sleep(nanoseconds: 180_000_000)
+        guard generation == seekCommandGeneration else { return true }
+        guard hasCurrentVerifiedQishuiSource() else { return false }
+        let expectedQishuiPID = NSRunningApplication
+            .runningApplications(withBundleIdentifier: qishuiBundleIdentifier)
+            .first?
+            .processIdentifier
+        let didSeek = await withCheckedContinuation { continuation in
+            seekCommandQueue.async {
+                let sourceIsStillQishui = Self.isCurrentQishuiPlaybackSource(
+                    script: paths.script,
+                    framework: paths.framework,
+                    bundleIdentifier: self.qishuiBundleIdentifier,
+                    expectedProcessIdentifier: expectedQishuiPID
+                )
+                let didSeek = sourceIsStillQishui && Self.runCommand(
+                        script: paths.script,
+                        framework: paths.framework,
+                        arguments: ["seek", "\(positionMicros)"]
+                    )
+                continuation.resume(returning: didSeek)
+            }
+        }
+        if didSeek, generation == seekCommandGeneration, let currentTrackIdentity {
+            let now = Date()
+            seekTimelineAnchor = MediaRemoteSeekTimelineAnchor(
+                trackIdentity: currentTrackIdentity,
+                targetElapsedTime: elapsedTime,
+                elapsedTime: elapsedTime,
+                issuedAt: now,
+                updatedAt: now,
+                isPlaying: currentTrack?.isPlaying ?? true,
+                confirmationDeadline: now.addingTimeInterval(5),
+                didObserveTarget: false,
+                coherentSince: nil
+            )
+            scheduleSeekTimelineConfirmationTimeout(for: now)
+        }
+        return didSeek
     }
 
     func stop() {
@@ -171,6 +257,7 @@ final class MediaRemoteAdapterStreamSource {
         }
         process = nil
         outputBuffer.removeAll()
+        clearSeekTimelineAnchor()
     }
 
     private func consume(_ data: Data, onChange: @escaping ChangeHandler) {
@@ -347,10 +434,24 @@ final class MediaRemoteAdapterStreamSource {
             )
         }
 
+        let artist = stringValue(payload["artist"])?.adapterTrimmedNonEmpty ?? "汽水音乐"
+        let album = stringValue(payload["album"])?.adapterTrimmedNonEmpty
         let duration = doubleValue(payload["duration"])
-        let elapsed = doubleValue(payload["elapsedTimeNow"])
-            ?? currentElapsedTime(from: payload)
-            ?? doubleValue(payload["elapsedTime"])
+        let isPlaying = boolValue(payload["playing"])
+            ?? doubleValue(payload["playbackRate"]).map { $0 > 0.01 }
+        let timelineIdentity = trackTimelineIdentity(
+            bundleIdentifier: bundleID,
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration
+        )
+        let elapsed = resolvedElapsedTime(
+            from: payload,
+            trackIdentity: timelineIdentity,
+            isPlaying: isPlaying,
+            duration: duration
+        )
         let progress: Double
         if let elapsed, let duration, duration > 0 {
             progress = min(max(elapsed / duration, 0), 1)
@@ -361,8 +462,8 @@ final class MediaRemoteAdapterStreamSource {
         let payloadSignature = [
             bundleID ?? "",
             title,
-            stringValue(payload["artist"])?.adapterTrimmedNonEmpty ?? "汽水音乐",
-            stringValue(payload["album"])?.adapterTrimmedNonEmpty ?? ""
+            artist,
+            album ?? ""
         ].joined(separator: "\u{1f}")
         let artworkData = dataValue(payload["artworkData"]) ?? existingArtwork ?? artworkCache[payloadSignature]
         if let artworkData {
@@ -370,10 +471,10 @@ final class MediaRemoteAdapterStreamSource {
         }
         let track = MediaRemoteNowPlayingTrack(
             title: title,
-            artist: stringValue(payload["artist"])?.adapterTrimmedNonEmpty ?? "汽水音乐",
-            album: stringValue(payload["album"])?.adapterTrimmedNonEmpty,
+            artist: artist,
+            album: album,
             artworkData: artworkData,
-            isPlaying: boolValue(payload["playing"]) ?? doubleValue(payload["playbackRate"]).map { $0 > 0.01 },
+            isPlaying: isPlaying,
             progress: progress,
             elapsedTime: elapsed,
             duration: duration,
@@ -497,6 +598,23 @@ final class MediaRemoteAdapterStreamSource {
         framework: URL,
         includeArtwork: Bool
     ) -> [String: Any]? {
+        guard let data = runGetData(
+            script: script,
+            framework: framework,
+            includeArtwork: includeArtwork
+        ),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let payload = object as? [String: Any] else {
+            return nil
+        }
+        return payload
+    }
+
+    nonisolated private static func runGetData(
+        script: URL,
+        framework: URL,
+        includeArtwork: Bool
+    ) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         var arguments = [
@@ -516,14 +634,22 @@ final class MediaRemoteAdapterStreamSource {
 
         do {
             try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0,
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let payload = object as? [String: Any] else {
+            if includeArtwork {
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                return process.terminationStatus == 0 ? data : nil
+            }
+
+            let deadline = Date().addingTimeInterval(2.0)
+            while process.isRunning, Date() < deadline {
+                usleep(20_000)
+            }
+            guard !process.isRunning else {
+                process.terminate()
                 return nil
             }
-            return payload
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            return process.terminationStatus == 0 ? data : nil
         } catch {
             return nil
         }
@@ -541,11 +667,104 @@ final class MediaRemoteAdapterStreamSource {
 
         do {
             try process.run()
-            process.waitUntilExit()
+            let deadline = Date().addingTimeInterval(2.0)
+            while process.isRunning, Date() < deadline {
+                usleep(20_000)
+            }
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+                return false
+            }
             return process.terminationStatus == 0
         } catch {
             return false
         }
+    }
+
+    nonisolated private static func isCurrentQishuiPlaybackSource(
+        script: URL,
+        framework: URL,
+        bundleIdentifier: String,
+        expectedProcessIdentifier: pid_t?
+    ) -> Bool {
+        guard let data = runGetData(script: script, framework: framework, includeArtwork: false),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let payload = object as? [String: Any] else {
+            return false
+        }
+        if payload["bundleIdentifier"] as? String == bundleIdentifier {
+            return true
+        }
+        guard let expectedProcessIdentifier else { return false }
+        if let processIdentifier = payload["processIdentifier"] as? NSNumber {
+            return processIdentifier.int32Value == expectedProcessIdentifier
+        }
+        if let processIdentifier = payload["processIdentifier"] as? String,
+           let value = Int32(processIdentifier) {
+            return value == expectedProcessIdentifier
+        }
+        return false
+    }
+
+    private func resolvedElapsedTime(
+        from payload: [String: Any],
+        trackIdentity: MediaRemoteTrackTimelineIdentity,
+        isPlaying: Bool?,
+        duration: TimeInterval?
+    ) -> TimeInterval? {
+        let rawElapsed = doubleValue(payload["elapsedTimeNow"])
+            ?? currentElapsedTime(from: payload)
+            ?? doubleValue(payload["elapsedTime"])
+        guard var anchor = seekTimelineAnchor else { return rawElapsed }
+        guard timelineIdentity(anchor.trackIdentity, matches: trackIdentity) else {
+            clearSeekTimelineAnchor()
+            return rawElapsed
+        }
+
+        let now = Date()
+        if anchor.isPlaying {
+            anchor.elapsedTime += max(now.timeIntervalSince(anchor.updatedAt), 0)
+        }
+        anchor.updatedAt = now
+        if let isPlaying {
+            anchor.isPlaying = isPlaying
+        }
+        let elapsed = anchor.elapsedTime
+        let rawBaseElapsed = doubleValue(payload["elapsedTime"])
+        let hasFreshTimestamp = stringValue(payload["timestamp"])
+            .flatMap { ISO8601DateFormatter().date(from: $0) }
+            .map { $0 >= anchor.issuedAt.addingTimeInterval(-0.5) }
+            ?? false
+        if let rawBaseElapsed,
+           abs(rawBaseElapsed - anchor.targetElapsedTime) <= 1.0 {
+            anchor.didObserveTarget = true
+        }
+        if hasFreshTimestamp,
+           let rawElapsed,
+           abs(rawElapsed - elapsed) <= 1.0 {
+            anchor.didObserveTarget = true
+        }
+        guard anchor.didObserveTarget || now < anchor.confirmationDeadline else {
+            clearSeekTimelineAnchor()
+            return rawElapsed
+        }
+
+        if hasFreshTimestamp, let rawElapsed, abs(rawElapsed - elapsed) <= 1.0 {
+            if let coherentSince = anchor.coherentSince,
+               now.timeIntervalSince(coherentSince) >= 0.8 {
+                clearSeekTimelineAnchor()
+                return rawElapsed
+            }
+            anchor.coherentSince = anchor.coherentSince ?? now
+        } else {
+            anchor.coherentSince = nil
+        }
+        seekTimelineAnchor = anchor
+        if let duration, duration > 0 {
+            return min(max(elapsed, 0), duration)
+        }
+        return max(elapsed, 0)
     }
 
     private func currentElapsedTime(from payload: [String: Any]) -> Double? {
@@ -557,6 +776,30 @@ final class MediaRemoteAdapterStreamSource {
         let playbackRate = doubleValue(payload["playbackRate"]) ?? 0
         guard playbackRate >= 0 else { return elapsed }
         return elapsed + Date().timeIntervalSince(timestamp) * playbackRate
+    }
+
+    private func scheduleSeekTimelineConfirmationTimeout(for anchorIssuedAt: Date) {
+        seekTimelineConfirmationTask?.cancel()
+        seekTimelineConfirmationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled, let self,
+                  let anchor = self.seekTimelineAnchor,
+                  anchor.issuedAt == anchorIssuedAt,
+                  !anchor.didObserveTarget,
+                  Date() >= anchor.confirmationDeadline else {
+                return
+            }
+            self.seekTimelineAnchor = nil
+            self.seekTimelineConfirmationTask = nil
+            _ = await self.refreshPlaybackPositionAsync()
+            self.changeHandler?()
+        }
+    }
+
+    private func clearSeekTimelineAnchor() {
+        seekTimelineAnchor = nil
+        seekTimelineConfirmationTask?.cancel()
+        seekTimelineConfirmationTask = nil
     }
 
     private func adapterPaths() -> (script: URL, framework: URL)? {
@@ -608,6 +851,60 @@ final class MediaRemoteAdapterStreamSource {
             track.artist,
             track.album ?? ""
         ].joined(separator: "\u{1f}")
+    }
+
+    private func trackTimelineIdentity(_ track: MediaRemoteNowPlayingTrack) -> MediaRemoteTrackTimelineIdentity {
+        trackTimelineIdentity(
+            bundleIdentifier: track.sourceBundleIdentifier,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration
+        )
+    }
+
+    private func trackTimelineIdentity(
+        bundleIdentifier: String?,
+        title: String,
+        artist: String,
+        album: String?,
+        duration: TimeInterval?
+    ) -> MediaRemoteTrackTimelineIdentity {
+        MediaRemoteTrackTimelineIdentity(
+            bundleIdentifier: bundleIdentifier,
+            title: title,
+            artist: artist == "汽水音乐" ? nil : artist,
+            album: album,
+            duration: duration
+        )
+    }
+
+    private func timelineIdentity(
+        _ current: MediaRemoteTrackTimelineIdentity,
+        matches update: MediaRemoteTrackTimelineIdentity
+    ) -> Bool {
+        guard current.title == update.title else { return false }
+        if let currentBundle = current.bundleIdentifier,
+           let updateBundle = update.bundleIdentifier,
+           currentBundle != updateBundle {
+            return false
+        }
+        if let currentDuration = current.duration,
+           let updateDuration = update.duration,
+           abs(currentDuration - updateDuration) > 0.75 {
+            return false
+        }
+        if let currentArtist = current.artist,
+           let updateArtist = update.artist,
+           currentArtist.caseInsensitiveCompare(updateArtist) != .orderedSame {
+            return false
+        }
+        if let currentAlbum = current.album,
+           let updateAlbum = update.album,
+           currentAlbum.caseInsensitiveCompare(updateAlbum) != .orderedSame {
+            return false
+        }
+        return true
     }
 
     private func trackLookupKey(_ track: MediaRemoteNowPlayingTrack) -> String {

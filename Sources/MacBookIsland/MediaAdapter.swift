@@ -175,6 +175,7 @@ final class MusicAdapterCoordinator {
     private var inferredQishuiIsPlaying: Bool?
     private var realtimeRefreshInFlight = false
     private var realtimeRefreshQueued = false
+    private var playbackPositionRefreshInFlight = false
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -298,11 +299,12 @@ final class MusicAdapterCoordinator {
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
-        let status = pendingPlaybackOperation != nil
+        if pendingPlaybackOperation != nil
             || shouldRefreshCachedPlaybackState()
-            || shouldRefreshPlaybackPosition(state)
-            ? refreshPlaybackPositionStatus()
-            : refreshSourceStatusIfNeeded()
+            || shouldRefreshPlaybackPosition(state) {
+            schedulePlaybackPositionRefresh()
+        }
+        let status = refreshSourceStatusIfNeeded()
         let music = currentMusicState()
         return (music, status)
     }
@@ -332,7 +334,7 @@ final class MusicAdapterCoordinator {
         refreshNowPlaying(promptForPermission: true)
     }
 
-    func seek(to progress: Double) -> (music: MusicState, status: MusicSourceStatus) {
+    func seek(to progress: Double) async -> (music: MusicState, status: MusicSourceStatus) {
         guard let snapshot = latestMediaRemoteSnapshot,
               snapshot.isVerifiedQishuiSource,
               let track = snapshot.currentTrack,
@@ -363,7 +365,7 @@ final class MusicAdapterCoordinator {
 
         let targetProgress = min(max(progress, 0), 1)
         let targetElapsed = duration * targetProgress
-        guard mediaRemoteAdapterStreamSource.seek(to: targetElapsed) else {
+        guard await mediaRemoteAdapterStreamSource.seek(to: targetElapsed) else {
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
                 availability: .systemNowPlayingUnavailable,
@@ -376,12 +378,6 @@ final class MusicAdapterCoordinator {
 
         resetPendingPlaybackOperation(clearTimelineFloor: true)
 
-        let refreshedSnapshot = mediaRemoteAdapterStreamSource.refreshOnce()
-        if refreshedSnapshot.currentTrack != nil {
-            latestMediaRemoteSnapshot = refreshedSnapshot
-            lastSourceRefreshAt = refreshedSnapshot.checkedAt
-        }
-
         cachedStatus = MusicSourceStatus(
             sourceName: "汽水实时适配器",
             availability: .qishuiControlSent,
@@ -389,11 +385,17 @@ final class MusicAdapterCoordinator {
             detail: "已向汽水音乐发送跳转到 \(formatTime(targetElapsed)) 的请求，等待实时适配源回读确认。",
             checkedAt: Date()
         )
-        return (currentMusicState(), cachedStatus)
+        var optimisticMusic = currentMusicState()
+        optimisticMusic.progress = targetProgress
+        optimisticMusic.elapsedTime = targetElapsed
+        return (optimisticMusic, cachedStatus)
     }
 
-    func refreshControlFollowUp() -> (music: MusicState, status: MusicSourceStatus) {
-        let status = refreshSourceStatus(allowSynchronousRefresh: pendingPlaybackOperation != nil)
+    func refreshControlFollowUp() async -> (music: MusicState, status: MusicSourceStatus) {
+        if pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline() {
+            _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+        }
+        let status = refreshSourceStatus()
         return (currentMusicState(), status)
     }
 
@@ -590,6 +592,18 @@ final class MusicAdapterCoordinator {
     private func refreshPlaybackPositionStatus() -> MusicSourceStatus {
         lastPlaybackPositionRefreshAt = Date()
         return refreshSourceStatus(allowSynchronousRefresh: true)
+    }
+
+    private func schedulePlaybackPositionRefresh() {
+        guard !playbackPositionRefreshInFlight else { return }
+        playbackPositionRefreshInFlight = true
+        lastPlaybackPositionRefreshAt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+            _ = self.refreshSourceStatus()
+            self.playbackPositionRefreshInFlight = false
+        }
     }
 
     private func applyNowPlayingSnapshot(_ snapshot: NowPlayingAXSnapshot) {

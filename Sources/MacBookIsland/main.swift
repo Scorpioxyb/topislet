@@ -249,6 +249,15 @@ struct IslandNotification: Equatable {
     var count: Int
 }
 
+private struct PendingMusicSeek {
+    let trackSignature: String
+    let targetProgress: Double
+    let issuedAt: Date
+    let isPlaying: Bool
+    let expiresAt: Date
+    var matchingSince: Date?
+}
+
 @MainActor
 final class IslandModel: ObservableObject {
     @Published var mode: IslandMode = .collapsed
@@ -282,6 +291,9 @@ final class IslandModel: ObservableObject {
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
     private var lastMusicProgressPublishAt: Date = .distantPast
+    private var musicSeekRequestID = 0
+    private var pendingMusicSeek: PendingMusicSeek?
+    private var isMusicScrubbing = false
     private let islandModeTapCooldown: TimeInterval = 0.72
     private let directControlSuppressionWindow: TimeInterval = 0.28
     private let musicProgressPublishInterval: TimeInterval = 0.45
@@ -392,6 +404,7 @@ final class IslandModel: ObservableObject {
 
     func nextTrack() {
         noteDirectControlInteraction()
+        pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
         let outcome = musicAdapter.performControl(
             .nextTrack,
@@ -412,6 +425,7 @@ final class IslandModel: ObservableObject {
 
     func previousTrack() {
         noteDirectControlInteraction()
+        pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
         let outcome = musicAdapter.performControl(
             .previousTrack,
@@ -453,13 +467,38 @@ final class IslandModel: ObservableObject {
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
     }
 
-    func seekMusic(to progress: Double) {
+    func seekMusic(to progress: Double) async -> Bool {
         noteDirectControlInteraction()
         activeFeature = .music
+        musicSeekRequestID += 1
+        let requestID = musicSeekRequestID
         let previousSignature = musicSignature(music)
-        let result = musicAdapter.seek(to: progress)
+        let result = await musicAdapter.seek(to: progress)
+        guard requestID == musicSeekRequestID else { return true }
+        let didSeek = result.status.availability == .qishuiControlSent
+        pendingMusicSeek = nil
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
-        startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
+        if didSeek {
+            pendingMusicSeek = PendingMusicSeek(
+                trackSignature: musicSignature(result.music),
+                targetProgress: min(max(progress, 0), 1),
+                issuedAt: Date(),
+                isPlaying: result.music.isPlaying,
+                expiresAt: Date().addingTimeInterval(3.5),
+                matchingSince: nil
+            )
+            startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
+        }
+        return didSeek
+    }
+
+    func setMusicScrubbing(_ isScrubbing: Bool) {
+        guard isMusicScrubbing != isScrubbing else { return }
+        isMusicScrubbing = isScrubbing
+        if isScrubbing {
+            musicRefreshBurstTask?.cancel()
+            musicRefreshBurstTask = nil
+        }
     }
 
     func stop() {
@@ -534,7 +573,14 @@ final class IslandModel: ObservableObject {
 
     private func tick() {
         let mediaUpdate = musicAdapter.tick(music)
-        applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
+        if isMusicScrubbing {
+            if let status = mediaUpdate.sourceStatus,
+               shouldPublishMusicStatus(status) {
+                musicSourceStatus = status
+            }
+        } else {
+            applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
+        }
 
         guard timerState.isRunning else {
             lastTimerUpdateAt = nil
@@ -573,18 +619,17 @@ final class IslandModel: ObservableObject {
             for interval in intervalsInNanoseconds {
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    let update = self.musicAdapter.refreshControlFollowUp()
-                    self.applyMusicUpdate(update.music, status: update.status, forceMusic: true)
-                    if self.shouldStopMusicControlRefreshBurst(
-                        music: update.music,
-                        status: update.status,
-                        previousSignature: previousSignature,
-                        requireTrackChange: requireTrackChange
-                    ) {
-                        self.musicRefreshBurstTask?.cancel()
-                    }
+                guard let self else { return }
+                let update = await self.musicAdapter.refreshControlFollowUp()
+                guard !Task.isCancelled else { return }
+                self.applyMusicUpdate(update.music, status: update.status, forceMusic: true)
+                if self.shouldStopMusicControlRefreshBurst(
+                    music: update.music,
+                    status: update.status,
+                    previousSignature: previousSignature,
+                    requireTrackChange: requireTrackChange
+                ) {
+                    self.musicRefreshBurstTask?.cancel()
                 }
             }
         }
@@ -595,10 +640,19 @@ final class IslandModel: ObservableObject {
         status newStatus: MusicSourceStatus?,
         forceMusic: Bool = false
     ) {
-        if shouldIgnoreUntrustedProgressReset(newMusic) {
+        if isMusicScrubbing, !forceMusic {
+            if let newStatus,
+               shouldPublishMusicStatus(newStatus) {
+                musicSourceStatus = newStatus
+            }
+            return
+        }
+
+        let reconciledMusic = reconcilePendingSeek(newMusic)
+        if shouldIgnoreUntrustedProgressReset(reconciledMusic) {
             var timelinePreservingUpdate = music
-            timelinePreservingUpdate.isPlaying = newMusic.isPlaying
-            timelinePreservingUpdate.isPlaybackPending = newMusic.isPlaybackPending
+            timelinePreservingUpdate.isPlaying = reconciledMusic.isPlaying
+            timelinePreservingUpdate.isPlaybackPending = reconciledMusic.isPlaybackPending
             if timelinePreservingUpdate != music {
                 music = timelinePreservingUpdate
             }
@@ -609,14 +663,50 @@ final class IslandModel: ObservableObject {
             return
         }
 
-        if forceMusic || shouldPublishMusicUpdate(newMusic) {
-            music = newMusic
+        if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
+            music = reconciledMusic
         }
 
         if let newStatus,
            shouldPublishMusicStatus(newStatus) {
             musicSourceStatus = newStatus
         }
+    }
+
+    private func reconcilePendingSeek(_ newMusic: MusicState) -> MusicState {
+        guard var pendingSeek = pendingMusicSeek else { return newMusic }
+        guard Date() < pendingSeek.expiresAt,
+              musicSignature(newMusic) == pendingSeek.trackSignature else {
+            pendingMusicSeek = nil
+            return newMusic
+        }
+
+        let duration = newMusic.duration ?? music.duration
+        let elapsedSinceSeek = pendingSeek.isPlaying ? Date().timeIntervalSince(pendingSeek.issuedAt) : 0
+        let expectedProgress = duration.map {
+            min(max(pendingSeek.targetProgress + elapsedSinceSeek / max($0, 1), 0), 1)
+        } ?? pendingSeek.targetProgress
+        let tolerance = duration.map { max(0.75 / max($0, 1), 0.002) } ?? 0.01
+        let now = Date()
+        if abs(newMusic.progress - expectedProgress) <= tolerance {
+            if let matchingSince = pendingSeek.matchingSince,
+               now.timeIntervalSince(matchingSince) >= 0.35 {
+                pendingMusicSeek = nil
+                return newMusic
+            }
+            pendingSeek.matchingSince = pendingSeek.matchingSince ?? now
+        } else {
+            pendingSeek.matchingSince = nil
+        }
+        pendingMusicSeek = pendingSeek
+
+        var heldMusic = newMusic
+        heldMusic.progress = expectedProgress
+        if let duration, duration > 0 {
+            heldMusic.duration = duration
+            heldMusic.elapsedTime = duration * expectedProgress
+        }
+        return heldMusic
     }
 
     private func shouldIgnoreUntrustedProgressReset(_ newMusic: MusicState) -> Bool {
@@ -1861,22 +1951,7 @@ struct ExpandedMusic: View {
                         .foregroundStyle(.white.opacity(0.58))
                 }
 
-                HStack(spacing: 10) {
-                    ProgressPill(
-                        progress: model.music.progress,
-                        width: 224,
-                        onSeek: model.music.canSeek ? { progress in
-                            model.seekMusic(to: progress)
-                        } : nil
-                    )
-                    .help(model.music.canSeek ? "拖动调整播放进度" : "当前歌曲暂不支持进度拖动")
-
-                    Text(playbackPositionText(model.music))
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.52))
-                        .frame(width: 74, alignment: .leading)
-                }
+                MusicProgressRow(model: model)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(currentLyric)
@@ -1909,6 +1984,47 @@ struct ExpandedMusic: View {
                     Spacer()
                 }
             }
+        }
+    }
+}
+
+private struct MusicProgressRow: View {
+    @ObservedObject var model: IslandModel
+    @State private var scrubPreviewProgress: Double?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressPill(
+                progress: model.music.progress,
+                width: 224,
+                onPreviewChanged: { progress in
+                    model.setMusicScrubbing(progress != nil)
+                    guard let progress else {
+                        scrubPreviewProgress = nil
+                        return
+                    }
+
+                    if let duration = model.music.duration, duration > 0,
+                       let currentPreview = scrubPreviewProgress,
+                       Int(currentPreview * duration) == Int(progress * duration) {
+                        return
+                    }
+                    scrubPreviewProgress = progress
+                },
+                onSeek: model.music.canSeek ? { progress in
+                    await model.seekMusic(to: progress)
+                } : nil
+            )
+            .help(model.music.canSeek ? "拖动调整播放进度" : "当前歌曲暂不支持进度拖动")
+
+            Text(playbackPositionText(model.music, progressOverride: scrubPreviewProgress))
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white.opacity(0.52))
+                .frame(width: 74, alignment: .leading)
+        }
+        .onDisappear {
+            model.setMusicScrubbing(false)
         }
     }
 }
@@ -2176,10 +2292,12 @@ struct TextButton: View {
 struct ProgressPill: View {
     let progress: Double
     let width: CGFloat
-    var onSeek: ((Double) -> Void)? = nil
+    var onPreviewChanged: ((Double?) -> Void)? = nil
+    var onSeek: ((Double) async -> Bool)? = nil
 
     @State private var dragProgress: Double?
     @State private var isDragging = false
+    @State private var seekGeneration = 0
 
     private var displayedProgress: Double {
         min(max(dragProgress ?? progress, 0), 1)
@@ -2188,36 +2306,31 @@ struct ProgressPill: View {
     var body: some View {
         GeometryReader { geometry in
             let availableWidth = max(geometry.size.width, 1)
-            let knobSize: CGFloat = onSeek == nil ? 0 : (isDragging ? 12 : 9)
-            let progressWidth = max(6, availableWidth * displayedProgress)
-            let knobX = min(max(0, progressWidth - knobSize / 2), availableWidth - knobSize)
+            let knobSize: CGFloat = onSeek == nil ? 0 : 9
+            let progressWidth = availableWidth * displayedProgress
+            let knobTravelWidth = max(availableWidth - knobSize, 0)
+            let knobX = knobTravelWidth * displayedProgress
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.13))
-                    .frame(height: isDragging ? 5 : 4)
+                    .frame(height: 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 Capsule()
                     .fill(Color.white.opacity(isDragging ? 0.96 : 0.88))
-                    .frame(width: progressWidth, height: isDragging ? 5 : 4)
+                    .frame(width: progressWidth, height: 4)
                     .frame(maxHeight: .infinity, alignment: .center)
-                    .animation(nil, value: displayedProgress)
 
                 if onSeek != nil {
                     Circle()
                         .fill(Color.white)
                         .frame(width: knobSize, height: knobSize)
+                        .scaleEffect(isDragging ? 1.25 : 1)
                         .shadow(color: Color.black.opacity(isDragging ? 0.42 : 0.28), radius: isDragging ? 5 : 3, x: 0, y: 1)
+                        .animation(.easeOut(duration: 0.12), value: isDragging)
                         .offset(x: knobX)
                         .frame(maxHeight: .infinity, alignment: .center)
-                        .animation(.spring(response: 0.18, dampingFraction: 0.75), value: isDragging)
-                        .animation(nil, value: displayedProgress)
-                }
-            }
-            .transaction { transaction in
-                if !isDragging {
-                    transaction.animation = nil
                 }
             }
             .contentShape(Rectangle())
@@ -2225,36 +2338,40 @@ struct ProgressPill: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard onSeek != nil else { return }
+                        if !isDragging {
+                            seekGeneration += 1
+                        }
                         isDragging = true
                         dragProgress = min(max(value.location.x / availableWidth, 0), 1)
+                        onPreviewChanged?(dragProgress)
                     }
                     .onEnded { value in
-                        guard let onSeek else { return }
                         let targetProgress = min(max(value.location.x / availableWidth, 0), 1)
                         dragProgress = targetProgress
                         isDragging = false
-                        onSeek(targetProgress)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-                            if let pending = dragProgress,
-                               abs(pending - progress) > 0.025 {
+                        guard let onSeek else {
+                            dragProgress = nil
+                            onPreviewChanged?(nil)
+                            return
+                        }
+                        let generation = seekGeneration
+                        Task { @MainActor in
+                            let didSeek = await onSeek(targetProgress)
+                            guard generation == seekGeneration else { return }
+                            if didSeek {
                                 dragProgress = nil
+                                onPreviewChanged?(nil)
+                            } else {
+                                withAnimation(.easeOut(duration: 0.14)) {
+                                    dragProgress = nil
+                                }
+                                onPreviewChanged?(nil)
                             }
                         }
                     }
             )
         }
         .frame(width: width, height: onSeek == nil ? 4 : 22)
-        .transaction { transaction in
-            if !isDragging {
-                transaction.animation = nil
-            }
-        }
-        .onChange(of: progress) { _, newProgress in
-            guard let pending = dragProgress else { return }
-            if abs(pending - newProgress) < 0.025 {
-                dragProgress = nil
-            }
-        }
     }
 }
 
@@ -2275,9 +2392,11 @@ func timeText(_ seconds: Int) -> String {
     return String(format: "%02d:%02d", minutes, secs)
 }
 
-func playbackPositionText(_ music: MusicState) -> String {
+func playbackPositionText(_ music: MusicState, progressOverride: Double? = nil) -> String {
     guard let duration = music.duration, duration > 0 else { return "--:--" }
-    let elapsed = music.elapsedTime ?? (duration * min(max(music.progress, 0), 1))
+    let elapsed = progressOverride.map { duration * min(max($0, 0), 1) }
+        ?? music.elapsedTime
+        ?? (duration * min(max(music.progress, 0), 1))
     return "\(mediaTimeText(elapsed)) / \(mediaTimeText(duration))"
 }
 
