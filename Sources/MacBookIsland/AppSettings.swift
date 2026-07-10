@@ -6,7 +6,6 @@ final class AppSettings: ObservableObject {
         static let prefix = "MacBookIsland.AppSettings."
         static let showIslandOnLaunch = "showIslandOnLaunch"
         static let autoCollapseExpandedIsland = "autoCollapseExpandedIsland"
-        static let allowFocusedQishuiControl = "allowFocusedQishuiControl"
         static let showMusicDiagnostics = "showMusicDiagnostics"
     }
 
@@ -19,10 +18,6 @@ final class AppSettings: ObservableObject {
 
     @Published var autoCollapseExpandedIsland: Bool {
         didSet { persist(Key.autoCollapseExpandedIsland, autoCollapseExpandedIsland) }
-    }
-
-    @Published var allowFocusedQishuiControl: Bool {
-        didSet { persist(Key.allowFocusedQishuiControl, allowFocusedQishuiControl) }
     }
 
     @Published var showMusicDiagnostics: Bool {
@@ -41,11 +36,6 @@ final class AppSettings: ObservableObject {
             in: defaults,
             fallback: true
         )
-        allowFocusedQishuiControl = Self.bool(
-            named: Key.allowFocusedQishuiControl,
-            in: defaults,
-            fallback: true
-        )
         showMusicDiagnostics = Self.bool(
             named: Key.showMusicDiagnostics,
             in: defaults,
@@ -56,7 +46,6 @@ final class AppSettings: ObservableObject {
     func resetToDefaults() {
         showIslandOnLaunch = true
         autoCollapseExpandedIsland = true
-        allowFocusedQishuiControl = true
         showMusicDiagnostics = false
     }
 

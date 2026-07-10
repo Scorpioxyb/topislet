@@ -4,6 +4,30 @@ import Combine
 import QuartzCore
 import SwiftUI
 
+private let islandEventNotificationName = Notification.Name("local.macbook-island.event")
+
+if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
+    guard CommandLine.arguments.indices.contains(eventIndex + 2) else {
+        print("usage: MacBookIsland --post-event TITLE BODY [SOURCE]")
+        exit(64)
+    }
+    let source = CommandLine.arguments.indices.contains(eventIndex + 3)
+        ? CommandLine.arguments[eventIndex + 3]
+        : "MacBook Island"
+    DistributedNotificationCenter.default().postNotificationName(
+        islandEventNotificationName,
+        object: nil,
+        userInfo: [
+            "title": CommandLine.arguments[eventIndex + 1],
+            "body": CommandLine.arguments[eventIndex + 2],
+            "source": source
+        ],
+        deliverImmediately: true
+    )
+    print("eventPosted=true")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--ax-check") {
     print("accessibilityTrusted=\(AXIsProcessTrusted())")
     exit(AXIsProcessTrusted() ? 0 : 2)
@@ -77,16 +101,26 @@ if CommandLine.arguments.contains("--adapter-status") {
     exit(0)
 }
 
-if CommandLine.arguments.contains("--qishui-clients") {
-    for line in QishuiMediaRemoteClientController().clientDiagnostics() {
-        print(line)
+if let adapterWatchIndex = CommandLine.arguments.firstIndex(of: "--adapter-watch") {
+    let seconds = CommandLine.arguments.indices.contains(adapterWatchIndex + 1)
+        ? (TimeInterval(CommandLine.arguments[adapterWatchIndex + 1]) ?? 5)
+        : 5
+    let source = MediaRemoteAdapterStreamSource()
+    source.start {
+        print("EVENT \(ISO8601DateFormatter().string(from: Date()))")
+        if let snapshot = source.snapshot() {
+            printMediaRemoteSnapshot(snapshot)
+        }
+        fflush(stdout)
     }
+    RunLoop.current.run(until: Date().addingTimeInterval(max(seconds, 1)))
+    source.stop()
     exit(0)
 }
 
-if let controlIndex = CommandLine.arguments.firstIndex(of: "--qishui-control") {
-    let rawCommand = CommandLine.arguments.indices.contains(controlIndex + 1)
-        ? CommandLine.arguments[controlIndex + 1]
+if let semanticControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-semantic-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(semanticControlIndex + 1)
+        ? CommandLine.arguments[semanticControlIndex + 1]
         : "playPause"
     guard let controlCommand = command(named: rawCommand) else {
         print("error=unsupported_control_command")
@@ -97,17 +131,18 @@ if let controlIndex = CommandLine.arguments.firstIndex(of: "--qishui-control") {
     let source = MediaRemoteAdapterStreamSource()
     print("BEFORE")
     printMediaRemoteSnapshot(source.refreshOnce())
-    let didSend = QishuiMediaRemoteClientController().post(controlCommand)
-    print("directQishuiClientSent=\(didSend)")
+    let result = QishuiSemanticAXController().press(controlCommand)
+    print("semanticQishuiControlSent=\(result.didPress)")
+    print("diagnostic=\(result.diagnostic)")
     usleep(220_000)
     print("AFTER")
     printMediaRemoteSnapshot(source.refreshOnce())
-    exit(didSend ? 0 : 2)
+    exit(result.didPress ? 0 : 2)
 }
 
-if let focusControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-focused-control") {
-    let rawCommand = CommandLine.arguments.indices.contains(focusControlIndex + 1)
-        ? CommandLine.arguments[focusControlIndex + 1]
+if let targetedControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-targeted-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(targetedControlIndex + 1)
+        ? CommandLine.arguments[targetedControlIndex + 1]
         : "playPause"
     guard let controlCommand = command(named: rawCommand) else {
         print("error=unsupported_control_command")
@@ -115,20 +150,16 @@ if let focusControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-focuse
         exit(64)
     }
 
-    guard let qishuiApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.soda.music").first else {
-        print("qishuiRunning=false")
-        exit(2)
-    }
-
     let source = MediaRemoteAdapterStreamSource()
     print("BEFORE")
     printMediaRemoteSnapshot(source.refreshOnce())
-    let didSend = QishuiFocusedMediaKeyController().post(controlCommand, to: qishuiApp)
-    print("focusedQishuiControlSent=\(didSend)")
-    usleep(420_000)
+    let result = QishuiTargetedMediaController().post(controlCommand)
+    print("targetedQishuiControlSent=\(result.didSend)")
+    print("diagnostic=\(result.diagnostic)")
+    usleep(220_000)
     print("AFTER")
     printMediaRemoteSnapshot(source.refreshOnce())
-    exit(didSend ? 0 : 2)
+    exit(result.didSend ? 0 : 2)
 }
 
 if let watchIndex = CommandLine.arguments.firstIndex(of: "--mediaremote-watch") {
@@ -182,7 +213,7 @@ enum IslandMode: String {
     case expanded
 }
 
-enum IslandFeature: String, CaseIterable, Hashable {
+enum IslandFeature: String, Hashable {
     case music
     case timer
     case notification
@@ -198,16 +229,6 @@ enum IslandFeature: String, CaseIterable, Hashable {
         }
     }
 
-    var label: String {
-        switch self {
-        case .music:
-            return "音乐"
-        case .timer:
-            return "计时"
-        case .notification:
-            return "提醒"
-        }
-    }
 }
 
 struct MusicTrack: Equatable {
@@ -249,6 +270,20 @@ struct IslandNotification: Equatable {
     var count: Int
 }
 
+private enum IslandEventPriority: Int {
+    case normal
+    case urgent
+}
+
+private struct PendingIslandEvent: Equatable {
+    var title: String
+    var body: String
+    var source: String
+    let priority: IslandEventPriority
+    let autoDismiss: Bool
+    var count: Int
+}
+
 private struct PendingMusicSeek {
     let trackSignature: String
     let targetProgress: Double
@@ -267,6 +302,7 @@ final class IslandModel: ObservableObject {
     let appSettings = AppSettings()
     let layout = LayoutCalibrationSettings()
     @Published var music: MusicState
+    @Published var pendingTrackControl: MusicControlCommand?
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -276,16 +312,18 @@ final class IslandModel: ObservableObject {
     )
     @Published var timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
     @Published var notification = IslandNotification(
-        title: "灵动岛原型已就绪",
-        body: "音乐、计时器和提醒已经可以在顶部区域切换。",
+        title: "",
+        body: "",
         source: "MacBook Island",
-        count: 1
+        count: 0
     )
     @Published var isVisible = true
 
     private let musicAdapter = MusicAdapterCoordinator()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
+    private var trackControlFeedbackTask: Task<Void, Never>?
+    private var pendingTrackControlBaselineSignature: String?
     private var layoutCancellable: AnyCancellable?
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
@@ -294,14 +332,24 @@ final class IslandModel: ObservableObject {
     private var musicSeekRequestID = 0
     private var pendingMusicSeek: PendingMusicSeek?
     private var isMusicScrubbing = false
-    private let islandModeTapCooldown: TimeInterval = 0.72
-    private let directControlSuppressionWindow: TimeInterval = 0.28
+    private var notificationPresentationTask: Task<Void, Never>?
+    private var notificationReturnFeature: IslandFeature?
+    private var notificationReturnMode: IslandMode?
+    private var notificationPresentedMode: IslandMode?
+    private var activeIslandEvent: PendingIslandEvent?
+    private var pendingIslandEvents: [PendingIslandEvent] = []
+    private var shouldResumeInterruptedNormalEvent = false
+    private var notificationGeneration = 0
+    private let islandModeTapCooldown: TimeInterval = 0.08
+    private let directControlSuppressionWindow: TimeInterval = 0.06
     private let musicProgressPublishInterval: TimeInterval = 0.45
 
-    var collapsedWingWidth: CGFloat { 40 }
-    var compactWingWidth: CGFloat { 126 }
-    var expandedHeaderWingWidth: CGFloat { 48 }
-    var expandedWingWidth: CGFloat { 178 }
+    var collapsedWingWidth: CGFloat { 30 }
+    var compactWingWidth: CGFloat { 96 }
+    var expandedHeaderWingWidth: CGFloat { 34 }
+    var hasPendingNotification: Bool {
+        activeIslandEvent != nil || !pendingIslandEvents.isEmpty
+    }
 
     var collapsedWidth: CGFloat {
         notchWidth + collapsedWingWidth * 2
@@ -312,11 +360,16 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedWidth: CGFloat {
-        max(notchWidth + expandedWingWidth * 2, 540)
+        switch activeFeature {
+        case .music:
+            return max(notchWidth + 160, 460)
+        case .timer, .notification:
+            return max(notchWidth + 140, 420)
+        }
     }
 
     var expandedHeight: CGFloat {
-        max(216, 256 + CGFloat(layout.expandedHeightAdjustment))
+        topBandHeight + expandedBodyHeight - expandedPanelTopGap
     }
 
     var expandedHeaderWidth: CGFloat {
@@ -324,16 +377,36 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedPanelTopGap: CGFloat {
-        8
+        -3
     }
 
     var expandedBodyHeight: CGFloat {
-        max(184, expandedHeight - topBandHeight - expandedPanelTopGap)
+        let baseHeight: CGFloat
+        switch activeFeature {
+        case .music:
+            baseHeight = music.track.lyrics.isEmpty ? 148 : 178
+        case .timer:
+            baseHeight = 146
+        case .notification:
+            baseHeight = 156
+        }
+        return max(112, baseHeight + CGFloat(layout.expandedHeightAdjustment))
     }
 
     init() {
         isVisible = appSettings.showIslandOnLaunch
         music = musicAdapter.initialState
+        pendingTrackControl = nil
+        if let previewModeIndex = CommandLine.arguments.firstIndex(of: "--preview-mode"),
+           CommandLine.arguments.indices.contains(previewModeIndex + 1),
+           let previewMode = IslandMode(rawValue: CommandLine.arguments[previewModeIndex + 1]) {
+            mode = previewMode
+        }
+        if let previewFeatureIndex = CommandLine.arguments.firstIndex(of: "--preview-feature"),
+           CommandLine.arguments.indices.contains(previewFeatureIndex + 1),
+           let previewFeature = IslandFeature(rawValue: CommandLine.arguments[previewFeatureIndex + 1]) {
+            activeFeature = previewFeature
+        }
         musicSourceStatus = musicAdapter.refreshSourceStatus(allowSynchronousRefresh: true)
         musicAdapter.startRealtimeObservation { [weak self] music, status in
             self?.applyMusicUpdate(music, status: status)
@@ -349,6 +422,9 @@ final class IslandModel: ObservableObject {
     }
 
     func showFeature(_ feature: IslandFeature, mode newMode: IslandMode = .expanded) {
+        if activeFeature == .notification, feature != .notification {
+            clearNotificationPresentation()
+        }
         activeFeature = feature
         mode = newMode
     }
@@ -368,7 +444,6 @@ final class IslandModel: ObservableObject {
             guard now.timeIntervalSince(lastIslandModeTapAt) > islandModeTapCooldown else { return }
         }
         guard mode != targetMode else { return }
-        refreshDisplayedMusicFromAdapter()
         lastIslandModeTapAt = now
         mode = targetMode
     }
@@ -382,23 +457,46 @@ final class IslandModel: ObservableObject {
         lastDirectControlAt = Date()
     }
 
+    private func beginTrackControlFeedback(
+        _ command: MusicControlCommand,
+        baselineSignature: String
+    ) {
+        pendingTrackControl = command
+        pendingTrackControlBaselineSignature = baselineSignature
+        trackControlFeedbackTask?.cancel()
+        trackControlFeedbackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, let self,
+                  pendingTrackControl == command else { return }
+            finishTrackControlFeedback(command)
+        }
+    }
+
+    private func finishTrackControlFeedback(_ command: MusicControlCommand) {
+        guard pendingTrackControl == command else { return }
+        pendingTrackControl = nil
+        pendingTrackControlBaselineSignature = nil
+        trackControlFeedbackTask?.cancel()
+        trackControlFeedbackTask = nil
+    }
+
     func playPause() {
         noteDirectControlInteraction()
         let previousSignature = musicSignature(music)
         activeFeature = .music
-        let outcome = musicAdapter.performControl(
-            .playPause,
-            allowFocusedFallback: appSettings.allowFocusedQishuiControl
-        )
-        musicSourceStatus = outcome.status
-        if outcome.didSendCommand {
-            applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
-            startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
-        } else if outcome.shouldAdvancePreview {
-            applyMusicUpdate(musicAdapter.playPause(music), status: outcome.status, forceMusic: true)
-        }
         if mode == .collapsed {
             mode = .compact
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await musicAdapter.performControl(.playPause)
+            musicSourceStatus = outcome.status
+            if outcome.didSendCommand {
+                applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
+                startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
+            } else if outcome.shouldAdvancePreview {
+                applyMusicUpdate(musicAdapter.playPause(music), status: outcome.status, forceMusic: true)
+            }
         }
     }
 
@@ -406,20 +504,24 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
-        let outcome = musicAdapter.performControl(
-            .nextTrack,
-            allowFocusedFallback: appSettings.allowFocusedQishuiControl
-        )
-        musicSourceStatus = outcome.status
-        if outcome.didSendCommand {
-            musicAdapter.invalidateQishuiCache()
-            startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
-        } else if outcome.shouldAdvancePreview {
-            applyMusicUpdate(musicAdapter.nextTrack(), status: outcome.status, forceMusic: true)
-        }
+        beginTrackControlFeedback(.nextTrack, baselineSignature: previousSignature)
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await musicAdapter.performControl(.nextTrack)
+            musicSourceStatus = outcome.status
+            if outcome.didSendCommand {
+                musicAdapter.invalidateQishuiCache()
+                startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
+            } else {
+                finishTrackControlFeedback(.nextTrack)
+                if outcome.shouldAdvancePreview {
+                    applyMusicUpdate(musicAdapter.nextTrack(), status: outcome.status, forceMusic: true)
+                }
+            }
         }
     }
 
@@ -427,20 +529,24 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
-        let outcome = musicAdapter.performControl(
-            .previousTrack,
-            allowFocusedFallback: appSettings.allowFocusedQishuiControl
-        )
-        musicSourceStatus = outcome.status
-        if outcome.didSendCommand {
-            musicAdapter.invalidateQishuiCache()
-            startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
-        } else if outcome.shouldAdvancePreview {
-            applyMusicUpdate(musicAdapter.previousTrack(), status: outcome.status, forceMusic: true)
-        }
+        beginTrackControlFeedback(.previousTrack, baselineSignature: previousSignature)
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await musicAdapter.performControl(.previousTrack)
+            musicSourceStatus = outcome.status
+            if outcome.didSendCommand {
+                musicAdapter.invalidateQishuiCache()
+                startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
+            } else {
+                finishTrackControlFeedback(.previousTrack)
+                if outcome.shouldAdvancePreview {
+                    applyMusicUpdate(musicAdapter.previousTrack(), status: outcome.status, forceMusic: true)
+                }
+            }
         }
     }
 
@@ -501,6 +607,8 @@ final class IslandModel: ObservableObject {
         if isScrubbing {
             musicRefreshBurstTask?.cancel()
             musicRefreshBurstTask = nil
+        } else {
+            presentNextEventIfPossible()
         }
     }
 
@@ -509,7 +617,24 @@ final class IslandModel: ObservableObject {
         ticker = nil
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
+        trackControlFeedbackTask?.cancel()
+        trackControlFeedbackTask = nil
+        notificationPresentationTask?.cancel()
+        notificationPresentationTask = nil
         musicAdapter.stopRealtimeObservation()
+    }
+
+    func startTimer() {
+        noteDirectControlInteraction()
+        if timerState.remaining <= 0 {
+            timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
+        }
+        timerState.isRunning = true
+        lastTimerUpdateAt = Date()
+        activeFeature = .timer
+        if mode == .collapsed {
+            mode = .compact
+        }
     }
 
     func toggleTimer() {
@@ -536,34 +661,52 @@ final class IslandModel: ObservableObject {
         activeFeature = .timer
     }
 
-    func triggerNotification(title: String = "新的提醒", body: String = "这是一条来自灵动岛的低打扰提醒。") {
-        notification = IslandNotification(
+    func triggerNotification(
+        title: String = "新的提醒",
+        body: String = "这是一条来自灵动岛的低打扰提醒。",
+        source: String = "MacBook Island",
+        interruptsExpanded: Bool = false,
+        autoDismiss: Bool = true
+    ) {
+        let event = PendingIslandEvent(
             title: title,
             body: body,
-            source: "MacBook Island",
-            count: min(notification.count + 1, 9)
+            source: source,
+            priority: interruptsExpanded ? .urgent : .normal,
+            autoDismiss: autoDismiss,
+            count: 1
         )
-        activeFeature = .notification
-        mode = .compact
+
+        if event.priority == .normal, mergeNormalEventIfPossible(event) {
+            return
+        }
+
+        if event.priority == .urgent,
+           let activeEvent = activeIslandEvent,
+           activeEvent.priority == .normal {
+            if let presentedMode = notificationPresentedMode,
+               mode != presentedMode {
+                notificationReturnMode = mode
+            }
+            pendingIslandEvents.insert(activeEvent, at: 0)
+            shouldResumeInterruptedNormalEvent = true
+            activeIslandEvent = nil
+            cancelNotificationDismissTask()
+        }
+
+        enqueue(event)
+        updateNotificationDisplay()
+        presentNextEventIfPossible()
+    }
+
+    func showPendingNotification() {
+        guard hasPendingNotification else { return }
+        presentNextEventIfPossible(force: true)
     }
 
     func dismissNotification() {
         noteDirectControlInteraction()
-        notification.count = 0
-        activeFeature = .music
-        mode = .compact
-    }
-
-    func snoozeNotification() {
-        noteDirectControlInteraction()
-        notification = IslandNotification(
-            title: "稍后提醒",
-            body: "已安排在稍后再次提示。",
-            source: "MacBook Island",
-            count: 1
-        )
-        activeFeature = .notification
-        mode = .compact
+        completeActiveEvent()
     }
 
     private func startTicker() {
@@ -584,6 +727,7 @@ final class IslandModel: ObservableObject {
         } else {
             applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
         }
+        presentNextEventIfPossible()
 
         guard timerState.isRunning else {
             lastTimerUpdateAt = nil
@@ -600,8 +744,163 @@ final class IslandModel: ObservableObject {
         if timerState.remaining == 0 {
             timerState.isRunning = false
             lastTimerUpdateAt = nil
-            triggerNotification(title: "时间到", body: "计时器已经结束。")
+            triggerNotification(
+                title: "时间到",
+                body: "计时器已经结束。",
+                source: "计时器",
+                interruptsExpanded: true,
+                autoDismiss: false
+            )
         }
+    }
+
+    private var blocksInteractiveEventPresentation: Bool {
+        isMusicScrubbing
+            || pendingMusicSeek != nil
+            || music.isPlaybackPending
+            || pendingTrackControl != nil
+    }
+
+    private func mergeNormalEventIfPossible(_ event: PendingIslandEvent) -> Bool {
+        if var activeEvent = activeIslandEvent,
+           activeEvent.priority == .normal,
+           activeEvent.source == event.source {
+            activeEvent.title = event.title
+            activeEvent.body = event.body
+            activeEvent.source = event.source
+            activeEvent.count = min(activeEvent.count + 1, 9)
+            activeIslandEvent = activeEvent
+            updateNotificationDisplay()
+            scheduleActiveEventDismissIfNeeded()
+            return true
+        }
+
+        guard let index = pendingIslandEvents.lastIndex(where: {
+            $0.priority == .normal && $0.source == event.source
+        }) else {
+            return false
+        }
+        pendingIslandEvents[index].title = event.title
+        pendingIslandEvents[index].body = event.body
+        pendingIslandEvents[index].source = event.source
+        pendingIslandEvents[index].count = min(pendingIslandEvents[index].count + 1, 9)
+        updateNotificationDisplay()
+        return true
+    }
+
+    private func enqueue(_ event: PendingIslandEvent) {
+        if event.priority == .urgent,
+           let firstNormalIndex = pendingIslandEvents.firstIndex(where: { $0.priority == .normal }) {
+            pendingIslandEvents.insert(event, at: firstNormalIndex)
+        } else {
+            pendingIslandEvents.append(event)
+        }
+    }
+
+    private func presentNextEventIfPossible(force: Bool = false) {
+        guard activeIslandEvent == nil,
+              let nextEvent = pendingIslandEvents.first else {
+            updateNotificationDisplay()
+            return
+        }
+
+        let isBlocked = blocksInteractiveEventPresentation
+            || (nextEvent.priority == .normal && mode == .expanded)
+        guard force || !isBlocked else {
+            updateNotificationDisplay()
+            return
+        }
+
+        activeIslandEvent = pendingIslandEvents.removeFirst()
+        if activeIslandEvent?.priority == .normal,
+           shouldResumeInterruptedNormalEvent {
+            shouldResumeInterruptedNormalEvent = false
+        }
+        if activeFeature != .notification {
+            notificationReturnFeature = activeFeature
+            notificationReturnMode = mode
+        }
+        activeFeature = .notification
+        if mode == .collapsed {
+            mode = .compact
+        }
+        notificationPresentedMode = mode
+        updateNotificationDisplay()
+        scheduleActiveEventDismissIfNeeded()
+    }
+
+    private func scheduleActiveEventDismissIfNeeded() {
+        cancelNotificationDismissTask()
+        guard activeIslandEvent?.autoDismiss == true else { return }
+        notificationGeneration += 1
+        let generation = notificationGeneration
+        notificationPresentationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  generation == notificationGeneration,
+                  activeIslandEvent?.autoDismiss == true else { return }
+            completeActiveEvent()
+        }
+    }
+
+    private func completeActiveEvent() {
+        guard activeIslandEvent != nil else { return }
+        activeIslandEvent = nil
+        cancelNotificationDismissTask()
+
+        let returnFeature = notificationReturnFeature
+        let returnMode = notificationReturnMode
+        let presentedMode = notificationPresentedMode
+        let latestMode = mode
+        notificationReturnFeature = nil
+        notificationReturnMode = nil
+        notificationPresentedMode = nil
+
+        if returnFeature == .timer, timerState.isRunning {
+            activeFeature = .timer
+        } else {
+            activeFeature = .music
+        }
+        if latestMode == presentedMode, let returnMode {
+            mode = returnMode
+        }
+        updateNotificationDisplay()
+        let shouldForceResume = shouldResumeInterruptedNormalEvent
+            && pendingIslandEvents.first?.priority == .normal
+        presentNextEventIfPossible(force: shouldForceResume)
+    }
+
+    private func updateNotificationDisplay() {
+        let event = activeIslandEvent ?? pendingIslandEvents.first
+        let count = min(
+            (activeIslandEvent?.count ?? 0)
+                + pendingIslandEvents.reduce(0) { $0 + $1.count },
+            9
+        )
+        notification = IslandNotification(
+            title: event?.title ?? "",
+            body: event?.body ?? "",
+            source: event?.source ?? "MacBook Island",
+            count: count
+        )
+    }
+
+    private func cancelNotificationDismissTask() {
+        notificationGeneration += 1
+        notificationPresentationTask?.cancel()
+        notificationPresentationTask = nil
+    }
+
+    private func clearNotificationPresentation() {
+        activeIslandEvent = nil
+        pendingIslandEvents.removeAll()
+        shouldResumeInterruptedNormalEvent = false
+        cancelNotificationDismissTask()
+        notificationReturnFeature = nil
+        notificationReturnMode = nil
+        notificationPresentedMode = nil
+        updateNotificationDisplay()
     }
 
     private func startMusicControlRefreshBurst(previousSignature: String, requireTrackChange: Bool) {
@@ -668,6 +967,11 @@ final class IslandModel: ObservableObject {
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
+            if let pendingTrackControl,
+               let baseline = pendingTrackControlBaselineSignature,
+               musicSignature(reconciledMusic) != baseline {
+                finishTrackControlFeedback(pendingTrackControl)
+            }
         }
 
         if let newStatus,
@@ -781,8 +1085,8 @@ final class IslandModel: ObservableObject {
         previousSignature: String,
         requireTrackChange: Bool
     ) -> Bool {
-        guard status.availability == .qishuiDetectedAXLimited,
-              !music.isPlaybackPending,
+        _ = status
+        guard !music.isPlaybackPending,
               music.track.title != "汽水音乐" else {
             return false
         }
@@ -825,6 +1129,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(receiveIslandEvent(_:)),
+            name: islandEventNotificationName,
+            object: nil
+        )
         updateScreenMetrics()
         createPanel()
         createStatusItem()
@@ -848,6 +1158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.stop()
+        DistributedNotificationCenter.default().removeObserver(
+            self,
+            name: islandEventNotificationName,
+            object: nil
+        )
         if let outsideMouseMonitor {
             NSEvent.removeMonitor(outsideMouseMonitor)
         }
@@ -860,6 +1175,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+    }
+
+    @objc private func receiveIslandEvent(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let rawTitle = userInfo["title"] as? String,
+              let rawBody = userInfo["body"] as? String else { return }
+        let title = String(rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !title.isEmpty else { return }
+        let body = String(rawBody.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
+        let rawSource = userInfo["source"] as? String ?? "MacBook Island"
+        let source = String(rawSource.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        model.triggerNotification(
+            title: title,
+            body: body,
+            source: source.isEmpty ? "MacBook Island" : source
+        )
     }
 
     private func createPanel() {
@@ -926,9 +1257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "显示 / 隐藏灵动岛", action: #selector(toggleVisibility), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "音乐", action: #selector(showMusic), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "计时器", action: #selector(showTimer), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "触发提醒示例", action: #selector(triggerNotification), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "显示汽水音乐", action: #selector(showMusic), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "启动 25 分钟计时", action: #selector(showTimer), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "汽水适配状态", action: #selector(showMusicSourceStatus), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "辅助功能自检", action: #selector(showAccessibilityStatus), keyEquivalent: "a"))
@@ -948,6 +1278,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.$isVisible
             .sink { [weak self] _ in self?.updatePanelVisibility() }
+            .store(in: &cancellables)
+
+        model.$activeFeature
+            .sink { [weak self] _ in self?.repositionPanel(animated: true) }
             .store(in: &cancellables)
 
         model.layout.objectWillChange
@@ -1097,7 +1431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .compact:
             return NSSize(width: model.compactWidth, height: model.topBandHeight)
         case .expanded:
-            return NSSize(width: model.compactWidth, height: model.topBandHeight)
+            return NSSize(width: model.expandedHeaderWidth, height: model.topBandHeight)
         }
     }
 
@@ -1143,7 +1477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = model.mode == .expanded ? 0.30 : 0.21
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
@@ -1233,12 +1567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showTimer() {
         model.isVisible = true
-        model.showFeature(.timer)
-    }
-
-    @objc private func triggerNotification() {
-        model.isVisible = true
-        model.triggerNotification()
+        model.startTimer()
     }
 
     @objc private func forceRefreshNowPlaying() {
@@ -1287,8 +1616,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentOpenFeedback(shouldShowSettings: Bool) {
         model.isVisible = true
-        model.activeFeature = .music
-        if model.mode == .collapsed {
+        if !CommandLine.arguments.contains("--preview-feature") {
+            model.activeFeature = .music
+        }
+        if model.mode == .collapsed,
+           !CommandLine.arguments.contains("--preview-mode") {
             model.mode = .compact
         }
         repositionPanel(animated: true)
@@ -1393,11 +1725,9 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                Toggle("允许短暂激活汽水完成控制", isOn: $settings.allowFocusedQishuiControl)
+                LabeledContent("音乐控制", value: "汽水 client 定向控制")
 
-                Text(settings.allowFocusedQishuiControl
-                    ? "实用模式：其他媒体抢占系统播放焦点时，会短暂激活汽水发送播放控制，然后恢复原 App。"
-                    : "严格模式：其他媒体抢占系统播放焦点时，只保留显示，不主动激活汽水。")
+                Text("播放、暂停和切歌直接发送给汽水音乐的 MediaRemote client；不切换前台 App，不移动鼠标，也不发送全局媒体键。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1408,13 +1738,11 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                Picker("默认功能", selection: $model.activeFeature) {
-                    ForEach(IslandFeature.allCases, id: \.rawValue) { feature in
-                        Label(feature.label, systemImage: feature.iconName)
-                            .tag(feature)
-                    }
-                }
-                .pickerStyle(.segmented)
+                LabeledContent("默认主活动", value: "汽水音乐")
+
+                Text("计时器和提醒只在事件发生时临时出现，不再作为灵动岛里的固定入口。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Button("折叠") {
@@ -1484,7 +1812,7 @@ private struct MusicSettingsPane: View {
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
                 LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
-                LabeledContent("控制策略", value: model.appSettings.allowFocusedQishuiControl ? "实用模式" : "严格模式")
+                LabeledContent("控制策略", value: "MediaRemote client + 安全 AX")
             }
 
             Section {
@@ -1545,7 +1873,7 @@ private struct AboutSettingsPane: View {
 
             Divider()
 
-            Text("当前版本是本地原型，音乐同步优先使用汽水音乐的实时播放源；发布前仍需要处理签名、公证和系统更新兼容性。")
+            Text("当前版本以汽水音乐为默认主活动；计时器和提醒只在事件发生时临时接管。发布前仍需要处理签名、公证和系统更新兼容性。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -1571,6 +1899,7 @@ struct IslandRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(.spring(response: 0.31, dampingFraction: 0.88), value: model.mode)
         .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
     }
 }
@@ -1579,8 +1908,8 @@ struct IslandShell<Content: View>: View {
     let width: CGFloat
     let height: CGFloat
     let cornerRadius: CGFloat
-    var fillOpacity: Double = 0.98
-    var strokeOpacity: Double = 0.10
+    var fillOpacity: Double = 0.995
+    var strokeOpacity: Double = 0.03
     var shadowOpacity: Double = 0
     @ViewBuilder var content: Content
 
@@ -1685,14 +2014,30 @@ struct ExpandedIslandBodyPanel: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        IslandShell(width: model.expandedWidth, height: model.expandedBodyHeight, cornerRadius: 29, fillOpacity: 0.96, strokeOpacity: 0.08, shadowOpacity: 0) {
-            VStack(spacing: 12) {
+        IslandShell(width: model.expandedWidth, height: model.expandedBodyHeight, cornerRadius: 24, fillOpacity: 0.99, strokeOpacity: 0.03, shadowOpacity: 0) {
+            VStack(spacing: 8) {
                 HStack(alignment: .center) {
-                    FeatureTabs(model: model)
+                    if model.hasPendingNotification, model.activeFeature != .notification {
+                        Button {
+                            model.showPendingNotification()
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "bell.fill")
+                                Text(model.notification.count > 1 ? "\(model.notification.count) 条新消息" : "新消息")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundStyle(.white.opacity(0.78))
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(Capsule().fill(Color.white.opacity(0.08)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("查看提醒")
+                    }
                     Spacer(minLength: 12)
                     WindowModeButtons(model: model)
                 }
-                .frame(height: 28)
+                .frame(height: 24)
 
                 Group {
                     switch model.activeFeature {
@@ -1706,60 +2051,11 @@ struct ExpandedIslandBodyPanel: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 14)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
         }
         .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-    }
-}
-
-struct ExpandedTopControls: View {
-    @ObservedObject var model: IslandModel
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            FeatureTabs(model: model)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(model.layout.leftControlsXOffset))
-                .offset(y: CGFloat(model.layout.leftControlsYOffset))
-
-            WindowModeButtons(model: model)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.trailing, CGFloat(model.layout.rightControlsXOffset))
-                .offset(y: CGFloat(model.layout.rightControlsYOffset))
-        }
-        .padding(.top, CGFloat(model.layout.expandedTopControlsTopOffset))
-        .frame(width: model.expandedWidth, alignment: .top)
-    }
-}
-
-struct FeatureTabs: View {
-    @ObservedObject var model: IslandModel
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(IslandFeature.allCases, id: \.rawValue) { feature in
-                Button {
-                    model.activeFeature = feature
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: feature.iconName)
-                        Text(feature.label)
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(model.activeFeature == feature ? Color.black : Color.white.opacity(0.72))
-                    .padding(.horizontal, 7)
-                    .frame(height: 24)
-                    .background(
-                        Capsule()
-                            .fill(model.activeFeature == feature ? Color.white : Color.white.opacity(0.08))
-                    )
-                }
-                .buttonStyle(.plain)
-                .help(feature.label)
-            }
-        }
     }
 }
 
@@ -1767,14 +2063,14 @@ struct WindowModeButtons: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button {
                 model.requestIslandMode(.compact, bypassCooldown: true)
             } label: {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.white.opacity(0.78))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.white.opacity(0.08)))
             }
             .buttonStyle(.plain)
@@ -1786,7 +2082,7 @@ struct WindowModeButtons: View {
                 Image(systemName: "minus")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.white.opacity(0.78))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.white.opacity(0.08)))
             }
             .buttonStyle(.plain)
@@ -1939,10 +2235,10 @@ struct ExpandedMusic: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
-            AlbumArt(track: model.music.track, size: 82)
+        HStack(spacing: 12) {
+            AlbumArt(track: model.music.track, size: 72)
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.music.track.title)
                         .font(.system(size: 17, weight: .semibold))
@@ -1956,20 +2252,25 @@ struct ExpandedMusic: View {
 
                 MusicProgressRow(model: model)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(currentLyric)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.9))
-                    Text(nextLyric)
-                        .font(.system(size: 12, weight: .regular))
-                        .lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.38))
+                if !displayLyrics.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(currentLyric)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                            .foregroundStyle(.white.opacity(0.9))
+                        Text(nextLyric)
+                            .font(.system(size: 11, weight: .regular))
+                            .lineLimit(1)
+                            .foregroundStyle(.white.opacity(0.38))
+                    }
+                    .frame(height: 30, alignment: .topLeading)
                 }
-                .frame(height: 36, alignment: .topLeading)
 
                 HStack(spacing: 12) {
-                    ControlButton(icon: "backward.fill") {
+                    ControlButton(
+                        icon: "backward.fill",
+                        pending: model.pendingTrackControl == .previousTrack
+                    ) {
                         model.previousTrack()
                     }
                     .help("上一首")
@@ -1979,7 +2280,10 @@ struct ExpandedMusic: View {
                     }
                     .help(model.music.isPlaying ? "暂停" : "播放")
 
-                    ControlButton(icon: "forward.fill") {
+                    ControlButton(
+                        icon: "forward.fill",
+                        pending: model.pendingTrackControl == .nextTrack
+                    ) {
                         model.nextTrack()
                     }
                     .help("下一首")
@@ -2036,52 +2340,44 @@ struct ExpandedTimer: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        VStack(spacing: 18) {
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.12), lineWidth: 7)
-                    Circle()
-                        .trim(from: 0, to: model.timerState.progress)
-                        .stroke(Color.white, style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Text(timeText(model.timerState.remaining))
-                        .font(.system(size: 24, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 96, height: 96)
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: model.timerState.progress)
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text(timeText(model.timerState.remaining))
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 76, height: 76)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(model.timerState.isRunning ? "专注计时中" : "计时器已暂停")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("结束后会切换为顶部提醒。")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.54))
-                    ProgressPill(progress: model.timerState.progress, width: 226)
-                }
+            VStack(alignment: .leading, spacing: 7) {
+                Text(model.timerState.isRunning ? "专注计时中" : "计时器已暂停")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                ProgressPill(progress: model.timerState.progress, width: 232)
+                HStack(spacing: 10) {
+                    ControlButton(icon: model.timerState.isRunning ? "pause.fill" : "play.fill", prominent: true) {
+                        model.toggleTimer()
+                    }
+                    .help(model.timerState.isRunning ? "暂停" : "开始")
 
-                Spacer()
+                    ControlButton(icon: "arrow.counterclockwise") {
+                        model.resetTimer()
+                    }
+                    .help("重置")
+
+                    ControlButton(icon: "plus") {
+                        model.addMinute()
+                    }
+                    .help("加 1 分钟")
+                }
             }
 
-            HStack(spacing: 12) {
-                ControlButton(icon: model.timerState.isRunning ? "pause.fill" : "play.fill", prominent: true) {
-                    model.toggleTimer()
-                }
-                .help(model.timerState.isRunning ? "暂停" : "开始")
-
-                ControlButton(icon: "arrow.counterclockwise") {
-                    model.resetTimer()
-                }
-                .help("重置")
-
-                ControlButton(icon: "plus") {
-                    model.addMinute()
-                }
-                .help("加 1 分钟")
-
-                Spacer()
-            }
+            Spacer(minLength: 0)
         }
     }
 }
@@ -2115,12 +2411,6 @@ struct ExpandedNotification: View {
             }
 
             HStack(spacing: 12) {
-                TextButton(title: "完成", systemName: "checkmark") {
-                    model.dismissNotification()
-                }
-                TextButton(title: "稍后", systemName: "clock") {
-                    model.snoozeNotification()
-                }
                 TextButton(title: "关闭", systemName: "xmark") {
                     model.dismissNotification()
                 }
@@ -2196,9 +2486,9 @@ struct AlbumArt: View {
                 fallbackArtwork
             }
         }
-        .id(artworkIdentity)
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+        .animation(.easeInOut(duration: 0.16), value: artworkIdentity)
     }
 
     private var fallbackArtwork: some View {
@@ -2242,6 +2532,7 @@ struct ControlButton: View {
     var pending = false
     var size: CGFloat = 30
     let action: () -> Void
+    @State private var showsPending = false
 
     var body: some View {
         Button(action: action) {
@@ -2254,7 +2545,7 @@ struct ControlButton: View {
                         .fill(prominent ? Color.white : Color.white.opacity(0.1))
                 )
                 .overlay {
-                    if pending {
+                    if showsPending {
                         Circle()
                             .trim(from: 0.08, to: 0.82)
                             .stroke(
@@ -2266,7 +2557,25 @@ struct ControlButton: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IslandControlButtonStyle())
+        .task(id: pending) {
+            if pending {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+                showsPending = true
+            } else {
+                showsPending = false
+            }
+        }
+    }
+}
+
+private struct IslandControlButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.93 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 
@@ -2400,10 +2709,15 @@ struct StatusDot: View {
     let isActive: Bool
 
     var body: some View {
-        Circle()
-            .fill(isActive ? Color.green : Color.white.opacity(0.35))
-            .frame(width: 7, height: 7)
-            .shadow(color: isActive ? Color.green.opacity(0.6) : .clear, radius: 5)
+        HStack(alignment: .center, spacing: 1.5) {
+            ForEach([4.0, 8.0, 5.5], id: \.self) { height in
+                Capsule()
+                    .fill(Color.white.opacity(isActive ? 0.82 : 0.28))
+                    .frame(width: 1.8, height: isActive ? height : 3)
+            }
+        }
+        .frame(width: 10, height: 10)
+        .animation(.easeInOut(duration: 0.16), value: isActive)
     }
 }
 

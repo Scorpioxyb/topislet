@@ -269,54 +269,7 @@ struct LayoutCalibrationView: View {
                     title: "展开高度",
                     value: $settings.expandedHeightAdjustment,
                     range: -36...96,
-                    helper: "只影响展开态，为歌词、计时器和提醒留空间。"
-                )
-
-                Divider()
-
-                Text("展开态顶部按钮")
-                    .font(.system(size: 13, weight: .semibold))
-
-                CalibrationSlider(
-                    title: "整体上沿",
-                    value: $settings.expandedTopControlsTopOffset,
-                    range: -2...18,
-                    helper: "数值越小越贴近顶部。"
-                )
-
-                CalibrationSlider(
-                    title: "左侧按钮向右",
-                    value: $settings.leftControlsXOffset,
-                    range: 10...80,
-                    helper: "避免左侧三按钮贴边，也避开中间摄像头模组。"
-                )
-
-                CalibrationSlider(
-                    title: "左侧按钮向下",
-                    value: $settings.leftControlsYOffset,
-                    range: -8...20,
-                    helper: "负数向上，正数向下。"
-                )
-
-                CalibrationSlider(
-                    title: "右侧按钮距右",
-                    value: $settings.rightControlsXOffset,
-                    range: 10...80,
-                    helper: "控制收起/最小化两个按钮与右边缘的距离。"
-                )
-
-                CalibrationSlider(
-                    title: "右侧按钮向下",
-                    value: $settings.rightControlsYOffset,
-                    range: -8...20,
-                    helper: "负数向上，正数向下。"
-                )
-
-                CalibrationSlider(
-                    title: "内容起始位置",
-                    value: $settings.expandedContentTopGap,
-                    range: 34...70,
-                    helper: "调整展开内容与顶部按钮之间的空隙。"
+                    helper: "只影响当前活动的展开内容。"
                 )
 
                 footer

@@ -15,7 +15,7 @@ enum MusicSourceAvailability: String, Equatable {
     case accessibilityRequired
 }
 
-enum MusicControlCommand {
+enum MusicControlCommand: Sendable, Equatable {
     case playPause
     case nextTrack
     case previousTrack
@@ -31,18 +31,7 @@ enum MusicControlCommand {
         }
     }
 
-    var mediaKeyCode: Int {
-        switch self {
-        case .playPause:
-            return 16
-        case .nextTrack:
-            return 17
-        case .previousTrack:
-            return 18
-        }
-    }
-
-    var mediaRemoteCommandID: UInt32 {
+    var targetedMediaRemoteCommandID: UInt32 {
         switch self {
         case .playPause:
             return 2
@@ -52,6 +41,7 @@ enum MusicControlCommand {
             return 5
         }
     }
+
 }
 
 enum MusicSeekInteraction {
@@ -166,10 +156,11 @@ private struct CachedPlaybackOverride {
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
     private let qishuiAXChangeMonitor = QishuiAXChangeMonitor()
+    private let qishuiTargetedMediaController = QishuiTargetedMediaController()
+    private let qishuiSemanticAXController = QishuiSemanticAXController()
+    private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
     private let mediaRemoteSource = MediaRemoteNowPlayingSource()
-    private let mediaKeyController = SystemMediaKeyController()
-    private let focusedMediaKeyController = QishuiFocusedMediaKeyController()
     private let nowPlayingBridge = NowPlayingAXBridge()
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
@@ -212,10 +203,6 @@ final class MusicAdapterCoordinator {
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
-        mediaRemoteSource.start { [weak self] in
-            guard let self else { return }
-            self.refreshFromRealtimeSignal(onUpdate: onUpdate)
-        }
         qishuiAXChangeMonitor.start { [weak self] _ in
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
@@ -240,10 +227,7 @@ final class MusicAdapterCoordinator {
         MusicState(track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"), isPlaying: false, progress: 0, lyricIndex: 0)
     }
 
-    func performControl(
-        _ command: MusicControlCommand,
-        allowFocusedFallback: Bool = true
-    ) -> MusicControlOutcome {
+    func performControl(_ command: MusicControlCommand) async -> MusicControlOutcome {
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
             latestNowPlayingTrack = nil
@@ -264,49 +248,44 @@ final class MusicAdapterCoordinator {
         }
 
         _ = refreshSourceStatus()
-        let didPost: Bool
-        let usedFocusRetargeting: Bool
-        if canSafelySendMediaKeyControlToQishui() {
-            didPost = mediaKeyController.post(command)
-            usedFocusRetargeting = false
-        } else if allowFocusedFallback, let qishuiApp = runningQishuiApplication() {
-            didPost = focusedMediaKeyController.post(command, to: qishuiApp)
-            usedFocusRetargeting = didPost
-        } else {
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .qishuiMediaRemoteCached,
-                headline: "暂不发送\(command.label)",
-                detail: allowFocusedFallback
-                    ? "未检测到汽水音乐进程；不会把命令发送给当前视频播放器。"
-                    : "当前启用严格控制策略，媒体焦点不在汽水音乐时不会短暂激活汽水，也不会把命令发送给当前视频播放器。",
-                checkedAt: Date()
-            )
-            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        let targetedController = qishuiTargetedMediaController
+        let semanticController = qishuiSemanticAXController
+        let controlResult = await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                let targetedResult = targetedController.post(command)
+                if targetedResult.didSend {
+                    continuation.resume(
+                        returning: QishuiSemanticAXControlResult(
+                            didPress: true,
+                            diagnostic: targetedResult.diagnostic
+                        )
+                    )
+                } else {
+                    let semanticResult = semanticController.press(command)
+                    continuation.resume(
+                        returning: QishuiSemanticAXControlResult(
+                            didPress: semanticResult.didPress,
+                            diagnostic: semanticResult.didPress
+                                ? semanticResult.diagnostic
+                                : "\(targetedResult.diagnostic) \(semanticResult.diagnostic)"
+                        )
+                    )
+                }
+            }
         }
+        let didPost = controlResult.didPress
 
         if command == .playPause, didPost {
             let currentState = currentMusicState()
             beginPendingPlaybackOperation(from: currentState)
-        } else if command == .nextTrack || command == .previousTrack {
-            latestNowPlayingTrack = nil
-            latestMediaRemoteSnapshot = nil
-            latestQishuiSnapshot = nil
-            previousQishuiProgress = nil
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: true)
+        } else if !didPost {
+            resetPendingPlaybackOperation(clearTimelineFloor: false)
         }
         cachedStatus = MusicSourceStatus(
             sourceName: "汽水音乐",
-            availability: didPost ? .qishuiControlSent : .accessibilityRequired,
-            headline: didPost ? "已发送\(command.label)" : "媒体键发送失败",
-            detail: didPost
-                ? (usedFocusRetargeting
-                    ? "当前系统媒体焦点不在汽水音乐；已短暂激活汽水发送\(command.label)，随后恢复原 App，避免误控视频播放器。"
-                    : "已向当前汽水音乐媒体源发送\(command.label)媒体键；等待汽水直接适配源回读真实状态。")
-                : "系统没有创建媒体键事件，可能需要重新授权辅助功能权限。",
+            availability: didPost ? .qishuiControlSent : .qishuiMediaRemoteCached,
+            headline: didPost ? "已执行\(command.label)" : "未执行\(command.label)",
+            detail: controlResult.diagnostic,
             checkedAt: Date()
         )
         return MusicControlOutcome(status: cachedStatus, didSendCommand: didPost)
@@ -421,6 +400,7 @@ final class MusicAdapterCoordinator {
 
     func invalidateQishuiCache() {
         qishuiAdapter.invalidateAXCache()
+        qishuiSemanticAXController.invalidateCache()
     }
 
     private func refreshFromRealtimeSignal(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
@@ -1284,23 +1264,6 @@ final class MusicAdapterCoordinator {
             || rhs.artist == "汽水音乐"
     }
 
-    private func canSafelySendMediaKeyControlToQishui() -> Bool {
-        if mediaRemoteAdapterStreamSource.hasCurrentVerifiedQishuiSource() {
-            return true
-        }
-
-        guard let snapshot = latestMediaRemoteSnapshot,
-              snapshot.isVerifiedQishuiSource,
-              let track = snapshot.currentTrack else {
-            return false
-        }
-        return track.sourceName == "MediaRemote Now Playing"
-    }
-
-    private func runningQishuiApplication() -> NSRunningApplication? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: "com.soda.music").first
-    }
-
     private func qishuiPlaybackLabel(_ track: QishuiDirectTrack) -> String {
         if let isPlaying = track.isPlaying ?? inferredQishuiIsPlaying {
             return isPlaying ? "播放中" : "已暂停"
@@ -1322,63 +1285,4 @@ private struct QishuiProgressSample {
     let signature: String
     let progress: Double
     let checkedAt: Date
-}
-
-private final class SystemMediaKeyController {
-    @discardableResult
-    func post(_ command: MusicControlCommand) -> Bool {
-        let didPostDown = postAuxKey(command.mediaKeyCode, keyState: .down)
-        usleep(20_000)
-        let didPostUp = postAuxKey(command.mediaKeyCode, keyState: .up)
-        return didPostDown && didPostUp
-    }
-
-    @discardableResult
-    private func postAuxKey(_ keyCode: Int, keyState: MediaKeyState) -> Bool {
-        let data1 = (keyCode << 16) | keyState.rawValue
-        guard let event = NSEvent.otherEvent(
-            with: .systemDefined,
-            location: .zero,
-            modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(keyState.rawValue)),
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            subtype: 8,
-            data1: data1,
-            data2: -1
-        )?.cgEvent else {
-            return false
-        }
-
-        event.post(tap: .cghidEventTap)
-        return true
-    }
-}
-
-final class QishuiFocusedMediaKeyController {
-    @discardableResult
-    func post(_ command: MusicControlCommand, to qishuiApp: NSRunningApplication) -> Bool {
-        let previousApp = NSWorkspace.shared.frontmostApplication
-        let shouldRestorePrevious = previousApp?.processIdentifier != qishuiApp.processIdentifier
-
-        if shouldRestorePrevious {
-            qishuiApp.activate(options: [])
-            usleep(180_000)
-        }
-
-        let didPost = SystemMediaKeyController().post(command)
-
-        if shouldRestorePrevious, let previousApp {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                previousApp.activate(options: [])
-            }
-        }
-
-        return didPost
-    }
-}
-
-private enum MediaKeyState: Int {
-    case down = 0xA00
-    case up = 0xB00
 }

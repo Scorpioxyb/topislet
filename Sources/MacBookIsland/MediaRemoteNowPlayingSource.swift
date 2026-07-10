@@ -59,7 +59,8 @@ struct MediaRemoteNowPlayingSnapshot: Equatable {
     }
 }
 
-final class MediaRemoteNowPlayingSource {
+// The coordinator and diagnostic watch both confine this source to the main thread.
+final class MediaRemoteNowPlayingSource: @unchecked Sendable {
     private let qishuiBundleIdentifier = "com.soda.music"
     private let frameworkPath = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
     private let callbackQueue = DispatchQueue(label: "MacBookIsland.MediaRemote", qos: .userInitiated)
@@ -87,7 +88,7 @@ final class MediaRemoteNowPlayingSource {
         stop()
     }
 
-    func start(onChange: @escaping () -> Void) {
+    func start(onChange: @escaping @Sendable () -> Void) {
         guard loadFramework() else { return }
         registerForMediaRemoteNotifications()
         guard observers.isEmpty else { return }

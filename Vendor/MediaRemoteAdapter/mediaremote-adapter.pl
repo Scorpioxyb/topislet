@@ -25,7 +25,9 @@ TEST_CLIENT_PATH: (optional)
 FUNCTION:
   stream   Streams now playing information (as diff by default)
   get      Prints now playing information once with all available metadata
+  get-client Prints now playing information for a specific client
   send     Sends a command to the now playing application
+  stream-client Streams now playing information for a specific client
   seek     Seeks to a specific timeline position
   shuffle  Sets the shuffle mode
   repeat   Sets the repeat mode
@@ -36,6 +38,10 @@ FUNCTION:
 PARAMS:
   send(command)
     command: The MRCommand ID as a number (e.g. kMRPlay = 0)
+  get-client(bundle)
+    bundle: Target application bundle identifier
+  stream-client(bundle)
+    bundle: Target application bundle identifier
   seek(position)
     position: The timeline position in microseconds
   shuffle(mode)
@@ -71,6 +77,8 @@ OPTIONS:
 Examples (script name and framework path omitted):
   stream --no-diff --debounce=100
   send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
+  get-client com.soda.music --now
+  stream-client com.soda.music --no-diff --no-artwork
   repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
 
 HELP
@@ -115,7 +123,9 @@ my $function_name = shift @ARGV or fail "Missing function name";
 fail "Invalid function name: '$function_name'"
   unless $function_name eq "stream"
   || $function_name eq "get"
+  || $function_name eq "get-client"
   || $function_name eq "send"
+  || $function_name eq "stream-client"
   || $function_name eq "seek"
   || $function_name eq "shuffle"
   || $function_name eq "repeat"
@@ -185,6 +195,47 @@ if ($function_name eq "send") {
   my $id = shift @ARGV;
   fail "Missing ID for '$function_name' command" unless defined $id;
   set_env_param($symbol_name, 0, "command", "$id");
+  $symbol_name = env_func($symbol_name);
+}
+elsif ($function_name eq "get-client") {
+  my $bundle = shift @ARGV;
+  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
+  $symbol_name = "adapter_get_client";
+  set_env_param($symbol_name, 0, "bundle", "$bundle");
+  my $options = parse_options(0);
+  foreach my $key (keys %{$options}) {
+    if ($key eq "micros" || $key eq "no-artwork" || $key eq "now") {
+      set_env_option($options, $key);
+    }
+    elsif ($key eq "human-readable" || $key eq "h") {
+      set_env_option($options, "human-readable");
+    }
+    else {
+      fail "Unrecognized option '$key'";
+    }
+  }
+  $symbol_name = env_func($symbol_name);
+}
+elsif ($function_name eq "stream-client") {
+  my $bundle = shift @ARGV;
+  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
+  $symbol_name = "adapter_stream_client";
+  set_env_param($symbol_name, 0, "bundle", "$bundle");
+  my $options = parse_options(0);
+  foreach my $key (keys %{$options}) {
+    if ($key eq "no-diff" || $key eq "micros" || $key eq "no-artwork") {
+      set_env_option($options, $key);
+    }
+    elsif ($key eq "debounce") {
+      set_env_option_value($options, $key);
+    }
+    elsif ($key eq "human-readable" || $key eq "h") {
+      set_env_option($options, "human-readable");
+    }
+    else {
+      fail "Unrecognized option '$key'";
+    }
+  }
   $symbol_name = env_func($symbol_name);
 }
 elsif ($function_name eq "stream") {

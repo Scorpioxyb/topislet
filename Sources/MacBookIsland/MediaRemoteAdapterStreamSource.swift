@@ -33,6 +33,10 @@ final class MediaRemoteAdapterStreamSource {
     private var process: Process?
     private var outputBuffer = Data()
     private var mergedPayload: [String: Any] = [:]
+    private var lastPublishedPayload: [String: Any] = [:]
+    private var deferredTrackPublicationTask: Task<Void, Never>?
+    private var deferredTrackPublicationGeneration = 0
+    private var deferredTrackPublicationStartedAt: Date?
     private var latestSnapshot: MediaRemoteNowPlayingSnapshot?
     private var latestRawSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastVerifiedQishuiSnapshot: MediaRemoteNowPlayingSnapshot?
@@ -72,8 +76,9 @@ final class MediaRemoteAdapterStreamSource {
         process.arguments = [
             paths.script.path,
             paths.framework.path,
-            "stream",
-            "--debounce=80",
+            "stream-client",
+            qishuiBundleIdentifier,
+            "--debounce=40",
             "--no-diff",
             "--no-artwork"
         ]
@@ -142,7 +147,12 @@ final class MediaRemoteAdapterStreamSource {
 
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
         guard let paths = adapterPaths(),
-              let payload = Self.runGet(script: paths.script, framework: paths.framework, includeArtwork: true) else {
+              let payload = Self.runGet(
+                script: paths.script,
+                framework: paths.framework,
+                bundleIdentifier: qishuiBundleIdentifier,
+                includeArtwork: true
+              ) else {
             let snapshot = MediaRemoteNowPlayingSnapshot(
                 isAvailable: false,
                 isVerifiedQishuiSource: false,
@@ -165,7 +175,12 @@ final class MediaRemoteAdapterStreamSource {
 
     func refreshPlaybackPosition() -> MediaRemoteNowPlayingSnapshot? {
         guard let paths = adapterPaths(),
-              let payload = Self.runGet(script: paths.script, framework: paths.framework, includeArtwork: false) else {
+              let payload = Self.runGet(
+                script: paths.script,
+                framework: paths.framework,
+                bundleIdentifier: qishuiBundleIdentifier,
+                includeArtwork: false
+              ) else {
             return nil
         }
 
@@ -175,7 +190,12 @@ final class MediaRemoteAdapterStreamSource {
     func refreshPlaybackPositionAsync() async -> MediaRemoteNowPlayingSnapshot? {
         guard let paths = adapterPaths() else { return nil }
         let data = await Task.detached(priority: .utility) {
-            Self.runGetData(script: paths.script, framework: paths.framework, includeArtwork: false)
+            Self.runGetData(
+                script: paths.script,
+                framework: paths.framework,
+                bundleIdentifier: self.qishuiBundleIdentifier,
+                includeArtwork: false
+            )
         }.value
         guard let data,
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -192,7 +212,11 @@ final class MediaRemoteAdapterStreamSource {
             let signature = trackSignature(track)
             let didChangeTrack = signature != latestSignature
             latestSignature = signature
-            requestFreshMetadataIfNeeded(for: track, didChangeTrack: didChangeTrack, onChange: changeHandler)
+            _ = requestFreshMetadataIfNeeded(
+                for: track,
+                didChangeTrack: didChangeTrack,
+                onChange: changeHandler
+            )
         }
         return effectiveSnapshot
     }
@@ -260,6 +284,9 @@ final class MediaRemoteAdapterStreamSource {
         }
         process = nil
         outputBuffer.removeAll()
+        deferredTrackPublicationTask?.cancel()
+        deferredTrackPublicationTask = nil
+        deferredTrackPublicationStartedAt = nil
         clearSeekTimelineAnchor()
     }
 
@@ -295,17 +322,128 @@ final class MediaRemoteAdapterStreamSource {
             mergedPayload = payload
         }
 
-        advanceSample(origin: .streamEvent)
-        let rawSnapshot = snapshot(from: mergedPayload, existingArtwork: reusableArtwork(for: mergedPayload))
-        let effectiveSnapshot = remember(snapshot: rawSnapshot)
+        if shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload) {
+            scheduleDeferredTrackPublication(onChange: onChange)
+            return
+        }
+
+        deferredTrackPublicationTask?.cancel()
+        deferredTrackPublicationTask = nil
+        deferredTrackPublicationStartedAt = nil
+        publishMergedPayload(origin: .streamEvent, onChange: onChange)
+    }
+
+    private func publishMergedPayload(
+        origin: MediaRemoteSampleOrigin,
+        onChange: @escaping ChangeHandler
+    ) {
+        advanceSample(origin: origin)
+        let rawSnapshot = snapshot(
+            from: mergedPayload,
+            existingArtwork: reusableArtwork(for: mergedPayload)
+        )
+        _ = remember(snapshot: rawSnapshot)
+        lastPublishedPayload = mergedPayload
         if let track = rawSnapshot.currentTrack {
             let signature = trackSignature(track)
             let didChangeTrack = signature != latestSignature
             latestSignature = signature
-            requestFreshMetadataIfNeeded(for: track, didChangeTrack: didChangeTrack, onChange: onChange)
+            let didQueueFreshMetadata = requestFreshMetadataIfNeeded(
+                for: track,
+                didChangeTrack: didChangeTrack,
+                onChange: onChange
+            )
+            if didChangeTrack, track.artworkData == nil, didQueueFreshMetadata {
+                return
+            }
         }
         onChange()
-        _ = effectiveSnapshot
+    }
+
+    private func shouldDeferTrackPublication(
+        from previous: [String: Any],
+        to update: [String: Any]
+    ) -> Bool {
+        guard let previousTitle = stringValue(previous["title"])?.adapterTrimmedNonEmpty,
+              let updateTitle = stringValue(update["title"])?.adapterTrimmedNonEmpty,
+              previousTitle != updateTitle else {
+            return false
+        }
+
+        let previousArtist = stringValue(previous["artist"])?.adapterTrimmedNonEmpty
+        let updateArtist = stringValue(update["artist"])?.adapterTrimmedNonEmpty
+        let previousAlbum = stringValue(previous["album"])?.adapterTrimmedNonEmpty
+        let updateAlbum = stringValue(update["album"])?.adapterTrimmedNonEmpty
+        let previousDuration = doubleValue(previous["duration"])
+        let updateDuration = doubleValue(update["duration"])
+        let artistStayedOld = previousArtist != nil && previousArtist == updateArtist
+        let albumStayedOld = previousAlbum != nil && previousAlbum == updateAlbum
+        let durationStayedOld = previousDuration != nil
+            && updateDuration != nil
+            && abs((previousDuration ?? 0) - (updateDuration ?? 0)) < 0.01
+        return artistStayedOld
+            && (albumStayedOld || durationStayedOld)
+    }
+
+    private func scheduleDeferredTrackPublication(
+        onChange: @escaping ChangeHandler,
+        delayNanoseconds: UInt64 = 450_000_000
+    ) {
+        if deferredTrackPublicationStartedAt == nil {
+            deferredTrackPublicationStartedAt = Date()
+        }
+        deferredTrackPublicationGeneration += 1
+        let generation = deferredTrackPublicationGeneration
+        deferredTrackPublicationTask?.cancel()
+        deferredTrackPublicationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, let self,
+                  generation == self.deferredTrackPublicationGeneration else { return }
+
+            if let paths = self.adapterPaths() {
+                let bundleIdentifier = self.qishuiBundleIdentifier
+                let data = await Task.detached(priority: .userInitiated) {
+                    Self.runGetData(
+                        script: paths.script,
+                        framework: paths.framework,
+                        bundleIdentifier: bundleIdentifier,
+                        includeArtwork: true
+                    )
+                }.value
+                if let data,
+                   let object = try? JSONSerialization.jsonObject(with: data),
+                   let payload = object as? [String: Any] {
+                    self.mergedPayload = payload
+                    if self.shouldDeferTrackPublication(
+                        from: self.lastPublishedPayload,
+                        to: payload
+                    ),
+                       Date().timeIntervalSince(
+                        self.deferredTrackPublicationStartedAt ?? Date()
+                       ) < 0.9 {
+                        self.deferredTrackPublicationTask = nil
+                        self.scheduleDeferredTrackPublication(
+                            onChange: onChange,
+                            delayNanoseconds: 120_000_000
+                        )
+                        return
+                    }
+                } else if Date().timeIntervalSince(
+                    self.deferredTrackPublicationStartedAt ?? Date()
+                ) < 0.9 {
+                    self.deferredTrackPublicationTask = nil
+                    self.scheduleDeferredTrackPublication(
+                        onChange: onChange,
+                        delayNanoseconds: 120_000_000
+                    )
+                    return
+                }
+            }
+
+            self.deferredTrackPublicationTask = nil
+            self.deferredTrackPublicationStartedAt = nil
+            self.publishMergedPayload(origin: .synchronousRead, onChange: onChange)
+        }
     }
 
     private func remember(snapshot rawSnapshot: MediaRemoteNowPlayingSnapshot) -> MediaRemoteNowPlayingSnapshot {
@@ -350,7 +488,7 @@ final class MediaRemoteAdapterStreamSource {
             isAvailable: true,
             isVerifiedQishuiSource: true,
             currentTrack: track,
-            diagnostic: "\(rawSnapshot.diagnostic) 已保持最近一次汽水音乐可信状态用于显示；控制会走汽水聚焦兜底，进度按最近可信播放态本地推进。",
+            diagnostic: "\(rawSnapshot.diagnostic) 已保持最近一次汽水音乐可信状态用于显示。",
             checkedAt: now,
             sampleID: cachedSnapshot.sampleID,
             sampleOrigin: .cached,
@@ -507,24 +645,24 @@ final class MediaRemoteAdapterStreamSource {
         for track: MediaRemoteNowPlayingTrack?,
         didChangeTrack: Bool,
         onChange: ChangeHandler?
-    ) {
-        guard let track else { return }
+    ) -> Bool {
+        guard let track else { return false }
         let needsArtist = track.artist == "汽水音乐"
         let needsArtwork = track.artworkData == nil
-        guard didChangeTrack || needsArtist || needsArtwork else { return }
-        requestFreshMetadata(for: track, onChange: onChange, force: didChangeTrack)
+        guard didChangeTrack || needsArtist || needsArtwork else { return false }
+        return requestFreshMetadata(for: track, onChange: onChange, force: didChangeTrack)
     }
 
     private func requestFreshMetadata(
         for track: MediaRemoteNowPlayingTrack,
         onChange: ChangeHandler?,
         force: Bool = false
-    ) {
-        guard let onChange, let paths = adapterPaths() else { return }
+    ) -> Bool {
+        guard let onChange, let paths = adapterPaths() else { return false }
         let lookupKey = trackLookupKey(track)
         if artworkFetchInFlight {
             pendingArtworkRequestLookupKey = lookupKey
-            return
+            return true
         }
 
         let now = Date()
@@ -532,18 +670,24 @@ final class MediaRemoteAdapterStreamSource {
            lastArtworkRequestLookupKey == lookupKey,
            let lastArtworkRequestAt,
            now.timeIntervalSince(lastArtworkRequestAt) < 0.35 {
-            return
+            return false
         }
         lastArtworkRequestLookupKey = lookupKey
         lastArtworkRequestAt = now
         artworkFetchInFlight = true
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let payload = Self.runGet(script: paths.script, framework: paths.framework, includeArtwork: true)
+            let payload = Self.runGet(
+                script: paths.script,
+                framework: paths.framework,
+                bundleIdentifier: self?.qishuiBundleIdentifier ?? "com.soda.music",
+                includeArtwork: true
+            )
             Task { @MainActor in
                 guard let self else { return }
                 self.artworkFetchInFlight = false
                 guard let payload else {
+                    onChange()
                     self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: nil)
                     return
                 }
@@ -572,6 +716,7 @@ final class MediaRemoteAdapterStreamSource {
                 self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: responseLookupKey)
             }
         }
+        return true
     }
 
     private func mergeMetadata(from payload: [String: Any]) {
@@ -593,17 +738,19 @@ final class MediaRemoteAdapterStreamSource {
               let track = latestSnapshot?.currentTrack else {
             return
         }
-        requestFreshMetadata(for: track, onChange: onChange, force: true)
+        _ = requestFreshMetadata(for: track, onChange: onChange, force: true)
     }
 
     nonisolated private static func runGet(
         script: URL,
         framework: URL,
+        bundleIdentifier: String,
         includeArtwork: Bool
     ) -> [String: Any]? {
         guard let data = runGetData(
             script: script,
             framework: framework,
+            bundleIdentifier: bundleIdentifier,
             includeArtwork: includeArtwork
         ),
         let object = try? JSONSerialization.jsonObject(with: data),
@@ -616,16 +763,18 @@ final class MediaRemoteAdapterStreamSource {
     nonisolated private static func runGetData(
         script: URL,
         framework: URL,
+        bundleIdentifier: String?,
         includeArtwork: Bool
     ) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        var arguments = [
-            script.path,
-            framework.path,
-            "get",
-            "--now"
-        ]
+        var arguments = [script.path, framework.path]
+        if let bundleIdentifier {
+            arguments += ["get-client", bundleIdentifier]
+        } else {
+            arguments.append("get")
+        }
+        arguments.append("--now")
         if !includeArtwork {
             arguments.append("--no-artwork")
         }
@@ -691,7 +840,12 @@ final class MediaRemoteAdapterStreamSource {
         bundleIdentifier: String,
         expectedProcessIdentifier: pid_t?
     ) -> Bool {
-        guard let data = runGetData(script: script, framework: framework, includeArtwork: false),
+        guard let data = runGetData(
+                script: script,
+                framework: framework,
+                bundleIdentifier: nil,
+                includeArtwork: false
+              ),
               let object = try? JSONSerialization.jsonObject(with: data),
               let payload = object as? [String: Any] else {
             return false
