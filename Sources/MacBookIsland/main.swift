@@ -1326,6 +1326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let expandedHost = NSHostingView(rootView: expandedRoot)
         configureIslandHostingView(expandedHost, size: expandedSize)
         expandedPanel.contentView = expandedHost
+        expandedPanel.ignoresMouseEvents = true
 
         self.panel = panel
         self.expandedPanel = expandedPanel
@@ -1577,33 +1578,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expandedPanel?.setFrame(bodyFrame, display: true)
             expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
             expandedPanel?.alphaValue = 1
+            expandedPanel?.ignoresMouseEvents = model.mode != .expanded
             updatePanelVisibility()
             return
         }
 
         panelAnimationID += 1
         let animationID = panelAnimationID
+        expandedPanel?.ignoresMouseEvents = true
 
         if model.isVisible {
             panel.orderFrontRegardless()
             if model.mode == .expanded, let expandedPanel {
                 if !expandedPanel.isVisible {
-                    expandedPanel.alphaValue = 0
+                    expandedPanel.setFrame(bodyFrame, display: true)
+                    expandedPanel.contentView?.frame = NSRect(
+                        origin: .zero,
+                        size: bodySize
+                    )
                 }
+                expandedPanel.alphaValue = 1
                 expandedPanel.orderFrontRegardless()
             }
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = model.mode == .expanded ? 0.30 : 0.21
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.duration = model.mode == .expanded ? 0.22 : 0.16
+            context.timingFunction = CAMediaTimingFunction(
+                name: model.mode == .expanded ? .easeInEaseOut : .easeOut
+            )
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
 
             if let expandedPanel,
-               model.mode == .expanded || expandedPanel.isVisible {
+               model.mode == .expanded,
+               expandedPanel.isVisible {
                 expandedPanel.animator().setFrame(bodyFrame, display: true)
-                expandedPanel.animator().alphaValue = model.mode == .expanded ? 1 : 0
             }
         } completionHandler: { [weak self] in
             Task { @MainActor in
@@ -1614,8 +1624,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishAnimatedReposition() {
+        if model.mode != .expanded {
+            expandedPanel?.orderOut(nil)
+        }
         snapPanelToCurrentMode()
         expandedPanel?.alphaValue = 1
+        expandedPanel?.ignoresMouseEvents = model.mode != .expanded
     }
 
     private func snapPanelToCurrentMode() {
@@ -2124,7 +2138,6 @@ struct IslandRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.spring(response: 0.31, dampingFraction: 0.88), value: model.mode)
         .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
     }
 }
@@ -2237,9 +2250,39 @@ struct ExpandedIsland: View {
 
 struct ExpandedIslandBodyPanel: View {
     @ObservedObject var model: IslandModel
+    @State private var isContentVisible = false
+
+    private var shellScaleX: CGFloat {
+        guard model.mode != .expanded else { return 1 }
+        let targetWidth = model.mode == .collapsed ? model.collapsedWidth : model.compactWidth
+        return targetWidth / model.expandedWidth
+    }
+
+    private var shellScaleY: CGFloat {
+        model.mode == .expanded ? 1 : 0.025
+    }
+
+    private var shellAnimation: Animation {
+        model.mode == .expanded
+            ? .easeInOut(duration: 0.22)
+            : .easeOut(duration: 0.16)
+    }
 
     var body: some View {
-        IslandShell(width: model.expandedWidth, height: model.expandedBodyHeight, cornerRadius: 24, fillOpacity: 0.99, strokeOpacity: 0.03, shadowOpacity: 0) {
+        ZStack(alignment: .top) {
+            IslandShell(
+                width: model.expandedWidth,
+                height: model.expandedBodyHeight,
+                cornerRadius: 24,
+                fillOpacity: 0.99,
+                strokeOpacity: 0.03,
+                shadowOpacity: 0
+            ) {
+                Color.clear
+            }
+            .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
+            .animation(shellAnimation, value: model.mode)
+
             VStack(spacing: 8) {
                 HStack(alignment: .center) {
                     if model.hasPendingNotification, model.activeFeature != .notification {
@@ -2279,8 +2322,34 @@ struct ExpandedIslandBodyPanel: View {
             .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 12)
+            .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
+            .opacity(isContentVisible ? 1 : 0)
+            .animation(
+                isContentVisible ? .easeOut(duration: 0.11) : .easeOut(duration: 0.05),
+                value: isContentVisible
+            )
+            .mask {
+                Rectangle()
+                    .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
+                    .animation(shellAnimation, value: model.mode)
+            }
+            .allowsHitTesting(model.mode == .expanded && isContentVisible)
         }
-        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+        .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
+        .task(id: model.mode) {
+            guard model.mode == .expanded else {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard !Task.isCancelled, model.mode != .expanded else { return }
+                isContentVisible = false
+                return
+            }
+            try? await Task.sleep(nanoseconds: 70_000_000)
+            guard !Task.isCancelled, model.mode == .expanded else { return }
+            isContentVisible = true
+        }
+        .onAppear {
+            isContentVisible = model.mode == .expanded
+        }
     }
 }
 
