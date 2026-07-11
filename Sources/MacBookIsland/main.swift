@@ -223,6 +223,37 @@ enum IslandMode: String {
     case expanded
 }
 
+private enum IslandMotion {
+    static func duration(for mode: IslandMode) -> TimeInterval {
+        mode == .expanded ? 0.24 : 0.18
+    }
+
+    static func timingFunction(for mode: IslandMode) -> CAMediaTimingFunction {
+        if mode == .expanded {
+            return CAMediaTimingFunction(controlPoints: 0.25, 0.10, 0.25, 1.0)
+        }
+        return CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
+    }
+
+    static func geometryAnimation(for mode: IslandMode) -> Animation {
+        if mode == .expanded {
+            return .timingCurve(0.25, 0.10, 0.25, 1.0, duration: duration(for: mode))
+        }
+        return .timingCurve(0.40, 0.0, 0.20, 1.0, duration: duration(for: mode))
+    }
+
+    static func headerContentAnimation(for mode: IslandMode) -> Animation {
+        .easeOut(duration: mode == .expanded ? 0.07 : 0.055)
+    }
+
+    static func bodyContentAnimation(for mode: IslandMode) -> Animation {
+        if mode == .expanded {
+            return .easeOut(duration: 0.12).delay(0.055)
+        }
+        return .easeOut(duration: 0.06)
+    }
+}
+
 enum IslandFeature: String, Hashable {
     case music
     case timer
@@ -1414,7 +1445,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationID = 0
-    private var panelAnimationCompletionTask: Task<Void, Never>?
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
     private var isPointerInsideHoverZone = false
@@ -1484,7 +1514,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
-        panelAnimationCompletionTask?.cancel()
         hoverEnterTask?.cancel()
         hoverExitTask?.cancel()
     }
@@ -1541,6 +1570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isMovable = false
+        panel.animationBehavior = .none
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
         panel.level = level
@@ -1594,7 +1624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] mode in
                 guard let self else { return }
                 handleObservedModeChange(mode)
-                repositionPanel(animated: true, targetMode: mode)
+                repositionPanel(animated: true, targetMode: mode, modeTransition: true)
             }
             .store(in: &cancellables)
 
@@ -1603,7 +1633,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         model.$activeFeature
-            .sink { [weak self] _ in self?.repositionPanel(animated: true) }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self, model.mode == .expanded else { return }
+                repositionPanel(animated: true)
+            }
             .store(in: &cancellables)
 
         model.layout.objectWillChange
@@ -1887,7 +1922,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSSize(width: model.expandedWidth, height: model.expandedBodyHeight)
     }
 
-    private func repositionPanel(animated: Bool, targetMode: IslandMode? = nil) {
+    private func repositionPanel(
+        animated: Bool,
+        targetMode: IslandMode? = nil,
+        modeTransition: Bool = false
+    ) {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let screen else { return }
@@ -1899,8 +1938,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bodyFrame = expandedPanelFrame(for: bodySize, on: screen)
 
         guard animated else {
-            panelAnimationCompletionTask?.cancel()
-            panelAnimationCompletionTask = nil
             panelAnimationID += 1
             panel.disableScreenUpdatesUntilFlush()
             panel.setFrame(frame, display: true)
@@ -1917,20 +1954,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         panelAnimationID += 1
         let animationID = panelAnimationID
-        let animationDuration = mode == .expanded ? 0.22 : 0.16
-        panelAnimationCompletionTask?.cancel()
+        let animationDuration = IslandMotion.duration(for: mode)
         expandedPanel?.ignoresMouseEvents = true
 
         if model.isVisible {
             panel.orderFrontRegardless()
             if mode == .expanded, let expandedPanel {
-                if !expandedPanel.isVisible {
-                    expandedPanel.setFrame(bodyFrame, display: true)
-                    expandedPanel.contentView?.frame = NSRect(
-                        origin: .zero,
-                        size: bodySize
-                    )
-                }
+                expandedPanel.setFrame(bodyFrame, display: true)
+                expandedPanel.contentView?.frame = NSRect(origin: .zero, size: bodySize)
                 expandedPanel.alphaValue = 1
                 expandedPanel.orderFrontRegardless()
             }
@@ -1938,54 +1969,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = animationDuration
-            context.timingFunction = CAMediaTimingFunction(
-                name: mode == .expanded ? .easeInEaseOut : .easeOut
-            )
+            context.timingFunction = IslandMotion.timingFunction(for: mode)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
 
             if let expandedPanel,
+               !modeTransition,
                mode == .expanded,
                expandedPanel.isVisible {
                 expandedPanel.animator().setFrame(bodyFrame, display: true)
             }
-        }
-        panelAnimationCompletionTask = Task { [weak self] in
-            try? await Task.sleep(
-                nanoseconds: UInt64(animationDuration * 1_000_000_000)
-            )
-            guard !Task.isCancelled,
-                  let self,
-                  panelAnimationID == animationID else { return }
-            panelAnimationCompletionTask = nil
-            finishAnimatedReposition()
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self,
+                      self.panelAnimationID == animationID,
+                      self.model.mode == mode else { return }
+                self.finishAnimatedReposition(targetMode: mode, bodySize: bodySize)
+            }
         }
     }
 
-    private func finishAnimatedReposition() {
-        if model.mode != .expanded {
+    private func finishAnimatedReposition(targetMode: IslandMode, bodySize: NSSize) {
+        if targetMode != .expanded {
             expandedPanel?.orderOut(nil)
         }
-        snapPanelToCurrentMode()
-        expandedPanel?.alphaValue = 1
-        expandedPanel?.ignoresMouseEvents = model.mode != .expanded
-    }
-
-    private func snapPanelToCurrentMode() {
-        guard let panel else { return }
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
-
-        let size = panelSize(for: model.mode)
-        let frame = panelFrame(for: size, on: screen)
-        let bodySize = expandedPanelSize()
-        let bodyFrame = expandedPanelFrame(for: bodySize, on: screen)
-        panel.setFrame(frame, display: true)
-        panel.contentView?.frame = NSRect(origin: .zero, size: size)
-
-        expandedPanel?.setFrame(bodyFrame, display: true)
+        panel?.contentView?.frame = NSRect(origin: .zero, size: panel?.frame.size ?? .zero)
         expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-        updatePanelVisibility()
+        expandedPanel?.alphaValue = 1
+        expandedPanel?.ignoresMouseEvents = targetMode != .expanded
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
@@ -2465,47 +2476,39 @@ private struct AboutSettingsPane: View {
 struct IslandRootView: View {
     @ObservedObject var model: IslandModel
 
-    private var shellWidth: CGFloat {
-        switch model.mode {
-        case .collapsed:
-            return model.collapsedWidth
-        case .compact:
-            return model.compactWidth
-        case .expanded:
-            return model.expandedHeaderWidth
-        }
-    }
-
-    private var shellAnimation: Animation {
-        model.mode == .expanded
-            ? .easeInOut(duration: 0.22)
-            : .easeOut(duration: 0.16)
-    }
-
     var body: some View {
-        ZStack(alignment: .top) {
-            IslandShell(
-                width: shellWidth,
-                height: model.topBandHeight,
-                cornerRadius: model.topBandHeight / 2,
-                fillOpacity: 1,
-                strokeOpacity: 0,
-                attachesToTop: true
-            ) {
-                Color.clear
-            }
-            .animation(shellAnimation, value: model.mode)
-
-            Group {
-                switch model.mode {
-                case .collapsed:
-                    CollapsedIsland(model: model)
-                case .compact:
-                    CompactIsland(model: model)
-                case .expanded:
-                    ExpandedIsland(model: model)
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                IslandShell(
+                    width: proxy.size.width,
+                    height: model.topBandHeight,
+                    cornerRadius: model.topBandHeight / 2,
+                    fillOpacity: 1,
+                    strokeOpacity: 0,
+                    attachesToTop: true
+                ) {
+                    Color.clear
                 }
+
+                ZStack {
+                    CollapsedIsland(model: model)
+                        .opacity(model.mode == .collapsed ? 1 : 0)
+                        .allowsHitTesting(model.mode == .collapsed)
+                        .accessibilityHidden(model.mode != .collapsed)
+
+                    CompactIsland(model: model)
+                        .opacity(model.mode == .compact ? 1 : 0)
+                        .allowsHitTesting(model.mode == .compact)
+                        .accessibilityHidden(model.mode != .compact)
+
+                    ExpandedIsland(model: model)
+                        .opacity(model.mode == .expanded ? 1 : 0)
+                        .allowsHitTesting(model.mode == .expanded)
+                        .accessibilityHidden(model.mode != .expanded)
+                }
+                .animation(IslandMotion.headerContentAnimation(for: model.mode), value: model.mode)
             }
+            .frame(width: proxy.size.width, height: model.topBandHeight, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
@@ -2670,7 +2673,6 @@ struct ExpandedIsland: View {
 
 struct ExpandedIslandBodyPanel: View {
     @ObservedObject var model: IslandModel
-    @State private var isContentVisible = false
 
     private var shellScaleX: CGFloat {
         guard model.mode != .expanded else { return 1 }
@@ -2680,12 +2682,6 @@ struct ExpandedIslandBodyPanel: View {
 
     private var shellScaleY: CGFloat {
         model.mode == .expanded ? 1 : 0.025
-    }
-
-    private var shellAnimation: Animation {
-        model.mode == .expanded
-            ? .easeInOut(duration: 0.22)
-            : .easeOut(duration: 0.16)
     }
 
     var body: some View {
@@ -2701,7 +2697,7 @@ struct ExpandedIslandBodyPanel: View {
                 Color.clear
             }
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-            .animation(shellAnimation, value: model.mode)
+            .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
 
             VStack(spacing: 8) {
                 HStack(alignment: .center) {
@@ -2743,33 +2739,16 @@ struct ExpandedIslandBodyPanel: View {
             .padding(.top, 10)
             .padding(.bottom, 12)
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
-            .opacity(isContentVisible ? 1 : 0)
-            .animation(
-                isContentVisible ? .easeOut(duration: 0.11) : .easeOut(duration: 0.05),
-                value: isContentVisible
-            )
+            .opacity(model.mode == .expanded ? 1 : 0)
+            .animation(IslandMotion.bodyContentAnimation(for: model.mode), value: model.mode)
             .mask {
                 Rectangle()
                     .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-                    .animation(shellAnimation, value: model.mode)
+                    .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
             }
-            .allowsHitTesting(model.mode == .expanded && isContentVisible)
+            .allowsHitTesting(model.mode == .expanded)
         }
         .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
-        .task(id: model.mode) {
-            guard model.mode == .expanded else {
-                try? await Task.sleep(nanoseconds: 25_000_000)
-                guard !Task.isCancelled, model.mode != .expanded else { return }
-                isContentVisible = false
-                return
-            }
-            try? await Task.sleep(nanoseconds: 70_000_000)
-            guard !Task.isCancelled, model.mode == .expanded else { return }
-            isContentVisible = true
-        }
-        .onAppear {
-            isContentVisible = model.mode == .expanded
-        }
     }
 }
 
