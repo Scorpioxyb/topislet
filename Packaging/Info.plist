@@ -6,6 +6,8 @@
     <string>zh_CN</string>
     <key>CFBundleExecutable</key>
     <string>MacBookIsland</string>
+    <key>CFBundleIconFile</key>
+    <string>IslandAppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>local.macbook-island.prototype</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -19,7 +21,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>

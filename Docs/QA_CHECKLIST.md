@@ -4,6 +4,7 @@
 
 - `swift build` 能通过。
 - `Scripts/package-app.sh` 能生成并安装 `/Applications/MacBook 灵动岛.app`。
+- 安装包的 `Info.plist` 包含 `CFBundleIconFile=IslandAppIcon`，`Contents/Resources/IslandAppIcon.icns` 存在，并在 Finder、程序坞和“关于”窗口显示新图标。
 - `codesign --verify --deep --strict --verbose=2 "/Applications/MacBook 灵动岛.app"` 通过。
 - `file "/Applications/MacBook 灵动岛.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。
 - 双击 App 或 `open "/Applications/MacBook 灵动岛.app"` 后顶部灵动岛出现，设置面板可打开。

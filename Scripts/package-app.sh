@@ -9,6 +9,7 @@ LEGACY_APP="$ROOT/MacBookIsland.app"
 swift build --package-path "$ROOT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
 cp "$ROOT/.build/debug/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
 if [ -d "$ROOT/Vendor/MediaRemoteAdapter" ]; then
   ditto "$ROOT/Vendor/MediaRemoteAdapter" "$APP/Contents/Resources/MediaRemoteAdapter"
