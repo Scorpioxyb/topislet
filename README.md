@@ -50,6 +50,7 @@ open "/Applications/MacBook 灵动岛.app"
 - 进度跳转仅在底层确认当前可跳转媒体源为汽水时发送；其他媒体占用系统焦点时安全阻断
 - 计时器：从菜单启动后才接管灵动岛，支持暂停、重置、加 1 分钟
 - 通知提醒：普通提醒短暂覆盖后恢复汽水；展开或拖动期间不抢占当前交互
+- 日历与提醒事项：在设置的“日程”页分别授权后，临近 10 分钟的定时日程和刚到期 5 分钟内的定时提醒会进入现有事件队列；默认忽略全天日程和无具体时间的提醒
 - 展开、常驻、收起三种状态
 - 布局校准面板：适配真实 MacBook 刘海位置，支持重启后保留
 
@@ -59,6 +60,7 @@ open "/Applications/MacBook 灵动岛.app"
 - 验证连续切歌、快速播放 / 暂停和进度拖动的确认时序
 - 继续寻找汽水专属的定向 seek 通道；在安全通道完成前，媒体焦点冲突时保持阻断
 - 按 `Docs/ROADMAP.md` 继续收敛单窗口连续轮廓、可中断形变动画和计时器 / 提醒产品化
+- 在“设置 → 日程”中分别授权日历和提醒事项，完成真实临近日程、到期提醒及撤权降级验收
 
 ## 汽水音乐探测
 
@@ -86,7 +88,7 @@ swift run QishuiProbe --depth 12 > Reports/qishui-ax-dump.txt
 - 播放 / 暂停、上一首、下一首不使用系统全局媒体键，也不会为了控制汽水而短暂激活它；可用 `--qishui-targeted-control` 单独验证定向路径。
 - 在真实歌名 / 封面 / 歌词来源不可用时，UI 不伪造歌曲数据；保留最近一次完整可信画面或显示不可用状态。
 - V1.2 不再使用 OCR，也不请求系统屏幕录制权限。
-- 可用 `.build/debug/MacBookIsland --qishui-status`、`--adapter-status` 和 `--mediaremote-status` 查看诊断结果。
+- 可用 `.build/debug/MacBookIsland --qishui-status`、`--adapter-status`、`--mediaremote-status` 和 `--eventkit-status` 查看只读诊断结果；诊断命令不会触发权限弹窗。
 - 详细调查记录见 `Docs/qishui-adapter-notes.md`。
 
 ## 项目管理文档

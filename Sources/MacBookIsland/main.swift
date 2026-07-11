@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import EventKit
 import QuartzCore
 import SwiftUI
 
@@ -25,6 +26,14 @@ if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
         deliverImmediately: true
     )
     print("eventPosted=true")
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--eventkit-status") {
+    let calendar = EventKitAccessState(EKEventStore.authorizationStatus(for: .event))
+    let reminders = EventKitAccessState(EKEventStore.authorizationStatus(for: .reminder))
+    print("calendarAccess=\(calendar.rawValue)")
+    print("remindersAccess=\(reminders.rawValue)")
     exit(0)
 }
 
@@ -282,6 +291,8 @@ private struct PendingIslandEvent: Equatable {
     let priority: IslandEventPriority
     let autoDismiss: Bool
     var count: Int
+    let mergeIdentifier: String?
+    var sourceBundleIdentifier: String?
 }
 
 private struct PendingMusicSeek {
@@ -317,14 +328,17 @@ final class IslandModel: ObservableObject {
         source: "MacBook Island",
         count: 0
     )
+    @Published var eventKitStatus = EventKitActivityStatus.current
     @Published var isVisible = true
 
     private let musicAdapter = MusicAdapterCoordinator()
+    private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
     private var trackControlFeedbackTask: Task<Void, Never>?
     private var pendingTrackControlBaselineSignature: String?
     private var layoutCancellable: AnyCancellable?
+    private var eventKitSettingsCancellable: AnyCancellable?
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
@@ -410,6 +424,30 @@ final class IslandModel: ObservableObject {
         musicSourceStatus = musicAdapter.refreshSourceStatus(allowSynchronousRefresh: true)
         musicAdapter.startRealtimeObservation { [weak self] music, status in
             self?.applyMusicUpdate(music, status: status)
+        }
+        eventKitSource.start(
+            calendarEnabled: appSettings.calendarEventsEnabled,
+            remindersEnabled: appSettings.remindersEnabled,
+            onEvent: { [weak self] event in
+                self?.receiveEventKitEvent(event)
+            },
+            onCancel: { [weak self] identifier in
+                self?.cancelNotification(mergeIdentifier: identifier)
+            },
+            onStatus: { [weak self] status in
+                self?.eventKitStatus = status
+            }
+        )
+        eventKitSettingsCancellable = Publishers.CombineLatest(
+            appSettings.$calendarEventsEnabled,
+            appSettings.$remindersEnabled
+        )
+        .dropFirst()
+        .sink { [weak self] calendarEnabled, remindersEnabled in
+            self?.eventKitSource.update(
+                calendarEnabled: calendarEnabled,
+                remindersEnabled: remindersEnabled
+            )
         }
         layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -622,6 +660,9 @@ final class IslandModel: ObservableObject {
         notificationPresentationTask?.cancel()
         notificationPresentationTask = nil
         musicAdapter.stopRealtimeObservation()
+        eventKitSettingsCancellable?.cancel()
+        eventKitSettingsCancellable = nil
+        eventKitSource.stop()
     }
 
     func startTimer() {
@@ -666,7 +707,9 @@ final class IslandModel: ObservableObject {
         body: String = "这是一条来自灵动岛的低打扰提醒。",
         source: String = "MacBook Island",
         interruptsExpanded: Bool = false,
-        autoDismiss: Bool = true
+        autoDismiss: Bool = true,
+        mergeIdentifier: String? = nil,
+        sourceBundleIdentifier: String? = nil
     ) {
         let event = PendingIslandEvent(
             title: title,
@@ -674,7 +717,9 @@ final class IslandModel: ObservableObject {
             source: source,
             priority: interruptsExpanded ? .urgent : .normal,
             autoDismiss: autoDismiss,
-            count: 1
+            count: 1,
+            mergeIdentifier: mergeIdentifier,
+            sourceBundleIdentifier: sourceBundleIdentifier
         )
 
         if event.priority == .normal, mergeNormalEventIfPossible(event) {
@@ -707,6 +752,64 @@ final class IslandModel: ObservableObject {
     func dismissNotification() {
         noteDirectControlInteraction()
         completeActiveEvent()
+    }
+
+    var canOpenActiveEventSource: Bool {
+        guard let bundleIdentifier = activeIslandEvent?.sourceBundleIdentifier else { return false }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
+    }
+
+    func openActiveEventSource() {
+        guard let bundleIdentifier = activeIslandEvent?.sourceBundleIdentifier,
+              let applicationURL = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: bundleIdentifier
+              ) else { return }
+        NSWorkspace.shared.openApplication(
+            at: applicationURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+        dismissNotification()
+    }
+
+    func requestCalendarAccess() async {
+        let granted = await eventKitSource.requestCalendarAccess()
+        appSettings.calendarEventsEnabled = granted
+    }
+
+    func requestRemindersAccess() async {
+        let granted = await eventKitSource.requestRemindersAccess()
+        appSettings.remindersEnabled = granted
+    }
+
+    func refreshEventKitNow() async {
+        await eventKitSource.refreshNow()
+    }
+
+    func openEventKitPrivacySettings(for entityType: EKEntityType) {
+        let anchor = entityType == .event ? "Privacy_Calendars" : "Privacy_Reminders"
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func receiveEventKitEvent(_ event: EventKitIslandEvent) {
+        triggerNotification(
+            title: event.title,
+            body: event.body,
+            source: event.source,
+            mergeIdentifier: event.identifier,
+            sourceBundleIdentifier: event.sourceBundleIdentifier
+        )
+    }
+
+    private func cancelNotification(mergeIdentifier: String) {
+        pendingIslandEvents.removeAll { $0.mergeIdentifier == mergeIdentifier }
+        if activeIslandEvent?.mergeIdentifier == mergeIdentifier {
+            completeActiveEvent()
+        } else {
+            updateNotificationDisplay()
+        }
     }
 
     private func startTicker() {
@@ -764,10 +867,11 @@ final class IslandModel: ObservableObject {
     private func mergeNormalEventIfPossible(_ event: PendingIslandEvent) -> Bool {
         if var activeEvent = activeIslandEvent,
            activeEvent.priority == .normal,
-           activeEvent.source == event.source {
+           canMerge(activeEvent, event) {
             activeEvent.title = event.title
             activeEvent.body = event.body
             activeEvent.source = event.source
+            activeEvent.sourceBundleIdentifier = event.sourceBundleIdentifier
             activeEvent.count = min(activeEvent.count + 1, 9)
             activeIslandEvent = activeEvent
             updateNotificationDisplay()
@@ -776,16 +880,24 @@ final class IslandModel: ObservableObject {
         }
 
         guard let index = pendingIslandEvents.lastIndex(where: {
-            $0.priority == .normal && $0.source == event.source
+            $0.priority == .normal && canMerge($0, event)
         }) else {
             return false
         }
         pendingIslandEvents[index].title = event.title
         pendingIslandEvents[index].body = event.body
         pendingIslandEvents[index].source = event.source
+        pendingIslandEvents[index].sourceBundleIdentifier = event.sourceBundleIdentifier
         pendingIslandEvents[index].count = min(pendingIslandEvents[index].count + 1, 9)
         updateNotificationDisplay()
         return true
+    }
+
+    private func canMerge(_ lhs: PendingIslandEvent, _ rhs: PendingIslandEvent) -> Bool {
+        if lhs.mergeIdentifier != nil || rhs.mergeIdentifier != nil {
+            return lhs.mergeIdentifier != nil && lhs.mergeIdentifier == rhs.mergeIdentifier
+        }
+        return lhs.source == rhs.source
     }
 
     private func enqueue(_ event: PendingIslandEvent) {
@@ -1149,6 +1261,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task {
+            await model.refreshEventKitNow()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1695,6 +1813,11 @@ struct IslandSettingsView: View {
                     Label("音乐", systemImage: "music.note")
                 }
 
+            EventKitSettingsPane(model: model, settings: model.appSettings)
+                .tabItem {
+                    Label("日程", systemImage: "calendar.badge.clock")
+                }
+
             LayoutCalibrationView(model: model, settings: model.layout)
                 .tabItem {
                     Label("布局", systemImage: "rectangle.and.hand.point.up.left")
@@ -1847,6 +1970,113 @@ private struct MusicSettingsPane: View {
                 } header: {
                     Text("诊断")
                 }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(16)
+    }
+}
+
+private struct EventKitSettingsPane: View {
+    @ObservedObject var model: IslandModel
+    @ObservedObject var settings: AppSettings
+    @State private var isRequestingCalendar = false
+    @State private var isRequestingReminders = false
+    @State private var isRefreshing = false
+
+    private var canRefresh: Bool {
+        (settings.calendarEventsEnabled && model.eventKitStatus.calendarAccess.canRead)
+            || (settings.remindersEnabled && model.eventKitStatus.remindersAccess.canRead)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("权限", value: model.eventKitStatus.calendarAccess.displayName)
+
+                if model.eventKitStatus.calendarAccess.canRead {
+                    Toggle("在岛中显示临近日程", isOn: $settings.calendarEventsEnabled)
+                } else if model.eventKitStatus.calendarAccess == .notDetermined {
+                    Button("允许访问日历") {
+                        isRequestingCalendar = true
+                        Task {
+                            await model.requestCalendarAccess()
+                            isRequestingCalendar = false
+                        }
+                    }
+                    .disabled(isRequestingCalendar)
+                } else {
+                    Button("打开日历隐私设置") {
+                        model.openEventKitPrivacySettings(for: .event)
+                    }
+                }
+
+                Text("读取所有日历来源中未来 10 分钟内的定时日程；全天日程默认忽略。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("日历")
+            }
+
+            Section {
+                LabeledContent("权限", value: model.eventKitStatus.remindersAccess.displayName)
+
+                if model.eventKitStatus.remindersAccess.canRead {
+                    Toggle("在岛中显示到期提醒", isOn: $settings.remindersEnabled)
+                } else if model.eventKitStatus.remindersAccess == .notDetermined {
+                    Button("允许访问提醒事项") {
+                        isRequestingReminders = true
+                        Task {
+                            await model.requestRemindersAccess()
+                            isRequestingReminders = false
+                        }
+                    }
+                    .disabled(isRequestingReminders)
+                } else {
+                    Button("打开提醒事项隐私设置") {
+                        model.openEventKitPrivacySettings(for: .reminder)
+                    }
+                }
+
+                Text("读取所有提醒清单中刚到期且具有具体时间的提醒，不补发大量历史逾期事项。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("提醒事项")
+            }
+
+            Section {
+                Button("立即检查") {
+                    isRefreshing = true
+                    Task {
+                        await model.refreshEventKitNow()
+                        isRefreshing = false
+                    }
+                }
+                .disabled(!canRefresh || isRefreshing)
+
+                if let checkedAt = model.eventKitStatus.lastRefreshAt {
+                    LabeledContent(
+                        "最近检查",
+                        value: checkedAt.formatted(date: .omitted, time: .standard)
+                    )
+                }
+
+                Text(model.eventKitStatus.detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("状态")
+            }
+
+            Section {
+                Text("授权仅用于读取日程和提醒事项，并把临近或到期事件送入灵动岛。不会读取其他 App 的系统通知，也不会修改你的日历和提醒事项。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("隐私")
             }
         }
         .formStyle(.grouped)
@@ -2023,7 +2253,7 @@ struct ExpandedIslandBodyPanel: View {
                         } label: {
                             HStack(spacing: 5) {
                                 Image(systemName: "bell.fill")
-                                Text(model.notification.count > 1 ? "\(model.notification.count) 条新消息" : "新消息")
+                                Text(model.notification.count > 1 ? "\(model.notification.count) 条提醒" : "提醒")
                                     .font(.system(size: 10, weight: .medium))
                             }
                             .foregroundStyle(.white.opacity(0.78))
@@ -2411,6 +2641,11 @@ struct ExpandedNotification: View {
             }
 
             HStack(spacing: 12) {
+                if model.canOpenActiveEventSource {
+                    TextButton(title: "打开", systemName: "arrow.up.forward.app") {
+                        model.openActiveEventSource()
+                    }
+                }
                 TextButton(title: "关闭", systemName: "xmark") {
                     model.dismissNotification()
                 }

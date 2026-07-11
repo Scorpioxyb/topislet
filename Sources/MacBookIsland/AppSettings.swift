@@ -7,6 +7,8 @@ final class AppSettings: ObservableObject {
         static let showIslandOnLaunch = "showIslandOnLaunch"
         static let autoCollapseExpandedIsland = "autoCollapseExpandedIsland"
         static let showMusicDiagnostics = "showMusicDiagnostics"
+        static let calendarEventsEnabled = "calendarEventsEnabled"
+        static let remindersEnabled = "remindersEnabled"
     }
 
     private let defaults: UserDefaults
@@ -22,6 +24,14 @@ final class AppSettings: ObservableObject {
 
     @Published var showMusicDiagnostics: Bool {
         didSet { persist(Key.showMusicDiagnostics, showMusicDiagnostics) }
+    }
+
+    @Published var calendarEventsEnabled: Bool {
+        didSet { persist(Key.calendarEventsEnabled, calendarEventsEnabled) }
+    }
+
+    @Published var remindersEnabled: Bool {
+        didSet { persist(Key.remindersEnabled, remindersEnabled) }
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -41,12 +51,24 @@ final class AppSettings: ObservableObject {
             in: defaults,
             fallback: false
         )
+        calendarEventsEnabled = Self.bool(
+            named: Key.calendarEventsEnabled,
+            in: defaults,
+            fallback: false
+        )
+        remindersEnabled = Self.bool(
+            named: Key.remindersEnabled,
+            in: defaults,
+            fallback: false
+        )
     }
 
     func resetToDefaults() {
         showIslandOnLaunch = true
         autoCollapseExpandedIsland = true
         showMusicDiagnostics = false
+        calendarEventsEnabled = false
+        remindersEnabled = false
     }
 
     private func persist(_ name: String, _ value: Bool) {

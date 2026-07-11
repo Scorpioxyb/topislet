@@ -9,6 +9,19 @@
 - 双击 App 或 `open "/Applications/MacBook 灵动岛.app"` 后顶部灵动岛出现，设置面板可打开。
 - 正常运行进程不包含 `--preview-mode` 或 `--preview-feature` 参数。
 - 安装包包含 `qishui-targeted-control.py`，且不包含 `qishui-focused-control`、短暂激活汽水或全局媒体键实现。
+- 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
+
+## 日历与提醒事项
+
+- 首次启动不主动弹出日历或提醒事项权限；`--eventkit-status` 只读取当前状态，不触发授权。
+- 设置的“日程”页可分别申请日历和提醒事项权限；一项拒绝、撤权或关闭时，另一项及汽水音乐继续正常工作。
+- 日历授权后，未来 10 分钟内的定时日程会进入事件队列；全天日程不展示。
+- 提醒事项授权后，只展示具有具体时间且刚到期 5 分钟以内的未完成事项；无时间提醒和大量历史逾期事项不补发。
+- 展开音乐、拖动进度、seek 或媒体控制 pending 期间，EventKit 普通事件只排队，不抢占当前交互。
+- 两个不同日程或提醒事项分别排队，不因同属“日历”或“提醒事项”而合并；同一事项在 30 秒轮询中不会重复展示。
+- 关闭开关或在系统设置中撤权后，正在后台返回的旧查询结果不得重新投递；岛内尚未展示的对应事项应取消。
+- 点击 EventKit 提醒中的“打开”可启动系统日历或提醒事项；找不到对应 App 时不显示无效按钮。
+- 日历库较大时，连续展开、收起和拖动仍保持流畅，30 秒轮询不得造成周期性主线程卡顿。
 
 ## 汽水音乐同步
 
@@ -76,6 +89,7 @@
 .build/debug/MacBookIsland --qishui-status
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --mediaremote-status
+.build/debug/MacBookIsland --eventkit-status
 .build/debug/MacBookIsland --qishui-targeted-control playPause
 pgrep -af 'mediaremote-adapter.pl.*stream-client.*com.soda.music'
 ```
