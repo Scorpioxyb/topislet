@@ -2966,7 +2966,7 @@ struct ExpandedMusic: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AlbumArt(track: model.music.track, size: 72)
+            AlbumArt(track: model.music.track, size: 80)
 
             VStack(alignment: .leading, spacing: 6) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -3022,7 +3022,8 @@ struct ExpandedMusic: View {
             }
             .frame(width: 308, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(width: 400, alignment: .center)
+        .offset(x: 6)
     }
 }
 
@@ -3058,6 +3059,9 @@ private struct MusicProgressRow: View {
             Text(playbackPositionText(model.music, progressOverride: scrubPreviewProgress))
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
                 .foregroundStyle(.white.opacity(0.52))
                 .frame(width: 74, alignment: .leading)
         }
