@@ -18,7 +18,7 @@ final class LayoutCalibrationSettings: ObservableObject {
 
     private enum Default {
         static let islandYOffset = 0.0
-        static let notchHeightAdjustment = 2.0
+        static let notchHeightAdjustment = 1.0
         static let expandedHeightAdjustment = 0.0
         static let expandedTopControlsTopOffset = 4.0
         static let leftControlsXOffset = 22.0
@@ -262,7 +262,7 @@ struct LayoutCalibrationView: View {
                     title: "摄像头遮挡高度",
                     value: $settings.notchHeightAdjustment,
                     range: -2...8,
-                    helper: "默认向下多覆盖 2 pt，让胶囊底部盖住物理摄像头模组。"
+                    helper: "默认向下多覆盖 1 pt，让胶囊底部贴合物理摄像头模组并落在完整像素边界。"
                 )
 
                 CalibrationSlider(

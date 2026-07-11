@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import CoreImage
 import EventKit
 import QuartzCore
 import SwiftUI
@@ -304,6 +305,95 @@ private struct PendingMusicSeek {
     var matchingSince: Date?
 }
 
+private struct ArtworkAccentComponents: Sendable {
+    let red: Double
+    let green: Double
+    let blue: Double
+}
+
+private let artworkColorContext = CIContext(options: [.cacheIntermediates: false])
+private let artworkColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+
+private func artworkAccentComponents(from data: Data) -> ArtworkAccentComponents? {
+    guard let image = CIImage(data: data),
+          !image.extent.isEmpty,
+          let filter = CIFilter(name: "CIAreaAverage") else { return nil }
+    filter.setValue(image, forKey: kCIInputImageKey)
+    filter.setValue(CIVector(cgRect: image.extent), forKey: kCIInputExtentKey)
+    guard let outputImage = filter.outputImage else { return nil }
+
+    var pixel = [UInt8](repeating: 0, count: 4)
+    pixel.withUnsafeMutableBytes { bytes in
+        guard let baseAddress = bytes.baseAddress else { return }
+        artworkColorContext.render(
+            outputImage,
+            toBitmap: baseAddress,
+            rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8,
+            colorSpace: artworkColorSpace
+        )
+    }
+    guard pixel[3] > 20 else { return nil }
+    return normalizedArtworkAccent(
+        red: Double(pixel[0]) / 255,
+        green: Double(pixel[1]) / 255,
+        blue: Double(pixel[2]) / 255
+    )
+}
+
+private func normalizedArtworkAccent(
+    red: Double,
+    green: Double,
+    blue: Double
+) -> ArtworkAccentComponents {
+    let maximum = max(red, green, blue)
+    let minimum = min(red, green, blue)
+    let delta = maximum - minimum
+    guard maximum > 0, delta / maximum >= 0.12 else {
+        return ArtworkAccentComponents(red: 0.86, green: 0.86, blue: 0.86)
+    }
+
+    var hue: Double
+    if maximum == red {
+        hue = ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
+    } else if maximum == green {
+        hue = ((blue - red) / delta) + 2
+    } else {
+        hue = ((red - green) / delta) + 4
+    }
+    hue /= 6
+    if hue < 0 { hue += 1 }
+
+    var saturation = min(max(delta / maximum, 0.45), 0.82)
+    if (0.06...0.13).contains(hue) || (0.22...0.45).contains(hue) {
+        saturation = min(saturation, 0.40)
+    }
+    let brightness = min(max(maximum, 0.72), 0.96)
+    return rgbComponents(hue: hue, saturation: saturation, brightness: brightness)
+}
+
+private func rgbComponents(
+    hue: Double,
+    saturation: Double,
+    brightness: Double
+) -> ArtworkAccentComponents {
+    let scaledHue = hue * 6
+    let sector = Int(floor(scaledHue)) % 6
+    let fraction = scaledHue - floor(scaledHue)
+    let p = brightness * (1 - saturation)
+    let q = brightness * (1 - fraction * saturation)
+    let t = brightness * (1 - (1 - fraction) * saturation)
+    switch sector {
+    case 0: return ArtworkAccentComponents(red: brightness, green: t, blue: p)
+    case 1: return ArtworkAccentComponents(red: q, green: brightness, blue: p)
+    case 2: return ArtworkAccentComponents(red: p, green: brightness, blue: t)
+    case 3: return ArtworkAccentComponents(red: p, green: q, blue: brightness)
+    case 4: return ArtworkAccentComponents(red: t, green: p, blue: brightness)
+    default: return ArtworkAccentComponents(red: brightness, green: p, blue: q)
+    }
+}
+
 @MainActor
 final class IslandModel: ObservableObject {
     @Published var mode: IslandMode = .collapsed
@@ -313,6 +403,7 @@ final class IslandModel: ObservableObject {
     let appSettings = AppSettings()
     let layout = LayoutCalibrationSettings()
     @Published var music: MusicState
+    @Published var musicAccentColor = Color.white
     @Published var pendingTrackControl: MusicControlCommand?
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
@@ -335,6 +426,9 @@ final class IslandModel: ObservableObject {
     private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
+    private var musicAccentTask: Task<Void, Never>?
+    private var musicAccentIdentity = ""
+    private var musicAccentGeneration = 0
     private var trackControlFeedbackTask: Task<Void, Never>?
     private var pendingTrackControlBaselineSignature: String?
     private var layoutCancellable: AnyCancellable?
@@ -388,6 +482,21 @@ final class IslandModel: ObservableObject {
 
     var expandedHeaderWidth: CGFloat {
         notchWidth + expandedHeaderWingWidth * 2
+    }
+
+    var statusWaveIsActive: Bool {
+        switch activeFeature {
+        case .music:
+            return music.isPlaying
+        case .timer:
+            return timerState.isRunning
+        case .notification:
+            return false
+        }
+    }
+
+    var statusWaveColor: Color {
+        activeFeature == .music ? musicAccentColor : .white
     }
 
     var expandedPanelTopGap: CGFloat {
@@ -655,6 +764,8 @@ final class IslandModel: ObservableObject {
         ticker = nil
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
+        musicAccentTask?.cancel()
+        musicAccentTask = nil
         trackControlFeedbackTask?.cancel()
         trackControlFeedbackTask = nil
         notificationPresentationTask?.cancel()
@@ -1079,6 +1190,7 @@ final class IslandModel: ObservableObject {
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
+            refreshMusicAccent(for: reconciledMusic.track)
             if let pendingTrackControl,
                let baseline = pendingTrackControlBaselineSignature,
                musicSignature(reconciledMusic) != baseline {
@@ -1090,6 +1202,68 @@ final class IslandModel: ObservableObject {
            shouldPublishMusicStatus(newStatus) {
             musicSourceStatus = newStatus
         }
+    }
+
+    private func refreshMusicAccent(for track: MusicTrack) {
+        let identity = artworkAccentIdentity(for: track)
+        guard identity != musicAccentIdentity else { return }
+        musicAccentIdentity = identity
+        musicAccentGeneration += 1
+        let generation = musicAccentGeneration
+        musicAccentTask?.cancel()
+
+        let inlineData = track.artworkData
+        let artworkURL = track.artworkURL
+        guard inlineData != nil || artworkURL != nil else {
+            withAnimation(.easeInOut(duration: 0.20)) {
+                musicAccentColor = .white
+            }
+            musicAccentTask = nil
+            return
+        }
+
+        musicAccentTask = Task { [weak self] in
+            let data: Data?
+            if let inlineData {
+                data = inlineData
+            } else if let artworkURL {
+                data = try? await URLSession.shared.data(from: artworkURL).0
+            } else {
+                data = nil
+            }
+            guard !Task.isCancelled, let data else { return }
+            let components = await Task.detached(priority: .utility) {
+                artworkAccentComponents(from: data)
+            }.value
+            guard !Task.isCancelled,
+                  let self,
+                  generation == musicAccentGeneration,
+                  identity == musicAccentIdentity,
+                  let components else { return }
+            withAnimation(.easeInOut(duration: 0.20)) {
+                musicAccentColor = Color(
+                    red: components.red,
+                    green: components.green,
+                    blue: components.blue
+                )
+            }
+            musicAccentTask = nil
+        }
+    }
+
+    private func artworkAccentIdentity(for track: MusicTrack) -> String {
+        let artworkKey: String
+        if let artworkData = track.artworkData {
+            let prefix = artworkData.prefix(16)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            artworkKey = "data:\(artworkData.count):\(prefix)"
+        } else if let artworkURL = track.artworkURL {
+            artworkKey = "url:\(artworkURL.absoluteString)"
+        } else {
+            artworkKey = "none"
+        }
+        return "\(track.title)\u{1f}\(track.artist)\u{1f}\(artworkKey)"
     }
 
     private func reconcilePendingSeek(_ newMusic: MusicState) -> MusicState {
@@ -1235,10 +1409,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     private var outsideMouseMonitor: Any?
+    private var hoverGlobalMouseMonitor: Any?
+    private var hoverLocalMouseMonitor: Any?
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationID = 0
     private var panelAnimationCompletionTask: Task<Void, Never>?
+    private var hoverEnterTask: Task<Void, Never>?
+    private var hoverExitTask: Task<Void, Never>?
+    private var isPointerInsideHoverZone = false
+    private var didExpandFromHover = false
+    private var hoverReturnMode: IslandMode?
+    private var hoverGeneration = 0
+    private var hoverExpectedModeChange: IslandMode?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1254,6 +1437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeModel()
         observeScreenChanges()
         observeOutsideClicks()
+        observeIslandHover()
         updatePanelVisibility()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.presentOpenFeedback(shouldShowSettings: false)
@@ -1285,6 +1469,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let outsideMouseMonitor {
             NSEvent.removeMonitor(outsideMouseMonitor)
         }
+        if let hoverGlobalMouseMonitor {
+            NSEvent.removeMonitor(hoverGlobalMouseMonitor)
+        }
+        if let hoverLocalMouseMonitor {
+            NSEvent.removeMonitor(hoverLocalMouseMonitor)
+        }
         if let outsideEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), outsideEventTapRunLoopSource, .commonModes)
         }
@@ -1295,6 +1485,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationCenter.default.removeObserver(screenObserver)
         }
         panelAnimationCompletionTask?.cancel()
+        hoverEnterTask?.cancel()
+        hoverExitTask?.cancel()
     }
 
     @objc private func receiveIslandEvent(_ notification: Notification) {
@@ -1350,6 +1542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
         panel.level = level
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.isExcludedFromWindowsMenu = true
@@ -1399,7 +1592,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeModel() {
         model.$mode
             .sink { [weak self] mode in
-                self?.repositionPanel(animated: true, targetMode: mode)
+                guard let self else { return }
+                handleObservedModeChange(mode)
+                repositionPanel(animated: true, targetMode: mode)
             }
             .store(in: &cancellables)
 
@@ -1473,6 +1668,131 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         outsideEventTapRunLoopSource = runLoopSource
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    private func observeIslandHover() {
+        hoverGlobalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            let point = NSEvent.mouseLocation
+            Task { @MainActor in
+                self?.updateIslandHover(at: point)
+            }
+        }
+        hoverLocalMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            let point = NSEvent.mouseLocation
+            Task { @MainActor in
+                self?.updateIslandHover(at: point)
+            }
+            return event
+        }
+    }
+
+    private func updateIslandHover(at point: CGPoint) {
+        let isInside = isInsideIslandHoverZone(point)
+        guard isInside != isPointerInsideHoverZone else { return }
+        isPointerInsideHoverZone = isInside
+        hoverGeneration += 1
+        let generation = hoverGeneration
+
+        if isInside {
+            hoverExitTask?.cancel()
+            hoverExitTask = nil
+            guard model.mode != .expanded else { return }
+            let returnMode: IslandMode = model.mode == .collapsed ? .collapsed : .compact
+            hoverEnterTask?.cancel()
+            hoverEnterTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 160_000_000)
+                guard !Task.isCancelled,
+                      let self,
+                      hoverGeneration == generation,
+                      isPointerInsideHoverZone,
+                      model.mode != .expanded else { return }
+                didExpandFromHover = true
+                hoverReturnMode = returnMode
+                hoverExpectedModeChange = .expanded
+                model.requestIslandMode(.expanded, bypassCooldown: true)
+                hoverEnterTask = nil
+            }
+            return
+        }
+
+        hoverEnterTask?.cancel()
+        hoverEnterTask = nil
+        guard didExpandFromHover else { return }
+        hoverExitTask?.cancel()
+        hoverExitTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  hoverGeneration == generation,
+                  model.mode == .expanded,
+                  !isPointerInsideHoverZone else { return }
+            didExpandFromHover = false
+            let returnMode = hoverReturnMode ?? .compact
+            hoverReturnMode = nil
+            hoverExpectedModeChange = returnMode
+            model.requestIslandMode(returnMode, bypassCooldown: true)
+            hoverExitTask = nil
+        }
+    }
+
+    private func isInsideIslandHoverZone(_ point: CGPoint) -> Bool {
+        guard model.isVisible, let panel, panel.isVisible else { return false }
+        let headerZone = panel.frame.insetBy(dx: -3, dy: -3)
+        if model.mode == .compact,
+           model.activeFeature != .music {
+            let compactControlZone = CGRect(
+                x: panel.frame.maxX - 40,
+                y: panel.frame.minY,
+                width: 40,
+                height: panel.frame.height
+            ).insetBy(dx: -3, dy: -3)
+            if compactControlZone.contains(point) {
+                return false
+            }
+        }
+        guard model.mode == .expanded,
+              let expandedPanel,
+              expandedPanel.isVisible else {
+            return headerZone.contains(point)
+        }
+
+        let bodyZone = expandedPanel.frame.insetBy(dx: -3, dy: -3)
+        if headerZone.contains(point) || bodyZone.contains(point) {
+            return true
+        }
+
+        let bridgeMinX = max(panel.frame.minX, expandedPanel.frame.minX)
+        let bridgeMaxX = min(panel.frame.maxX, expandedPanel.frame.maxX)
+        let bridgeMinY = min(panel.frame.minY, expandedPanel.frame.maxY)
+        let bridgeMaxY = max(panel.frame.minY, expandedPanel.frame.maxY)
+        guard bridgeMaxX > bridgeMinX, bridgeMaxY > bridgeMinY else {
+            return false
+        }
+        let bridge = CGRect(
+            x: bridgeMinX,
+            y: bridgeMinY,
+            width: bridgeMaxX - bridgeMinX,
+            height: bridgeMaxY - bridgeMinY
+        )
+        return bridge.contains(point)
+    }
+
+    private func handleObservedModeChange(_ mode: IslandMode) {
+        if hoverExpectedModeChange == mode {
+            hoverExpectedModeChange = nil
+            return
+        }
+        hoverExpectedModeChange = nil
+        guard didExpandFromHover || hoverEnterTask != nil || hoverExitTask != nil else {
+            return
+        }
+        hoverGeneration += 1
+        hoverEnterTask?.cancel()
+        hoverEnterTask = nil
+        hoverExitTask?.cancel()
+        hoverExitTask = nil
+        didExpandFromHover = false
+        hoverReturnMode = nil
     }
 
     private func collapseExpandedIslandIfClickIsOutside() {
@@ -2167,19 +2487,12 @@ struct IslandRootView: View {
             IslandShell(
                 width: shellWidth,
                 height: model.topBandHeight,
-                cornerRadius: model.topBandHeight / 2
+                cornerRadius: model.topBandHeight / 2,
+                fillOpacity: 1,
+                strokeOpacity: 0,
+                attachesToTop: true
             ) {
                 Color.clear
-            }
-            .onTapGesture {
-                switch model.mode {
-                case .collapsed:
-                    model.requestIslandMode(.compact)
-                case .compact:
-                    model.requestIslandMode(.expanded)
-                case .expanded:
-                    break
-                }
             }
             .animation(shellAnimation, value: model.mode)
 
@@ -2206,21 +2519,54 @@ struct IslandShell<Content: View>: View {
     var fillOpacity: Double = 0.995
     var strokeOpacity: Double = 0.03
     var shadowOpacity: Double = 0
+    var attachesToTop = false
     @ViewBuilder var content: Content
 
     var body: some View {
+        let shape = IslandShellShape(
+            cornerRadius: cornerRadius,
+            attachesToTop: attachesToTop
+        )
         content
             .frame(width: width, height: height)
             .background(
                 ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    shape
                         .fill(Color.black.opacity(fillOpacity))
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    shape
                         .stroke(Color.white.opacity(strokeOpacity), lineWidth: 0.65)
                 }
             )
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(shape)
             .shadow(color: Color.black.opacity(shadowOpacity), radius: shadowOpacity > 0 ? 14 : 0, x: 0, y: shadowOpacity > 0 ? 8 : 0)
+    }
+}
+
+private struct IslandShellShape: Shape {
+    let cornerRadius: CGFloat
+    let attachesToTop: Bool
+
+    func path(in rect: CGRect) -> Path {
+        guard attachesToTop else {
+            return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .path(in: rect)
+        }
+        let radius = min(cornerRadius, rect.width / 2, rect.height)
+        return Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+            path.addQuadCurve(
+                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+                control: CGPoint(x: rect.maxX, y: rect.maxY)
+            )
+            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+            path.addQuadCurve(
+                to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+                control: CGPoint(x: rect.minX, y: rect.maxY)
+            )
+            path.closeSubpath()
+        }
     }
 }
 
@@ -2233,7 +2579,8 @@ struct CollapsedIsland: View {
             height: model.topBandHeight,
             cornerRadius: model.topBandHeight / 2,
             fillOpacity: 0,
-            strokeOpacity: 0
+            strokeOpacity: 0,
+            attachesToTop: true
         ) {
             ZStack {
                 HStack(spacing: 0) {
@@ -2245,13 +2592,17 @@ struct CollapsedIsland: View {
                     Color.clear
                         .frame(width: model.notchWidth, height: model.topBandHeight)
 
-                    StatusDot(isActive: model.music.isPlaying || model.timerState.isRunning)
+                    StatusDot(
+                        isActive: model.statusWaveIsActive,
+                        accentColor: model.statusWaveColor
+                    )
                         .frame(width: model.collapsedWingWidth, height: model.topBandHeight)
                 }
-
-                NotchCore(width: model.notchWidth, height: model.topBandHeight)
-                    .allowsHitTesting(false)
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.requestIslandMode(.compact)
         }
     }
 }
@@ -2265,7 +2616,8 @@ struct CompactIsland: View {
             height: model.topBandHeight,
             cornerRadius: model.topBandHeight / 2,
             fillOpacity: 0,
-            strokeOpacity: 0
+            strokeOpacity: 0,
+            attachesToTop: true
         ) {
             ZStack {
                 Group {
@@ -2278,8 +2630,6 @@ struct CompactIsland: View {
                         CompactNotification(model: model)
                     }
                 }
-                NotchCore(width: model.notchWidth, height: model.topBandHeight)
-                    .allowsHitTesting(false)
             }
         }
     }
@@ -2294,7 +2644,8 @@ struct ExpandedIsland: View {
             height: model.topBandHeight,
             cornerRadius: model.topBandHeight / 2,
             fillOpacity: 0,
-            strokeOpacity: 0
+            strokeOpacity: 0,
+            attachesToTop: true
         ) {
             ZStack {
                 HStack(spacing: 0) {
@@ -2306,12 +2657,12 @@ struct ExpandedIsland: View {
                     Color.clear
                         .frame(width: model.notchWidth, height: model.topBandHeight)
 
-                    StatusDot(isActive: model.music.isPlaying || model.timerState.isRunning)
+                    StatusDot(
+                        isActive: model.statusWaveIsActive,
+                        accentColor: model.statusWaveColor
+                    )
                         .frame(width: model.expandedHeaderWingWidth, height: model.topBandHeight)
                 }
-
-                NotchCore(width: model.notchWidth, height: model.topBandHeight)
-                    .allowsHitTesting(false)
             }
         }
     }
@@ -2482,13 +2833,18 @@ struct CompactMusic: View {
             HStack(spacing: 9) {
                 ProgressPill(progress: model.music.progress, width: 54)
 
-                ControlButton(icon: model.music.isPlaying ? "pause.fill" : "play.fill", pending: model.music.isPlaybackPending, size: 27) {
-                    model.playPause()
-                }
-                .help(model.music.isPlaying ? "暂停" : "播放")
+                StatusDot(
+                    isActive: model.statusWaveIsActive,
+                    accentColor: model.statusWaveColor
+                )
+                .frame(width: 10, height: 10)
             }
             .padding(.trailing, 10)
             .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .trailing)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.requestIslandMode(.expanded)
         }
     }
 }
@@ -2514,15 +2870,31 @@ struct CompactTimer: View {
             }
             .padding(.leading, 10)
             .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.requestIslandMode(.expanded)
+            }
 
             Color.clear
                 .frame(width: model.notchWidth, height: model.topBandHeight)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.requestIslandMode(.expanded)
+                }
 
-            ControlButton(icon: model.timerState.isRunning ? "pause.fill" : "play.fill", size: 27) {
-                model.toggleTimer()
+            ZStack(alignment: .trailing) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        model.requestIslandMode(.expanded)
+                    }
+
+                ControlButton(icon: model.timerState.isRunning ? "pause.fill" : "play.fill", size: 27) {
+                    model.toggleTimer()
+                }
+                .help(model.timerState.isRunning ? "暂停计时" : "开始计时")
+                .padding(.trailing, 10)
             }
-            .help(model.timerState.isRunning ? "暂停计时" : "开始计时")
-            .padding(.trailing, 10)
             .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .trailing)
         }
     }
@@ -2564,15 +2936,31 @@ struct CompactNotification: View {
             }
             .padding(.leading, 10)
             .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.requestIslandMode(.expanded)
+            }
 
             Color.clear
                 .frame(width: model.notchWidth, height: model.topBandHeight)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.requestIslandMode(.expanded)
+                }
 
-            ControlButton(icon: "xmark", size: 27) {
-                model.dismissNotification()
+            ZStack(alignment: .trailing) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        model.requestIslandMode(.expanded)
+                    }
+
+                ControlButton(icon: "xmark", size: 27) {
+                    model.dismissNotification()
+                }
+                .help("关闭提醒")
+                .padding(.trailing, 10)
             }
-            .help("关闭提醒")
-            .padding(.trailing, 10)
             .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .trailing)
         }
     }
@@ -2884,19 +3272,6 @@ struct AlbumArt: View {
     }
 }
 
-struct NotchCore: View {
-    let width: CGFloat
-    let height: CGFloat
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: height / 2, style: .continuous)
-            .fill(Color.black.opacity(0.98))
-            .frame(width: width, height: height)
-        .frame(width: width, height: height)
-        .accessibilityHidden(true)
-    }
-}
-
 struct ControlButton: View {
     let icon: String
     var prominent = false
@@ -3078,17 +3453,109 @@ struct ProgressPill: View {
 
 struct StatusDot: View {
     let isActive: Bool
+    let accentColor: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(alignment: .center, spacing: 1.5) {
-            ForEach([4.0, 8.0, 5.5], id: \.self) { height in
-                Capsule()
-                    .fill(Color.white.opacity(isActive ? 0.82 : 0.28))
-                    .frame(width: 1.8, height: isActive ? height : 3)
-            }
-        }
+        StatusWaveformLayerView(
+            isActive: isActive,
+            accentColor: accentColor,
+            reduceMotion: reduceMotion
+        )
         .frame(width: 10, height: 10)
-        .animation(.easeInOut(duration: 0.16), value: isActive)
+    }
+}
+
+private struct StatusWaveformLayerView: NSViewRepresentable {
+    let isActive: Bool
+    let accentColor: Color
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> StatusWaveformNSView {
+        StatusWaveformNSView()
+    }
+
+    func updateNSView(_ nsView: StatusWaveformNSView, context: Context) {
+        nsView.update(
+            isActive: isActive,
+            accentColor: NSColor(accentColor),
+            reduceMotion: reduceMotion
+        )
+    }
+}
+
+private final class StatusWaveformNSView: NSView {
+    private let bars = [CALayer(), CALayer(), CALayer()]
+    private let activeOpacities: [CGFloat] = [1.0, 0.82, 0.68]
+    private let inactiveOpacities: [CGFloat] = [0.40, 0.34, 0.30]
+    private let animatedHeights: [[CGFloat]] = [
+        [3, 7, 5, 8, 3],
+        [7, 4, 8, 5, 7],
+        [5, 8, 3, 6, 5]
+    ]
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        for bar in bars {
+            bar.bounds = CGRect(x: 0, y: 0, width: 1.8, height: 3)
+            bar.cornerRadius = 0.9
+            bar.cornerCurve = .continuous
+            bar.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+            layer?.addSublayer(bar)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        let centerY = bounds.midY
+        for (index, bar) in bars.enumerated() {
+            bar.position = CGPoint(x: 1.2 + CGFloat(index) * 3.3, y: centerY)
+        }
+    }
+
+    func update(isActive: Bool, accentColor: NSColor, reduceMotion: Bool) {
+        let resolvedAccent = accentColor.usingColorSpace(.sRGB) ?? .white
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.20)
+        for (index, bar) in bars.enumerated() {
+            let opacity = isActive ? activeOpacities[index] : inactiveOpacities[index]
+            let color = resolvedAccent.withAlphaComponent(opacity)
+            bar.backgroundColor = color.cgColor
+        }
+        CATransaction.commit()
+
+        if isActive, !reduceMotion {
+            startAnimationsIfNeeded()
+        } else {
+            let heights: [CGFloat] = isActive ? [4, 7, 5] : [3, 3, 3]
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            for (index, bar) in bars.enumerated() {
+                bar.removeAnimation(forKey: "waveHeight")
+                bar.bounds.size.height = heights[index]
+            }
+            CATransaction.commit()
+        }
+    }
+
+    private func startAnimationsIfNeeded() {
+        for (index, bar) in bars.enumerated() {
+            guard bar.animation(forKey: "waveHeight") == nil else { continue }
+            let animation = CAKeyframeAnimation(keyPath: "bounds.size.height")
+            animation.values = animatedHeights[index]
+            animation.keyTimes = [0, 0.25, 0.5, 0.75, 1]
+            animation.duration = 0.76
+            animation.repeatCount = .infinity
+            animation.calculationMode = .cubic
+            animation.isRemovedOnCompletion = false
+            bar.add(animation, forKey: "waveHeight")
+        }
     }
 }
 
