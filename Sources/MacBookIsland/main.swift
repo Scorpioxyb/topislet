@@ -1614,13 +1614,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishAnimatedReposition() {
-        let size = panelSize(for: model.mode)
-        panel?.contentView?.frame = NSRect(origin: .zero, size: size)
-
-        let bodySize = expandedPanelSize()
-        expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
+        snapPanelToCurrentMode()
         expandedPanel?.alphaValue = 1
-        updatePanelVisibility()
     }
 
     private func snapPanelToCurrentMode() {
@@ -2517,11 +2512,12 @@ struct ExpandedMusic: View {
                         model.nextTrack()
                     }
                     .help("下一首")
-
-                    Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+            .frame(width: 308, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
@@ -2605,10 +2601,12 @@ struct ExpandedTimer: View {
                     }
                     .help("加 1 分钟")
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+            .frame(width: 232, alignment: .leading)
 
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
