@@ -1238,6 +1238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationID = 0
+    private var panelAnimationCompletionTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1293,6 +1294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+        panelAnimationCompletionTask?.cancel()
     }
 
     @objc private func receiveIslandEvent(_ notification: Notification) {
@@ -1354,7 +1356,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return panel
     }
 
-    private func configureIslandHostingView(_ hostingView: NSView, size: NSSize) {
+    private func configureIslandHostingView<Content: View>(
+        _ hostingView: NSHostingView<Content>,
+        size: NSSize
+    ) {
+        hostingView.sizingOptions = []
         hostingView.frame = NSRect(origin: .zero, size: size)
         hostingView.autoresizingMask = [.width, .height]
         hostingView.wantsLayer = true
@@ -1392,7 +1398,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func observeModel() {
         model.$mode
-            .sink { [weak self] _ in self?.repositionPanel(animated: true) }
+            .sink { [weak self] mode in
+                DispatchQueue.main.async {
+                    guard self?.model.mode == mode else { return }
+                    self?.repositionPanel(animated: true, targetMode: mode)
+                }
+            }
             .store(in: &cancellables)
 
         model.$isVisible
@@ -1558,17 +1569,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSSize(width: model.expandedWidth, height: model.expandedBodyHeight)
     }
 
-    private func repositionPanel(animated: Bool) {
+    private func repositionPanel(animated: Bool, targetMode: IslandMode? = nil) {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
         guard let screen else { return }
 
-        let size = panelSize(for: model.mode)
+        let mode = targetMode ?? model.mode
+        let size = panelSize(for: mode)
         let frame = panelFrame(for: size, on: screen)
         let bodySize = expandedPanelSize()
         let bodyFrame = expandedPanelFrame(for: bodySize, on: screen)
 
         guard animated else {
+            panelAnimationCompletionTask?.cancel()
+            panelAnimationCompletionTask = nil
             panelAnimationID += 1
             panel.disableScreenUpdatesUntilFlush()
             panel.setFrame(frame, display: true)
@@ -1578,18 +1592,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expandedPanel?.setFrame(bodyFrame, display: true)
             expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
             expandedPanel?.alphaValue = 1
-            expandedPanel?.ignoresMouseEvents = model.mode != .expanded
+            expandedPanel?.ignoresMouseEvents = mode != .expanded
             updatePanelVisibility()
             return
         }
 
         panelAnimationID += 1
         let animationID = panelAnimationID
+        let animationDuration = mode == .expanded ? 0.22 : 0.16
+        panelAnimationCompletionTask?.cancel()
         expandedPanel?.ignoresMouseEvents = true
+
+        panel.setFrame(frame, display: true, animate: false)
+        panel.contentView?.frame = NSRect(origin: .zero, size: size)
+        panel.setFrameOrigin(frame.origin)
 
         if model.isVisible {
             panel.orderFrontRegardless()
-            if model.mode == .expanded, let expandedPanel {
+            if mode == .expanded, let expandedPanel {
                 if !expandedPanel.isVisible {
                     expandedPanel.setFrame(bodyFrame, display: true)
                     expandedPanel.contentView?.frame = NSRect(
@@ -1603,23 +1623,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = model.mode == .expanded ? 0.22 : 0.16
+            context.duration = animationDuration
             context.timingFunction = CAMediaTimingFunction(
-                name: model.mode == .expanded ? .easeInEaseOut : .easeOut
+                name: mode == .expanded ? .easeInEaseOut : .easeOut
             )
             context.allowsImplicitAnimation = true
-            panel.animator().setFrame(frame, display: true)
 
             if let expandedPanel,
-               model.mode == .expanded,
+               mode == .expanded,
                expandedPanel.isVisible {
                 expandedPanel.animator().setFrame(bodyFrame, display: true)
             }
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard self?.panelAnimationID == animationID else { return }
-                self?.finishAnimatedReposition()
-            }
+        }
+        panelAnimationCompletionTask = Task { [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(animationDuration * 1_000_000_000)
+            )
+            guard !Task.isCancelled,
+                  let self,
+                  panelAnimationID == animationID else { return }
+            panelAnimationCompletionTask = nil
+            finishAnimatedReposition()
         }
     }
 
