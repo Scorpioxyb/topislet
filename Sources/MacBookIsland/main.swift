@@ -391,7 +391,7 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedPanelTopGap: CGFloat {
-        -3
+        8
     }
 
     var expandedBodyHeight: CGFloat {
@@ -1399,10 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeModel() {
         model.$mode
             .sink { [weak self] mode in
-                DispatchQueue.main.async {
-                    guard self?.model.mode == mode else { return }
-                    self?.repositionPanel(animated: true, targetMode: mode)
-                }
+                self?.repositionPanel(animated: true, targetMode: mode)
             }
             .store(in: &cancellables)
 
@@ -1439,8 +1436,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func observeOutsideClicks() {
         outsideMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            let clickPoint = NSEvent.mouseLocation
             Task { @MainActor in
-                self?.collapseExpandedIslandIfClickIsOutside()
+                self?.collapseExpandedIslandIfClickIsOutside(appKitLocation: clickPoint)
             }
         }
 
@@ -1603,10 +1601,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelAnimationCompletionTask?.cancel()
         expandedPanel?.ignoresMouseEvents = true
 
-        panel.setFrame(frame, display: true, animate: false)
-        panel.contentView?.frame = NSRect(origin: .zero, size: size)
-        panel.setFrameOrigin(frame.origin)
-
         if model.isVisible {
             panel.orderFrontRegardless()
             if mode == .expanded, let expandedPanel {
@@ -1628,6 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 name: mode == .expanded ? .easeInEaseOut : .easeOut
             )
             context.allowsImplicitAnimation = true
+            panel.animator().setFrame(frame, display: true)
 
             if let expandedPanel,
                mode == .expanded,
@@ -2150,15 +2145,53 @@ private struct AboutSettingsPane: View {
 struct IslandRootView: View {
     @ObservedObject var model: IslandModel
 
+    private var shellWidth: CGFloat {
+        switch model.mode {
+        case .collapsed:
+            return model.collapsedWidth
+        case .compact:
+            return model.compactWidth
+        case .expanded:
+            return model.expandedHeaderWidth
+        }
+    }
+
+    private var shellAnimation: Animation {
+        model.mode == .expanded
+            ? .easeInOut(duration: 0.22)
+            : .easeOut(duration: 0.16)
+    }
+
     var body: some View {
-        Group {
-            switch model.mode {
-            case .collapsed:
-                CollapsedIsland(model: model)
-            case .compact:
-                CompactIsland(model: model)
-            case .expanded:
-                ExpandedIsland(model: model)
+        ZStack(alignment: .top) {
+            IslandShell(
+                width: shellWidth,
+                height: model.topBandHeight,
+                cornerRadius: model.topBandHeight / 2
+            ) {
+                Color.clear
+            }
+            .onTapGesture {
+                switch model.mode {
+                case .collapsed:
+                    model.requestIslandMode(.compact)
+                case .compact:
+                    model.requestIslandMode(.expanded)
+                case .expanded:
+                    break
+                }
+            }
+            .animation(shellAnimation, value: model.mode)
+
+            Group {
+                switch model.mode {
+                case .collapsed:
+                    CollapsedIsland(model: model)
+                case .compact:
+                    CompactIsland(model: model)
+                case .expanded:
+                    ExpandedIsland(model: model)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -2195,7 +2228,13 @@ struct CollapsedIsland: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        IslandShell(width: model.collapsedWidth, height: model.topBandHeight, cornerRadius: model.topBandHeight / 2) {
+        IslandShell(
+            width: model.collapsedWidth,
+            height: model.topBandHeight,
+            cornerRadius: model.topBandHeight / 2,
+            fillOpacity: 0,
+            strokeOpacity: 0
+        ) {
             ZStack {
                 HStack(spacing: 0) {
                     Image(systemName: model.activeFeature.iconName)
@@ -2214,9 +2253,6 @@ struct CollapsedIsland: View {
                     .allowsHitTesting(false)
             }
         }
-        .onTapGesture {
-            model.requestIslandMode(.compact)
-        }
     }
 }
 
@@ -2224,7 +2260,13 @@ struct CompactIsland: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        IslandShell(width: model.compactWidth, height: model.topBandHeight, cornerRadius: model.topBandHeight / 2) {
+        IslandShell(
+            width: model.compactWidth,
+            height: model.topBandHeight,
+            cornerRadius: model.topBandHeight / 2,
+            fillOpacity: 0,
+            strokeOpacity: 0
+        ) {
             ZStack {
                 Group {
                     switch model.activeFeature {
@@ -2240,9 +2282,6 @@ struct CompactIsland: View {
                     .allowsHitTesting(false)
             }
         }
-        .onTapGesture {
-            model.requestIslandMode(.expanded)
-        }
     }
 }
 
@@ -2250,7 +2289,13 @@ struct ExpandedIsland: View {
     @ObservedObject var model: IslandModel
 
     var body: some View {
-        IslandShell(width: model.expandedHeaderWidth, height: model.topBandHeight, cornerRadius: model.topBandHeight / 2) {
+        IslandShell(
+            width: model.expandedHeaderWidth,
+            height: model.topBandHeight,
+            cornerRadius: model.topBandHeight / 2,
+            fillOpacity: 0,
+            strokeOpacity: 0
+        ) {
             ZStack {
                 HStack(spacing: 0) {
                     Image(systemName: model.activeFeature.iconName)
