@@ -2,6 +2,15 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("汽水专属读取不能授权系统全局进度跳转")
+@MainActor
+func qishuiDedicatedReadCannotAuthorizeGlobalSeek() async {
+    #expect(!QishuiSeekSafety.supportsTargetedSeek)
+    let result = await MusicAdapterCoordinator().seek(to: 0.75, interaction: .click)
+    #expect(result.status.availability == .systemNowPlayingUnavailable)
+    #expect(!result.music.canSeek)
+}
+
 @Test("暂停锚点保持用户点击时的位置")
 func pauseAnchorUsesRequestPosition() {
     let requestElapsed: TimeInterval = 42.0

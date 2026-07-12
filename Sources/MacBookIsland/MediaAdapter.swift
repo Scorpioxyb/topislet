@@ -58,6 +58,12 @@ enum MusicSeekInteraction {
     }
 }
 
+enum QishuiSeekSafety {
+    // MediaRemote only exposes a system-global seek command. Until Qishui exposes
+    // a client-targeted seek primitive, enabling it can move another app's video.
+    static let supportsTargetedSeek = false
+}
+
 struct MusicSourceStatus: Equatable {
     let sourceName: String
     let availability: MusicSourceAvailability
@@ -164,11 +170,9 @@ final class MusicAdapterCoordinator {
     private let qishuiSemanticAXController = QishuiSemanticAXController()
     private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
-    private let mediaRemoteSource = MediaRemoteNowPlayingSource()
     private let nowPlayingBridge = NowPlayingAXBridge()
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
-    private var latestNowPlayingTrack: NowPlayingAXTrack?
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastSourceRefreshAt: Date?
@@ -240,7 +244,6 @@ final class MusicAdapterCoordinator {
     func performControl(_ command: MusicControlCommand) async -> MusicControlOutcome {
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
-            latestNowPlayingTrack = nil
             latestMediaRemoteSnapshot = nil
             latestQishuiSnapshot = nil
             resetPendingPlaybackOperation(clearTimelineFloor: true)
@@ -448,63 +451,16 @@ final class MusicAdapterCoordinator {
         to progress: Double,
         interaction: MusicSeekInteraction
     ) async -> (music: MusicState, status: MusicSourceStatus) {
-        guard let snapshot = latestMediaRemoteSnapshot,
-              snapshot.isVerifiedQishuiSource,
-              let track = snapshot.currentTrack,
-              let duration = track.duration,
-              duration > 0 else {
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .systemNowPlayingUnavailable,
-                headline: "当前不能拖动进度",
-                detail: "汽水音乐没有通过实时适配源暴露可跳转的时长；不会用假进度替代。",
-                checkedAt: Date()
-            )
-            return (currentMusicState(), cachedStatus)
-        }
-
-        let canSeekDirectly = mediaRemoteAdapterStreamSource.hasCurrentVerifiedQishuiSource()
-            || track.sourceName == "MediaRemote Now Playing"
-        guard canSeekDirectly else {
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .qishuiMediaRemoteCached,
-                headline: "暂不跳转播放进度",
-                detail: "当前版本的进度跳转仍依赖系统当前媒体源；检测到媒体焦点不在汽水时，已阻止把跳转发送给视频播放器。",
-                checkedAt: Date()
-            )
-            return (currentMusicState(), cachedStatus)
-        }
-
-        let targetProgress = min(max(progress, 0), 1)
-        let targetElapsed = duration * targetProgress
-        guard await mediaRemoteAdapterStreamSource.seek(
-            to: targetElapsed,
-            coalescingDelayNanoseconds: interaction.coalescingDelayNanoseconds
-        ) else {
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .systemNowPlayingUnavailable,
-                headline: "进度跳转失败",
-                detail: "已尝试向汽水音乐发送跳转请求，但底层适配器没有确认成功；界面不会假装已经跳转。",
-                checkedAt: Date()
-            )
-            return (currentMusicState(), cachedStatus)
-        }
-
-        resetPendingPlaybackOperation(clearTimelineFloor: true)
-
+        _ = progress
+        _ = interaction
         cachedStatus = MusicSourceStatus(
             sourceName: "汽水实时适配器",
-            availability: .qishuiControlSent,
-            headline: "已请求跳转播放进度",
-            detail: "已向汽水音乐发送跳转到 \(formatTime(targetElapsed)) 的请求，等待实时适配源回读确认。",
+            availability: .systemNowPlayingUnavailable,
+            headline: "当前不能拖动进度",
+            detail: "汽水音乐尚未提供可定向调用的进度跳转接口。为避免把操作发送给抖音等系统当前媒体，顶屿已停用全局进度跳转。",
             checkedAt: Date()
         )
-        var optimisticMusic = currentMusicState()
-        optimisticMusic.progress = targetProgress
-        optimisticMusic.elapsedTime = targetElapsed
-        return (optimisticMusic, cachedStatus)
+        return (currentMusicState(), cachedStatus)
     }
 
     func refreshControlFollowUp(
@@ -556,7 +512,6 @@ final class MusicAdapterCoordinator {
     ) -> MusicSourceStatus {
         _ = promptForPermission
         guard qishuiAdapter.isRunning() else {
-            latestNowPlayingTrack = nil
             latestMediaRemoteSnapshot = nil
             latestQishuiSnapshot = nil
             lastSourceRefreshAt = Date()
@@ -584,8 +539,8 @@ final class MusicAdapterCoordinator {
            let track = adapterSnapshot.currentTrack {
             latestMediaRemoteSnapshot = adapterSnapshot
             lastSourceRefreshAt = adapterSnapshot.checkedAt
-            let isCurrentMediaFocus = mediaRemoteAdapterStreamSource.hasCurrentVerifiedQishuiSource()
-            if isCurrentMediaFocus {
+            let hasVerifiedClientState = mediaRemoteAdapterStreamSource.hasVerifiedQishuiClientState()
+            if hasVerifiedClientState {
                 if pendingPlaybackOperation == nil {
                     updateCachedPlaybackOverride(from: track, checkedAt: adapterSnapshot.checkedAt)
                 }
@@ -604,8 +559,8 @@ final class MusicAdapterCoordinator {
             }
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
-                availability: isCurrentMediaFocus ? .qishuiMediaRemoteSynced : .qishuiMediaRemoteCached,
-                headline: isCurrentMediaFocus ? "已接入汽水实时播放" : "保持汽水音乐显示",
+                availability: hasVerifiedClientState ? .qishuiMediaRemoteSynced : .qishuiMediaRemoteCached,
+                headline: hasVerifiedClientState ? "已接入汽水实时播放" : "保持汽水音乐显示",
                 detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。\(adapterSnapshot.diagnostic)",
                 checkedAt: adapterSnapshot.checkedAt
             )
@@ -625,30 +580,11 @@ final class MusicAdapterCoordinator {
             return cachedStatus
         }
 
-        let mediaRemoteSnapshot = mediaRemoteSource.snapshot()
-        latestMediaRemoteSnapshot = mediaRemoteSnapshot
-        lastSourceRefreshAt = mediaRemoteSnapshot.checkedAt
-
-        if let track = mediaRemoteSnapshot.currentTrack {
-            if mediaRemoteSnapshot.isVerifiedQishuiSource {
-                updateMediaRemotePlaybackConfirmation(snapshot: mediaRemoteSnapshot)
-            }
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水 MediaRemote",
-                availability: .qishuiMediaRemoteSynced,
-                headline: "已接入汽水实时播放",
-                detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。\(mediaRemoteSnapshot.diagnostic)",
-                checkedAt: mediaRemoteSnapshot.checkedAt
-            )
-            return cachedStatus
-        }
-
         let snapshot = qishuiAdapter.snapshot()
         latestQishuiSnapshot = snapshot
         lastSourceRefreshAt = snapshot.checkedAt
 
         guard snapshot.isRunning else {
-            latestNowPlayingTrack = nil
             latestMediaRemoteSnapshot = nil
             resetPendingPlaybackOperation(clearTimelineFloor: true)
             previousQishuiProgress = nil
@@ -749,8 +685,6 @@ final class MusicAdapterCoordinator {
     private func applyNowPlayingSnapshot(_ snapshot: NowPlayingAXSnapshot) {
         switch snapshot.availability {
         case let .recognized(track):
-            latestNowPlayingTrack = track
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
             cachedStatus = MusicSourceStatus(
                 sourceName: "macOS 播放中",
                 availability: .systemNowPlayingRecognized,
@@ -759,8 +693,6 @@ final class MusicAdapterCoordinator {
                 checkedAt: snapshot.checkedAt
             )
         case .accessibilityRequired:
-            latestNowPlayingTrack = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
             cachedStatus = MusicSourceStatus(
                 sourceName: "macOS 播放中",
                 availability: .accessibilityRequired,
@@ -769,8 +701,6 @@ final class MusicAdapterCoordinator {
                 checkedAt: snapshot.checkedAt
             )
         case .controlCenterUnavailable:
-            latestNowPlayingTrack = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
             cachedStatus = MusicSourceStatus(
                 sourceName: "macOS 播放中",
                 availability: .systemNowPlayingUnavailable,
@@ -779,8 +709,6 @@ final class MusicAdapterCoordinator {
                 checkedAt: snapshot.checkedAt
             )
         case .nowPlayingUnavailable:
-            latestNowPlayingTrack = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
             cachedStatus = MusicSourceStatus(
                 sourceName: "macOS 播放中",
                 availability: .systemNowPlayingUnavailable,
@@ -789,8 +717,6 @@ final class MusicAdapterCoordinator {
                 checkedAt: snapshot.checkedAt
             )
         case let .failed(message):
-            latestNowPlayingTrack = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: false)
             cachedStatus = MusicSourceStatus(
                 sourceName: "macOS 播放中",
                 availability: .systemNowPlayingUnavailable,
@@ -821,7 +747,9 @@ final class MusicAdapterCoordinator {
                 lyricIndex: 0,
                 elapsedTime: effectiveTrack.elapsedTime,
                 duration: effectiveTrack.duration,
-                canSeek: !isCachedMediaFocus && (effectiveTrack.duration.map { $0 > 0 } ?? false),
+                canSeek: QishuiSeekSafety.supportsTargetedSeek
+                    && !isCachedMediaFocus
+                    && (effectiveTrack.duration.map { $0 > 0 } ?? false),
                 isPlaybackPending: pendingPlaybackOperation != nil
             )
         }
@@ -835,22 +763,6 @@ final class MusicAdapterCoordinator {
                 track: realTrack(from: track, statusLine: statusLine),
                 isPlaying: effectiveIsPlaying,
                 progress: track.progress ?? 0,
-                lyricIndex: 0,
-                elapsedTime: nil,
-                duration: nil,
-                canSeek: false,
-                isPlaybackPending: pendingPlaybackOperation != nil
-            )
-        }
-
-        if let track = latestNowPlayingTrack {
-            let effectiveIsPlaying = pendingPlaybackTarget(title: track.title, artist: track.artist)
-                ?? track.isPlaying
-                ?? false
-            return MusicState(
-                track: realTrack(from: track, statusLine: statusLine),
-                isPlaying: effectiveIsPlaying,
-                progress: effectiveIsPlaying ? 1 : 0,
                 lyricIndex: 0,
                 elapsedTime: nil,
                 duration: nil,
@@ -1122,19 +1034,6 @@ final class MusicAdapterCoordinator {
             sourceBundleIdentifier: track.sourceBundleIdentifier,
             sourceProcessIdentifier: track.sourceProcessIdentifier,
             sourceName: track.sourceName
-        )
-    }
-
-    private func realTrack(from track: NowPlayingAXTrack, statusLine _: String) -> MusicTrack {
-        MusicTrack(
-            title: track.title,
-            artist: track.artist,
-            palette: [Color(red: 0.08, green: 0.66, blue: 0.74), Color(red: 0.18, green: 0.18, blue: 0.22)],
-            lyrics: [],
-            hasArtwork: false,
-            artworkData: nil,
-            artworkURL: nil,
-            sourceBundleIdentifier: "com.soda.music"
         )
     }
 
