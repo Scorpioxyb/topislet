@@ -2699,45 +2699,59 @@ struct ExpandedIslandBodyPanel: View {
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
             .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
 
-            VStack(spacing: 8) {
-                HStack(alignment: .center) {
-                    if model.hasPendingNotification, model.activeFeature != .notification {
-                        Button {
-                            model.showPendingNotification()
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "bell.fill")
-                                Text(model.notification.count > 1 ? "\(model.notification.count) 条提醒" : "提醒")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundStyle(.white.opacity(0.78))
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(Capsule().fill(Color.white.opacity(0.08)))
-                        }
-                        .buttonStyle(.plain)
-                        .help("查看提醒")
-                    }
-                    Spacer(minLength: 12)
-                    WindowModeButtons(model: model)
-                }
-                .frame(height: 24)
+            ZStack(alignment: .topTrailing) {
+                switch model.activeFeature {
+                case .music:
+                    ExpandedMusic(model: model)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .padding(.bottom, 12)
 
-                Group {
-                    switch model.activeFeature {
-                    case .music:
-                        ExpandedMusic(model: model)
-                    case .timer:
-                        ExpandedTimer(model: model)
-                    case .notification:
-                        ExpandedNotification(model: model)
+                case .timer, .notification:
+                    VStack(spacing: 8) {
+                        HStack(alignment: .center) {
+                            if model.hasPendingNotification, model.activeFeature != .notification {
+                                Button {
+                                    model.showPendingNotification()
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "bell.fill")
+                                        Text(model.notification.count > 1 ? "\(model.notification.count) 条提醒" : "提醒")
+                                            .font(.system(size: 10, weight: .medium))
+                                    }
+                                    .foregroundStyle(.white.opacity(0.78))
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 24)
+                                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                                }
+                                .buttonStyle(.plain)
+                                .help("查看提醒")
+                            }
+                            Spacer(minLength: 12)
+                            WindowModeButtons(model: model)
+                        }
+                        .frame(height: 24)
+
+                        Group {
+                            if model.activeFeature == .timer {
+                                ExpandedTimer(model: model)
+                            } else {
+                                ExpandedNotification(model: model)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 12)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if model.activeFeature == .music {
+                    WindowModeButtons(model: model)
+                        .padding(.top, 10)
+                        .padding(.trailing, 16)
+                }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
             .opacity(model.mode == .expanded ? 1 : 0)
             .animation(IslandMotion.bodyContentAnimation(for: model.mode), value: model.mode)
@@ -2979,6 +2993,8 @@ struct ExpandedMusic: View {
                         .lineLimit(1)
                         .foregroundStyle(.white.opacity(0.58))
                 }
+                .padding(.trailing, 72)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 MusicProgressRow(model: model)
 
