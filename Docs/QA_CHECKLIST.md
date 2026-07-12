@@ -4,6 +4,7 @@
 
 - `swift build` 能通过。
 - `Scripts/package-app.sh` 能生成并安装 `/Applications/顶屿.app`。
+- `Scripts/build-release.sh` 能生成 `TopIslet-v0.1.0-arm64.dmg` 和对应 `.sha256`；DMG 可只读挂载，顶层包含“顶屿.app”与指向 `/Applications` 的快捷入口。
 - 安装包的 `Info.plist` 包含 `CFBundleIconFile=IslandAppIcon`，`Contents/Resources/IslandAppIcon.icns` 存在，并在 Finder、程序坞和“关于”窗口显示新图标。
 - `codesign --verify --deep --strict --verbose=2 "/Applications/顶屿.app"` 通过。
 - `file "/Applications/顶屿.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。

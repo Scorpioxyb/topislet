@@ -39,7 +39,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TopIslet-${{ inputs.tag }}
-          path: .build/release-artifacts/*
+          path: |
+            .build/release-artifacts/TopIslet-*.dmg
+            .build/release-artifacts/TopIslet-*.dmg.sha256
           if-no-files-found: error
 
       - name: Create GitHub prerelease
@@ -48,7 +50,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ inputs.tag }}" \
-            .build/release-artifacts/* \
+            .build/release-artifacts/TopIslet-*.dmg \
+            .build/release-artifacts/TopIslet-*.dmg.sha256 \
             --title "顶屿 TopIslet ${{ inputs.tag }}" \
             --notes-file Docs/RELEASE_NOTES_0.1.0-alpha.md \
             --prerelease \

@@ -38,5 +38,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: topislet-ci-package
-          path: .build/release-artifacts/*
+          path: |
+            .build/release-artifacts/TopIslet-*.dmg
+            .build/release-artifacts/TopIslet-*.dmg.sha256
           if-no-files-found: error

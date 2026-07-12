@@ -35,5 +35,7 @@
 Release 附件同时提供 `.sha256` 文件。下载后可运行：
 
 ```bash
-shasum -a 256 -c TopIslet-v0.1.0-arm64.zip.sha256
+shasum -a 256 -c TopIslet-v0.1.0-arm64.dmg.sha256
 ```
+
+打开 `TopIslet-v0.1.0-arm64.dmg`，将“顶屿.app”拖到“Applications”快捷入口即可完成安装。

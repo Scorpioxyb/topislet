@@ -12,8 +12,16 @@ OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/.build/release-artifacts}"
 WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/topislet-release.XXXXXX")}"
 APP="$WORK_DIR/$APP_DISPLAY_NAME.app"
 ARCHIVE_BASENAME="TopIslet-v$VERSION-arm64"
-ARCHIVE="$OUTPUT_DIR/$ARCHIVE_BASENAME.zip"
-CHECKSUM="$ARCHIVE.sha256"
+DISK_IMAGE="$OUTPUT_DIR/$ARCHIVE_BASENAME.dmg"
+CHECKSUM="$DISK_IMAGE.sha256"
+MOUNT_POINT=""
+
+cleanup() {
+  if [[ -n "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 if [[ "$BUNDLE_ID" == local.* && "${ALLOW_PROTOTYPE_BUNDLE_ID:-0}" != "1" ]]; then
   echo "error: release Bundle ID must not use the local.* prototype namespace" >&2
@@ -70,24 +78,46 @@ vtool -show-build \
   "$APP/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter" \
   | grep -q 'minos 26.0'
 
-COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "$APP" "$ARCHIVE"
+DMG_SOURCE="$WORK_DIR/dmg-source"
+mkdir -p "$DMG_SOURCE"
+COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$DMG_SOURCE/$APP_DISPLAY_NAME.app"
+ln -s /Applications "$DMG_SOURCE/Applications"
+hdiutil create \
+  -volname "$APP_DISPLAY_NAME" \
+  -srcfolder "$DMG_SOURCE" \
+  -ov \
+  -format UDZO \
+  "$DISK_IMAGE"
+
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DISK_IMAGE"
+  codesign --verify --verbose=2 "$DISK_IMAGE"
+fi
+hdiutil verify "$DISK_IMAGE" >/dev/null
+
 (
   cd "$OUTPUT_DIR"
-  shasum -a 256 "$(basename "$ARCHIVE")" > "$(basename "$CHECKSUM")"
+  shasum -a 256 "$(basename "$DISK_IMAGE")" > "$(basename "$CHECKSUM")"
 )
 
-VERIFY_DIR="$WORK_DIR/verify"
-mkdir -p "$VERIFY_DIR"
-ditto -x -k "$ARCHIVE" "$VERIFY_DIR"
-codesign --verify --deep --strict --verbose=2 "$VERIFY_DIR/$APP_DISPLAY_NAME.app"
+MOUNT_POINT="$(hdiutil attach "$DISK_IMAGE" -readonly -nobrowse -noautoopen | awk -F '\t' 'END {print $NF}')"
+if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
+  echo "error: failed to mount disk image" >&2
+  exit 1
+fi
+codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/$APP_DISPLAY_NAME.app"
+test -L "$MOUNT_POINT/Applications"
+test "$(readlink "$MOUNT_POINT/Applications")" = "/Applications"
+hdiutil detach "$MOUNT_POINT" >/dev/null
+MOUNT_POINT=""
 (
   cd "$OUTPUT_DIR"
   shasum -a 256 -c "$(basename "$CHECKSUM")"
 )
 
 echo "App: $APP"
-echo "Archive: $ARCHIVE"
+echo "Disk image: $DISK_IMAGE"
 echo "SHA-256: $CHECKSUM"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  echo "warning: artifact is ad-hoc signed and not notarized; publish only as a developer preview" >&2
+  echo "warning: app is ad-hoc signed and the disk image is not notarized; publish only as a developer preview" >&2
 fi

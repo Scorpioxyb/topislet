@@ -33,7 +33,7 @@ App 版本：`0.1.0`
 - [x] 增加 GitHub Issue 和 Pull Request 模板。
 - [x] 增加 GitHub Actions Debug / Release 构建与打包冒烟测试。
 - [x] 增加手动 GitHub prerelease 工作流，默认不会自动发布。
-- [x] 增加独立 Release 打包脚本，生成 arm64 ZIP 与 SHA-256。
+- [x] 增加独立 Release 打包脚本，生成可拖放安装的 arm64 DMG 与 SHA-256。
 - [x] Git 跟踪文件中未发现第三方 App 解包 JavaScript、`.DS_Store` 或常见 token 格式。
 - [x] 本机 Debug、Release 和 x86_64 交叉构建通过。
 
@@ -53,13 +53,13 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 
 输出必须包含：
 
-- `TopIslet-v0.1.0-arm64.zip`
-- `TopIslet-v0.1.0-arm64.zip.sha256`
+- `TopIslet-v0.1.0-arm64.dmg`
+- `TopIslet-v0.1.0-arm64.dmg.sha256`
 
 ## 最终验证
 
 - [ ] 从干净 tag 构建，不使用工作区未提交文件。
-- [ ] 解压 ZIP 后 `codesign --verify --deep --strict --verbose=2` 通过。
+- [ ] 挂载 DMG 后，“顶屿.app”签名验证通过，且“Applications”快捷入口正确指向 `/Applications`。
 - [ ] 正式签名版 `spctl -a -vv -t exec` 通过。
 - [ ] 公证版 `xcrun stapler validate` 通过。
 - [ ] App 主二进制为 arm64，最低系统版本为 26.0。

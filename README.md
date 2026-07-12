@@ -36,7 +36,13 @@
 
 ### GitHub Release
 
-正式 Release 准备完成后，可从 Releases 下载 `.zip`。在 Developer ID 签名和 Apple 公证完成前，下载包只会标记为开发者预览版，并明确说明 Gatekeeper 限制。
+正式 Release 准备完成后，可从 Releases 下载 `.dmg`：
+
+1. 打开 `TopIslet-….dmg`。
+2. 将“顶屿.app”拖到右侧“Applications”快捷入口。
+3. 推出磁盘映像，再从“应用程序”文件夹打开顶屿。
+
+顶屿是菜单栏 App，正常运行时不会出现在程序坞。在 Developer ID 签名和 Apple 公证完成前，下载包只会标记为开发者预览版；macOS 若阻止首次打开，可在 Finder 中右键顶屿并选择“打开”，不应关闭 Gatekeeper。
 
 ### 从源码运行
 
@@ -59,7 +65,7 @@ open "/Applications/顶屿.app"
 VERSION="0.1.0" bash Scripts/build-release.sh
 ```
 
-脚本会生成 arm64 Release App、ZIP 和 SHA-256 校验和，不会自动发布到 GitHub。
+脚本会生成包含“顶屿.app”和“Applications”快捷入口的 arm64 DMG，以及对应的 SHA-256 校验和，不会自动发布到 GitHub。
 
 ## 第一次使用
 
