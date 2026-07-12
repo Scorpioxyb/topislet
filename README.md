@@ -1,99 +1,129 @@
-# MacBook 灵动岛
+# MacBook Island / MacBook 灵动岛
 
-一个 macOS 顶部灵动岛 V1 原型，用 SwiftUI + AppKit 实现。
+> A lightweight activity island built around the MacBook notch.
+> 把 MacBook 刘海周围变成低打扰、可交互的活动区域。
 
-当前目标是把 MacBook 摄像头模组周围的遮挡区域变成真实可用的顶部轻操作区。V1 以汽水音乐为默认主活动，计时器和提醒只在事件发生时临时出现；不在岛内放置固定功能标签。
+![展开音乐状态](Docs/Assets/expanded-music.png)
 
-## 运行
+## 发布状态
+
+当前版本为 **v0.1.0-alpha 开发者预览版**，重点验证汽水音乐同步、媒体控制和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
+
+公开 GitHub Release 前仍需完成许可证选择、正式 Bundle ID、最终实机回归以及签名 / 公证决策。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
+
+## 当前能力
+
+- 围绕 MacBook 摄像头区域显示折叠、紧凑和展开三种状态。
+- 读取汽水音乐的真实歌名、歌手、封面、播放状态与进度。
+- 播放 / 暂停、上一首、下一首采用汽水客户端定向控制，不发送全局媒体键。
+- 进度条支持点击和拖动；不能确认汽水为安全目标时会阻止跳转，避免误控视频播放器。
+- 计时器按需接管灵动岛，结束后恢复音乐活动。
+- 日历和提醒事项经过用户单独授权后，可提供低打扰临近提醒。
+- 支持悬停展开、移开收回、点击固定展开和刘海位置校准。
+
+## 系统要求
+
+| 项目 | 当前要求 |
+| --- | --- |
+| macOS | **macOS 26.0 或更高版本** |
+| 设备 | 优先支持带刘海的 Apple Silicon MacBook |
+| 音乐来源 | 汽水音乐，Bundle ID `com.soda.music` |
+| 源码构建 | Xcode Command Line Tools、Swift 6 |
+
+> MediaRemote Adapter 当前二进制的最低系统版本为 macOS 26.0，因此项目不再宣称兼容 macOS 14。其他系统版本需要重新构建并单独验证该依赖。
+
+## 安装
+
+### GitHub Release
+
+正式 Release 准备完成后，可从 Releases 下载 `.zip`。在 Developer ID 签名和 Apple 公证完成前，下载包只会标记为开发者预览版，并明确说明 Gatekeeper 限制。
+
+### 从源码运行
 
 ```bash
+git clone <repository-url>
+cd macbook-island
 swift run MacBookIsland
 ```
 
-启动后会在屏幕顶部中央显示灵动岛原型。菜单栏会出现“岛”入口，可用于显示汽水音乐、启动计时、打开设置和退出。
-
-运行中的 App 可以接收本机事件，用于快捷指令或后续应用适配器验证：
-
-```bash
-"/Applications/MacBook 灵动岛.app/Contents/MacOS/MacBookIsland" \
-  --post-event "新的提醒" "这条内容会临时覆盖汽水音乐" "测试来源"
-```
-
-普通事件约 3 秒后恢复此前模式和汽水最新状态。这个入口只传递展示事件，不执行应用控制。
-
-## 打包安装
+本地打包安装：
 
 ```bash
 bash Scripts/package-app.sh
 open "/Applications/MacBook 灵动岛.app"
 ```
 
-打包脚本会生成本地 `.app`，复制 MediaRemote Adapter 资源并进行本机 ad-hoc 签名。
-
-## 布局校准
-
-菜单栏点击“岛” -> “校准布局...”，可以实时调整：
-
-- 灵动岛整体垂直位置
-- 展开态高度
-
-校准值会保存到本机 `UserDefaults`，重启 App 后继续生效。由于 macOS 截图不会显示物理刘海，最终位置以 MacBook 屏幕实物遮挡为准。
-
-## V1 范围
-
-- 顶部黑色胶囊灵动岛浮层
-- 音乐播放样式：真实歌名、歌手、封面、歌词、播放状态、进度和播放控制
-- 汽水专属实时流：MediaRemote Adapter 通过 `stream-client com.soda.music` 和 `get-client com.soda.music` 只读取汽水客户端
-- 切歌元数据原子提交：歌名、歌手和封面准备一致后再统一发布，避免新旧歌曲混搭
-- 播放 / 暂停、上一首、下一首直接发送给 `com.soda.music` 的 MediaRemote client；定向通道不可用时才尝试汽水进程内的唯一语义 AX 控件
-- 如果不能唯一识别安全控件，控制会失败并保留当前界面，不使用固定坐标兜底
-- 进度跳转仅在底层确认当前可跳转媒体源为汽水时发送；其他媒体占用系统焦点时安全阻断
-- 计时器：从菜单启动后才接管灵动岛，支持暂停、重置、加 1 分钟
-- 通知提醒：普通提醒短暂覆盖后恢复汽水；展开或拖动期间不抢占当前交互
-- 日历与提醒事项：在设置的“日程”页分别授权后，临近 10 分钟的定时日程和刚到期 5 分钟内的定时提醒会进入现有事件队列；默认忽略全天日程和无具体时间的提醒
-- 展开、常驻、收起三种状态
-- 布局校准面板：适配真实 MacBook 刘海位置，支持重启后保留
-
-## 下一步
-
-- 完成签名安装包的抖音 / QuickTime 并存实机回归，确认汽水歌名、歌手、封面、播放态和进度持续更新
-- 验证连续切歌、快速播放 / 暂停和进度拖动的确认时序
-- 继续寻找汽水专属的定向 seek 通道；在安全通道完成前，媒体焦点冲突时保持阻断
-- 按 `Docs/ROADMAP.md` 继续收敛单窗口连续轮廓、可中断形变动画和计时器 / 提醒产品化
-- 在“设置 → 日程”中分别授权日历和提醒事项，完成真实临近日程、到期提醒及撤权降级验收
-
-## 汽水音乐探测
+生成可分发候选包使用独立脚本：
 
 ```bash
-swift run QishuiProbe --depth 12 > Reports/qishui-ax-dump.txt
+BUNDLE_ID="io.github.<owner>.MacBookIsland" \
+VERSION="0.1.0" \
+bash Scripts/build-release.sh
 ```
 
-当前探测结论：
+脚本会生成 arm64 Release App、ZIP 和 SHA-256 校验和，不会自动发布到 GitHub。
 
-- 汽水音乐 Bundle ID：`com.soda.music`
-- MediaRemote Adapter 能按 Bundle ID 订阅汽水客户端；后台同步不再跟随系统当前 Now Playing App。
-- 系统解释器承载的轻量桥能取得 `com.soda.music` 的 `MRNowPlayingClient` 并定向发送播放控制；实测不切换前台 App、不移动鼠标，也不依赖系统当前媒体焦点。
-- 汽水窗口初始化 Accessibility 树后，可按角色、结构和相邻控件特征识别上一首、播放 / 暂停、下一首，作为安全降级；识别结果不唯一时不会执行控制。
-- 不使用截图 OCR，不修改汽水 ASAR，不提取 token，不进行 MITM，也不通过固定屏幕坐标或合成鼠标事件控制。
-- client 定向通道和 Accessibility 树都不可用时，控制会安全失败；不改回全局媒体键。
+## 第一次使用
 
-## 当前适配层
+1. 打开 App，确认菜单栏出现“岛”。
+2. 打开汽水音乐并播放歌曲，灵动岛会自动显示播放状态。
+3. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
+4. 如果胶囊与实体刘海不贴合，打开“岛 → 校准布局...”。
+5. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
 
-- `Sources/MacBookIsland/MediaAdapter.swift` 负责音乐数据边界。
-- `Sources/MacBookIsland/MediaRemoteAdapterStreamSource.swift` 负责启动汽水专属实时流、按曲目补取封面、维护可信时间线和切歌原子提交。
-- `Sources/MacBookIsland/QishuiAdapter.swift` 负责汽水运行状态和本地只读信息补充。
-- `Sources/MacBookIsland/QishuiTargetedMediaController.swift` 通过轻量桥把命令直接发送给汽水 MediaRemote client。
-- `Sources/MacBookIsland/QishuiSemanticAXController.swift` 只绑定汽水 PID，并在定向通道不可用时按语义查找唯一播放控件。
-- 用户显式点击“实验：打开系统播放诊断”时，才会通过控制中心“播放中”面板做手动诊断；后台不会自动打开控制中心。
-- 播放 / 暂停、上一首、下一首不使用系统全局媒体键，也不会为了控制汽水而短暂激活它；可用 `--qishui-targeted-control` 单独验证定向路径。
-- 在真实歌名 / 封面 / 歌词来源不可用时，UI 不伪造歌曲数据；保留最近一次完整可信画面或显示不可用状态。
-- V1.2 不再使用 OCR，也不请求系统屏幕录制权限。
-- 可用 `.build/debug/MacBookIsland --qishui-status`、`--adapter-status`、`--mediaremote-status` 和 `--eventkit-status` 查看只读诊断结果；诊断命令不会触发权限弹窗。
-- 详细调查记录见 `Docs/qishui-adapter-notes.md`。
+## 权限与隐私
 
-## 项目管理文档
+| 权限 | 是否必需 | 用途 |
+| --- | --- | --- |
+| 辅助功能 | 音乐控制降级时需要 | 仅在定向控制不可用时识别汽水进程内的唯一语义控件 |
+| 日历 | 可选 | 读取临近开始的定时日程 |
+| 提醒事项 | 可选 | 读取刚到期且具有具体时间的提醒 |
+| 屏幕录制 | 不需要 | 项目不使用 OCR 或屏幕录制同步音乐 |
 
-- `Docs/PRODUCT_REQUIREMENTS.md`：产品定位、范围和非目标。
-- `Docs/ROADMAP.md`：版本路线图。
-- `Docs/QA_CHECKLIST.md`：手工验收清单。
-- `Docs/CHANGELOG.md`：变更记录。
+播放、日历和提醒数据在本机处理；当前版本没有账号系统、云同步、广告 SDK 或遥测上传。完整说明见 [PRIVACY.md](PRIVACY.md)。
+
+## 已知限制
+
+- 当前只对汽水音乐进行了产品级适配，其他媒体应用不会自动获得完整控制能力。
+- 项目依赖 macOS 非公开 MediaRemote 能力，系统更新可能导致兼容性变化。
+- 媒体焦点被视频播放器占用时，无法确认安全目标的进度跳转会被阻止。
+- Developer ID 签名与 Apple 公证尚未完成，当前本机包只是 ad-hoc 签名开发包。
+- 目前主要在一台带刘海的 Apple Silicon MacBook 上验证，其他尺寸仍需实机校准。
+
+## 诊断
+
+```bash
+.build/debug/MacBookIsland --adapter-status
+.build/debug/MacBookIsland --qishui-status
+.build/debug/MacBookIsland --mediaremote-status
+.build/debug/MacBookIsland --eventkit-status
+```
+
+诊断命令不会主动申请权限。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。
+
+## 开发
+
+```bash
+swift build
+swift build -c release
+bash -n Scripts/package-app.sh Scripts/build-release.sh
+plutil -lint Packaging/Info.plist
+```
+
+项目使用 SwiftUI + AppKit；主要模块说明见 [产品需求](Docs/PRODUCT_REQUIREMENTS.md)、[路线图](Docs/ROADMAP.md) 和 [QA 检查清单](Docs/QA_CHECKLIST.md)。
+
+## 贡献与安全
+
+- 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 安全问题请按 [SECURITY.md](SECURITY.md) 的方式私下报告。
+- 发布步骤和未完成门禁见 [Docs/RELEASE_CHECKLIST.md](Docs/RELEASE_CHECKLIST.md)。
+
+## 许可证与第三方组件
+
+主项目许可证必须在仓库公开前由项目负责人确认；在许可证文件加入前，项目代码默认保留全部权利，不授权复制、修改或再分发。
+
+MediaRemote Adapter 使用 BSD 3-Clause License。完整归属与当前供应链缺口见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 免责声明
+
+MacBook、macOS、Dynamic Island 和 Apple 是 Apple Inc. 的商标或产品名称；汽水音乐属于其权利人。本项目与 Apple、汽水音乐及其关联公司不存在隶属、赞助或官方合作关系。

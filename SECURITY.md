@@ -1,0 +1,25 @@
+# Security Policy
+
+## Supported versions
+
+当前只维护最新的 `v0.1.x-alpha` 开发分支。正式版本发布后，本表会按实际支持范围更新。
+
+## Reporting a vulnerability
+
+请不要在公开 Issue 中披露可直接利用的漏洞、隐私数据、权限绕过方法或用户凭据。
+
+仓库创建后应立即启用 GitHub Private Vulnerability Reporting。启用前，可创建一个不包含技术细节的 Issue，请求项目维护者提供私密联系渠道。
+
+报告建议包含：
+
+- 受影响版本或 commit
+- macOS 和设备信息
+- 影响范围
+- 最小复现步骤
+- 建议缓解措施
+
+## Security boundaries
+
+- 项目不应抓取账号 token、执行 MITM、修改汽水 App 或发送全局媒体键。
+- 辅助功能降级必须只绑定汽水 PID，并且只在语义目标唯一时执行。
+- 私有 MediaRemote 能力不可用时应安全失败，不应把控制命令转发给系统当前媒体源。

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Validate repository files
+        run: |
+          bash -n Scripts/package-app.sh Scripts/build-release.sh
+          plutil -lint Packaging/Info.plist
+          plutil -lint Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/Resources/Info.plist
+          if git ls-files | grep -E '(^|/)(desktopLyrics-|player-|index\.js$|package\.json$|\.DS_Store$)'; then
+            echo "Proprietary investigation artifacts must not be tracked"
+            exit 1
+          fi
+
+      - name: Debug build
+        run: swift build
+
+      - name: Release build
+        run: swift build -c release
+
+      - name: Package smoke test
+        env:
+          ALLOW_MISSING_LICENSE: "1"
+          ALLOW_PROTOTYPE_BUNDLE_ID: "1"
+        run: bash Scripts/build-release.sh
+
+      - name: Upload package smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macbook-island-ci-package
+          path: .build/release-artifacts/*
+          if-no-files-found: error

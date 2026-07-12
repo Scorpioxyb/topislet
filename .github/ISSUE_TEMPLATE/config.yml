@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/OWNER/REPOSITORY/security/advisories/new
+    about: 仓库创建后请先把占位 URL 改为正式仓库地址，并启用私密漏洞报告

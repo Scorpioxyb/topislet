@@ -1,0 +1,58 @@
+name: Build GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: CFBundleShortVersionString, for example 0.1.0
+        required: true
+        default: 0.1.0
+      tag:
+        description: Git tag, for example v0.1.0-alpha.1
+        required: true
+      bundle_id:
+        description: Stable reverse-domain Bundle ID
+        required: true
+      publish:
+        description: Create a GitHub prerelease after building
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Build release candidate
+        env:
+          VERSION: ${{ inputs.version }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          SIGN_IDENTITY: "-"
+        run: bash Scripts/build-release.sh
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacBook-Island-${{ inputs.tag }}
+          path: .build/release-artifacts/*
+          if-no-files-found: error
+
+      - name: Create GitHub prerelease
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            .build/release-artifacts/* \
+            --title "MacBook Island ${{ inputs.tag }}" \
+            --notes-file Docs/RELEASE_NOTES_0.1.0-alpha.md \
+            --prerelease \
+            --verify-tag

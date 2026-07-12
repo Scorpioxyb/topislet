@@ -2012,11 +2012,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard animated else {
             panelAnimationID += 1
-            panel.disableScreenUpdatesUntilFlush()
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
 
-            expandedPanel?.disableScreenUpdatesUntilFlush()
             expandedPanel?.setFrame(bodyFrame, display: true)
             expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
             expandedPanel?.alphaValue = 1
