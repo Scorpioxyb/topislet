@@ -8,6 +8,7 @@
 - 修复启动、展开、切歌和 metadata 回包竞争时的旧进度覆盖，优先采用新鲜 `elapsedTimeNow`，稳定播放由本地单调时间轴推进。
 - AX 降级只补充播放状态；同曲已有可信 MediaRemote 时间时，不再用旧 AX 进度覆盖。
 - 汽水定向控制从 `/usr/bin/python3` 迁移到现有 Perl + MediaRemote Adapter 通道，运行时不再受 Xcode 许可证影响。
+- MediaRemote 定向派发需经命令后的汽水新鲜样本确认；明确未生效时才执行一次唯一语义 AX 降级，证据不足则安全回滚，避免抖音占焦点时假成功或双发。
 - 新增 21 项音乐时间轴、stream 差分、快速连续操作和控制桥回归测试。
 
 ### GitHub 发布准备
