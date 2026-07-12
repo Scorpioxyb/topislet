@@ -455,7 +455,6 @@ final class MusicAdapterCoordinator {
         guard attempt.generation == controlGeneration else { return .inconclusive }
         var observations: [PlaybackControlTimeline.TargetedControlObservation] = []
         var observedSampleIDs = Set<UInt64>()
-        var encounteredInconclusiveRead = false
 
         for offset in [0.12, 0.28, 0.52] {
             guard await waitForTargetedControlCheckpoint(
@@ -473,10 +472,7 @@ final class MusicAdapterCoordinator {
                 snapshot: snapshot,
                 dispatchCompletedAt: dispatchCompletedAt,
                 baselineSampleID: baselineSampleID
-            ) else {
-                encounteredInconclusiveRead = true
-                continue
-            }
+            ) else { continue }
             if observedSampleIDs.insert(observation.sampleID).inserted {
                 observations.append(observation)
             }
@@ -502,10 +498,6 @@ final class MusicAdapterCoordinator {
         if finalResult == .confirmed,
            let playbackOperationID = attempt.playbackOperationID,
            pendingPlaybackOperation?.id == playbackOperationID {
-            return .inconclusive
-        }
-        if encounteredInconclusiveRead,
-           finalResult != .confirmed {
             return .inconclusive
         }
         return finalResult
