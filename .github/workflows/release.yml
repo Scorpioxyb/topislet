@@ -30,7 +30,7 @@ jobs:
         run: bash Scripts/build-release.sh
 
       - name: Verify release candidate
-        run: bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-${{ inputs.version }}-arm64.dmg
+        run: bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v${{ inputs.version }}-arm64.dmg
 
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v7
