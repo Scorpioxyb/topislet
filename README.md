@@ -1,4 +1,4 @@
-# MacBook Island / MacBook 灵动岛
+# 顶屿 TopIslet
 
 > A lightweight activity island built around the MacBook notch.
 > 把 MacBook 刘海周围变成低打扰、可交互的活动区域。
@@ -9,7 +9,7 @@
 
 当前版本为 **v0.1.0-alpha 开发者预览版**，重点验证汽水音乐同步、媒体控制和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
 
-公开 GitHub Release 前仍需完成许可证选择、正式 Bundle ID、最终实机回归以及签名 / 公证决策。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
+项目代码已采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。公开 GitHub Release 前仍需完成最终实机回归以及签名 / 公证决策，进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
 ## 当前能力
 
@@ -41,8 +41,8 @@
 ### 从源码运行
 
 ```bash
-git clone <repository-url>
-cd macbook-island
+git clone https://github.com/Scorpioxyb/topislet.git
+cd topislet
 swift run MacBookIsland
 ```
 
@@ -50,26 +50,26 @@ swift run MacBookIsland
 
 ```bash
 bash Scripts/package-app.sh
-open "/Applications/MacBook 灵动岛.app"
+open "/Applications/顶屿.app"
 ```
 
 生成可分发候选包使用独立脚本：
 
 ```bash
-BUNDLE_ID="io.github.<owner>.MacBookIsland" \
-VERSION="0.1.0" \
-bash Scripts/build-release.sh
+VERSION="0.1.0" bash Scripts/build-release.sh
 ```
 
 脚本会生成 arm64 Release App、ZIP 和 SHA-256 校验和，不会自动发布到 GitHub。
 
 ## 第一次使用
 
-1. 打开 App，确认菜单栏出现“岛”。
+1. 打开 App，确认菜单栏出现顶屿图标。
 2. 打开汽水音乐并播放歌曲，灵动岛会自动显示播放状态。
 3. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
-4. 如果胶囊与实体刘海不贴合，打开“岛 → 校准布局...”。
+4. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
 5. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
+
+> 从旧版“MacBook 灵动岛”升级：先退出旧版并将旧 `.app` 移到废纸篓，避免两个进程同时显示顶部岛。由于 App 显示名和 Bundle ID 已更改，macOS 会把顶屿识别为新的 App；首次启动后需要重新授予辅助功能权限，如启用日程功能，也需要重新授予日历和提醒事项权限。旧版布局和设置可能不会自动迁移。
 
 ## 权限与隐私
 
@@ -120,7 +120,9 @@ plutil -lint Packaging/Info.plist
 
 ## 许可证与第三方组件
 
-主项目许可证必须在仓库公开前由项目负责人确认；在许可证文件加入前，项目代码默认保留全部权利，不授权复制、修改或再分发。
+源代码按 [GNU General Public License v3.0 only](LICENSE)（`GPL-3.0-only`）授权。分发修改版时必须遵守 GPL v3 的源码提供、许可证保留及同许可证分发要求。
+
+`TopIslet`、`顶屿`名称和项目 Logo 不随 GPL 代码许可证一并授权，不得以暗示官方版本、官方认可或合作关系的方式使用。详见 [TRADEMARKS.md](TRADEMARKS.md)。
 
 MediaRemote Adapter 使用 BSD 3-Clause License。完整归属与当前供应链缺口见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

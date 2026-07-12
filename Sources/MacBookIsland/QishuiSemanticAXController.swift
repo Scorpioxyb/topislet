@@ -53,7 +53,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             cachedControls = nil
             return QishuiSemanticAXControlResult(
                 didPress: false,
-                diagnostic: "需要在系统设置中允许 MacBook 灵动岛使用辅助功能。"
+                diagnostic: "需要在系统设置中允许顶屿使用辅助功能。"
             )
         }
 

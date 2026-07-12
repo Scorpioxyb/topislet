@@ -252,7 +252,7 @@ struct LayoutCalibrationView: View {
                 header
 
                 CalibrationSlider(
-                    title: "灵动岛整体垂直",
+                    title: "顶屿整体垂直位置",
                     value: $settings.islandYOffset,
                     range: -8...28,
                     helper: "正数向下；截图不显示物理刘海，以屏幕实物为准。"

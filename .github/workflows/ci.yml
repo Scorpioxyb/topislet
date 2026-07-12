@@ -18,6 +18,7 @@ jobs:
         run: |
           bash -n Scripts/package-app.sh Scripts/build-release.sh
           plutil -lint Packaging/Info.plist
+          test "$(plutil -extract CFBundleIdentifier raw Packaging/Info.plist)" = "io.github.scorpioxyb.topislet"
           plutil -lint Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/Resources/Info.plist
           if git ls-files | grep -E '(^|/)(desktopLyrics-|player-|index\.js$|package\.json$|\.DS_Store$)'; then
             echo "Proprietary investigation artifacts must not be tracked"
@@ -31,14 +32,11 @@ jobs:
         run: swift build -c release
 
       - name: Package smoke test
-        env:
-          ALLOW_MISSING_LICENSE: "1"
-          ALLOW_PROTOTYPE_BUNDLE_ID: "1"
         run: bash Scripts/build-release.sh
 
       - name: Upload package smoke artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macbook-island-ci-package
+          name: topislet-ci-package
           path: .build/release-artifacts/*
           if-no-files-found: error

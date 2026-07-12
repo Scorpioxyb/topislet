@@ -241,7 +241,7 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水音乐",
                 availability: .qishuiNotRunning,
                 headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，灵动岛会检测运行状态。",
+                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
                 checkedAt: Date()
             )
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
@@ -440,7 +440,7 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水音乐",
                 availability: .qishuiNotRunning,
                 headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，灵动岛会检测运行状态。",
+                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
                 checkedAt: Date()
             )
             return cachedStatus
@@ -520,7 +520,7 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水音乐",
                 availability: .qishuiNotRunning,
                 headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，灵动岛会检测运行状态。",
+                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
                 checkedAt: Date()
             )
             return cachedStatus

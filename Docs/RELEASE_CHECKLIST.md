@@ -10,18 +10,18 @@ App 版本：`0.1.0`
 
 ## P0：公开前必须完成
 
-- [ ] 项目负责人确认仓库名称，建议 `macbook-island`。
+- [x] 项目负责人确认仓库名称：`topislet`。
 - [ ] 项目负责人确认仓库可见性：公开或私有。
-- [ ] 项目负责人选择主项目许可证并加入根目录 `LICENSE`。
-- [ ] 确认稳定 Bundle ID；建议 `io.github.<owner>.MacBookIsland`。
-- [ ] 审核并决定是否提交当前 `Scripts/package-app.sh` 的用户改动，确保 tag 对应干净工作树。
+- [x] 项目负责人选择 `GPL-3.0-only`，并加入根目录 `LICENSE`。
+- [x] 确认稳定 Bundle ID：`io.github.scorpioxyb.topislet`。
+- [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
 - [ ] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令。
 - [ ] 在最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
 - [ ] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
   - [ ] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
 - [ ] 使用无个人信息、封面展示权明确的真实 MacBook Hero 照片或录屏替换临时截图。
-- [ ] 将 `.github/ISSUE_TEMPLATE/config.yml` 中的 `OWNER/REPOSITORY` 替换为正式仓库地址。
+- [x] 将 `.github/ISSUE_TEMPLATE/config.yml` 中的安全报告链接替换为正式仓库地址。
 
 ## 已完成的仓库准备
 
@@ -40,7 +40,6 @@ App 版本：`0.1.0`
 ## 最终候选构建
 
 ```bash
-BUNDLE_ID="io.github.<owner>.MacBookIsland" \
 VERSION="0.1.0" \
 BUILD_NUMBER="2" \
 bash Scripts/build-release.sh
@@ -54,8 +53,8 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 
 输出必须包含：
 
-- `MacBook-Island-v0.1.0-arm64.zip`
-- `MacBook-Island-v0.1.0-arm64.zip.sha256`
+- `TopIslet-v0.1.0-arm64.zip`
+- `TopIslet-v0.1.0-arm64.zip.sha256`
 
 ## 最终验证
 
@@ -66,6 +65,7 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 - [ ] App 主二进制为 arm64，最低系统版本为 26.0。
 - [ ] Vendor framework 最低系统版本为 26.0，包含 arm64。
 - [ ] Release 页附 SHA-256、已知限制、权限说明和第三方声明。
+- [ ] 从旧原型升级后，重新授予辅助功能、日历和提醒事项权限，并确认新 Bundle ID 下功能正常。
 
 ## P0 实机回归
 

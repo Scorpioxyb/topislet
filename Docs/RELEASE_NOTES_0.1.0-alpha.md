@@ -1,4 +1,4 @@
-# MacBook Island v0.1.0-alpha.1
+# 顶屿 TopIslet v0.1.0-alpha.1
 
 这是首个面向 GitHub 的开发者预览候选版本，目标是验证围绕 MacBook 刘海的音乐活动岛是否能够在日常使用中保持实用、低打扰和安全可控。
 
@@ -22,8 +22,9 @@
 - 当前只对汽水音乐完成主要适配。
 - 依赖非公开 MediaRemote 能力，macOS 更新可能影响兼容性。
 - ad-hoc 签名候选包未经过 Apple 公证，Gatekeeper 可能阻止直接双击打开。
-- 其他 MacBook 尺寸需要在菜单栏“岛 → 校准布局...”中校准。
+- 其他 MacBook 尺寸需要从顶屿菜单选择“校准布局...”进行校准。
 - 当前不适合 App Store 分发。
+- 此版本起正式采用 `io.github.scorpioxyb.topislet` Bundle ID；从旧原型升级后，需要重新授予辅助功能、日历和提醒事项权限。
 
 ## 隐私
 
@@ -34,5 +35,5 @@
 Release 附件同时提供 `.sha256` 文件。下载后可运行：
 
 ```bash
-shasum -a 256 -c MacBook-Island-v0.1.0-arm64.zip.sha256
+shasum -a 256 -c TopIslet-v0.1.0-arm64.zip.sha256
 ```

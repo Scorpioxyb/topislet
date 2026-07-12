@@ -10,9 +10,6 @@ on:
       tag:
         description: Git tag, for example v0.1.0-alpha.1
         required: true
-      bundle_id:
-        description: Stable reverse-domain Bundle ID
-        required: true
       publish:
         description: Create a GitHub prerelease after building
         required: true
@@ -34,14 +31,14 @@ jobs:
       - name: Build release candidate
         env:
           VERSION: ${{ inputs.version }}
-          BUNDLE_ID: ${{ inputs.bundle_id }}
+          BUNDLE_ID: io.github.scorpioxyb.topislet
           SIGN_IDENTITY: "-"
         run: bash Scripts/build-release.sh
 
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MacBook-Island-${{ inputs.tag }}
+          name: TopIslet-${{ inputs.tag }}
           path: .build/release-artifacts/*
           if-no-files-found: error
 
@@ -52,7 +49,7 @@ jobs:
         run: |
           gh release create "${{ inputs.tag }}" \
             .build/release-artifacts/* \
-            --title "MacBook Island ${{ inputs.tag }}" \
+            --title "顶屿 TopIslet ${{ inputs.tag }}" \
             --notes-file Docs/RELEASE_NOTES_0.1.0-alpha.md \
             --prerelease \
             --verify-tag

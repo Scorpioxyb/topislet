@@ -2,22 +2,22 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DISPLAY_NAME="MacBook 灵动岛"
+APP_DISPLAY_NAME="顶屿"
 EXECUTABLE_NAME="MacBookIsland"
 VERSION="${VERSION:-$(plutil -extract CFBundleShortVersionString raw "$ROOT/Packaging/Info.plist")}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(plutil -extract CFBundleVersion raw "$ROOT/Packaging/Info.plist")}"
 BUNDLE_ID="${BUNDLE_ID:-$(plutil -extract CFBundleIdentifier raw "$ROOT/Packaging/Info.plist")}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/.build/release-artifacts}"
-WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/macbook-island-release.XXXXXX")}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/topislet-release.XXXXXX")}"
 APP="$WORK_DIR/$APP_DISPLAY_NAME.app"
-ARCHIVE_BASENAME="MacBook-Island-v$VERSION-arm64"
+ARCHIVE_BASENAME="TopIslet-v$VERSION-arm64"
 ARCHIVE="$OUTPUT_DIR/$ARCHIVE_BASENAME.zip"
 CHECKSUM="$ARCHIVE.sha256"
 
 if [[ "$BUNDLE_ID" == local.* && "${ALLOW_PROTOTYPE_BUNDLE_ID:-0}" != "1" ]]; then
   echo "error: release Bundle ID must not use the local.* prototype namespace" >&2
-  echo "set BUNDLE_ID=io.github.<owner>.MacBookIsland" >&2
+  echo "set BUNDLE_ID=io.github.scorpioxyb.topislet" >&2
   exit 2
 fi
 

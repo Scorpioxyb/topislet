@@ -3,11 +3,12 @@
 ## 构建与安装
 
 - `swift build` 能通过。
-- `Scripts/package-app.sh` 能生成并安装 `/Applications/MacBook 灵动岛.app`。
+- `Scripts/package-app.sh` 能生成并安装 `/Applications/顶屿.app`。
 - 安装包的 `Info.plist` 包含 `CFBundleIconFile=IslandAppIcon`，`Contents/Resources/IslandAppIcon.icns` 存在，并在 Finder、程序坞和“关于”窗口显示新图标。
-- `codesign --verify --deep --strict --verbose=2 "/Applications/MacBook 灵动岛.app"` 通过。
-- `file "/Applications/MacBook 灵动岛.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。
-- 双击 App 或 `open "/Applications/MacBook 灵动岛.app"` 后顶部灵动岛出现，设置面板可打开。
+- `codesign --verify --deep --strict --verbose=2 "/Applications/顶屿.app"` 通过。
+- `file "/Applications/顶屿.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。
+- 双击 App 或 `open "/Applications/顶屿.app"` 后顶屿出现，设置面板可打开。
+- 从旧原型升级时，macOS 会按新 Bundle ID 识别顶屿；辅助功能、日历和提醒事项权限需重新授权。
 - 正常运行进程不包含 `--preview-mode` 或 `--preview-feature` 参数。
 - 安装包包含 `qishui-targeted-control.py`，且不包含 `qishui-focused-control`、短暂激活汽水或全局媒体键实现。
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。

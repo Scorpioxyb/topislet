@@ -2,7 +2,7 @@
 
 ## 验收目标
 
-MVP v0.1 的目标不是扩展更多功能，而是确认 MacBook 灵动岛作为“汽水音乐顶部岛”具备可持续试用的稳定性：显示真实、控制安全、性能稳定、交互不突兀。
+MVP v0.1 的目标不是扩展更多功能，而是确认顶屿作为“汽水音乐顶部岛”具备可持续试用的稳定性：显示真实、控制安全、性能稳定、交互不突兀。
 
 ## 验收范围
 
@@ -17,7 +17,7 @@ MVP v0.1 的目标不是扩展更多功能，而是确认 MacBook 灵动岛作�
 
 | 编号 | 验收项 | 通过标准 | 验证方式 |
 | --- | --- | --- | --- |
-| A1 | App 可安装运行 | `/Applications/MacBook 灵动岛.app` 可打开，顶部岛出现 | `Scripts/package-app.sh` 后 `open` |
+| A1 | App 可安装运行 | `/Applications/顶屿.app` 可打开，顶部岛出现 | `Scripts/package-app.sh` 后 `open` |
 | A2 | CPU 稳定 | 稳态 CPU 通常低于 5%，不得长期高于 10% | `ps -p $(pgrep -x MacBookIsland | head -n 1) -o %cpu` |
 | A3 | 汽水真实同步 | `--adapter-status` 显示 `verifiedQishuiSource=true`，歌名/歌手与汽水一致 | CLI + 目视对比 |
 | A4 | 进度可信 | `elapsedTime` 和 `progress` 连续递增；点击岛后不得回到 0 或几秒 | 连续读数 + 手动点击 |
@@ -35,9 +35,9 @@ MVP v0.1 的目标不是扩展更多功能，而是确认 MacBook 灵动岛作�
 ```bash
 swift build
 Scripts/package-app.sh
-codesign --verify --deep --strict --verbose=2 "/Applications/MacBook 灵动岛.app"
-"/Applications/MacBook 灵动岛.app/Contents/MacOS/MacBookIsland" --adapter-status
-"/Applications/MacBook 灵动岛.app/Contents/MacOS/MacBookIsland" --qishui-status
+codesign --verify --deep --strict --verbose=2 "/Applications/顶屿.app"
+"/Applications/顶屿.app/Contents/MacOS/MacBookIsland" --adapter-status
+"/Applications/顶屿.app/Contents/MacOS/MacBookIsland" --qishui-status
 ps -p $(pgrep -x MacBookIsland | head -n 1) -o pid,stat,%cpu,%mem,time,command
 ```
 

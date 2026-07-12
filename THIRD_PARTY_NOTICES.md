@@ -1,4 +1,6 @@
-# Third-Party Notices
+# TopIslet Third-Party Notices
+
+顶屿自身的源代码按 `GPL-3.0-only` 授权；以下组件保留各自许可证。
 
 ## MediaRemote Adapter
 

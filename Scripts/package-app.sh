@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="MacBook 灵动岛.app"
-APP="$ROOT/$APP_NAME"
-LEGACY_APP="$ROOT/MacBookIsland.app"
+APP_NAME="顶屿.app"
+APP="$ROOT/.build/package/$APP_NAME"
+BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$ROOT/Packaging/Info.plist")"
 
 swift build --package-path "$ROOT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -17,11 +17,9 @@ fi
 chmod +x "$APP/Contents/MacOS/MacBookIsland"
 xattr -cr "$APP"
 codesign --force --deep --sign - \
-  --identifier "local.macbook-island.prototype" \
-  --requirements '=designated => identifier "local.macbook-island.prototype"' \
+  --identifier "$BUNDLE_ID" \
+  --requirements "=designated => identifier \"$BUNDLE_ID\"" \
   "$APP" >/dev/null
-
-ditto "$APP" "$LEGACY_APP"
 
 INSTALL_DIR="/Applications"
 if [ ! -w "$INSTALL_DIR" ]; then

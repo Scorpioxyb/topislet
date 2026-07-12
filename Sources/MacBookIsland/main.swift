@@ -6,7 +6,7 @@ import EventKit
 import QuartzCore
 import SwiftUI
 
-private let islandEventNotificationName = Notification.Name("local.macbook-island.event")
+private let islandEventNotificationName = Notification.Name("io.github.scorpioxyb.topislet.event")
 
 if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
     guard CommandLine.arguments.indices.contains(eventIndex + 2) else {
@@ -15,7 +15,7 @@ if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
     }
     let source = CommandLine.arguments.indices.contains(eventIndex + 3)
         ? CommandLine.arguments[eventIndex + 3]
-        : "MacBook Island"
+        : "顶屿"
     DistributedNotificationCenter.default().postNotificationName(
         islandEventNotificationName,
         object: nil,
@@ -449,7 +449,7 @@ final class IslandModel: ObservableObject {
     @Published var notification = IslandNotification(
         title: "",
         body: "",
-        source: "MacBook Island",
+        source: "顶屿",
         count: 0
     )
     @Published var eventKitStatus = EventKitActivityStatus.current
@@ -776,7 +776,7 @@ final class IslandModel: ObservableObject {
         triggerNotification(
             title: trusted ? "辅助功能已授权" : "辅助功能未授权",
             body: trusted
-                ? "当前运行的 MacBook Island 已通过系统辅助功能检查。"
+                ? "当前运行的顶屿已通过系统辅助功能检查。"
                 : "当前运行路径：\(path)。请在辅助功能中勾选这个 App；如果已有旧项，先删除旧项再添加当前 App。"
         )
     }
@@ -883,8 +883,8 @@ final class IslandModel: ObservableObject {
 
     func triggerNotification(
         title: String = "新的提醒",
-        body: String = "这是一条来自灵动岛的低打扰提醒。",
-        source: String = "MacBook Island",
+        body: String = "这是一条来自顶屿的低打扰提醒。",
+        source: String = "顶屿",
         interruptsExpanded: Bool = false,
         autoDismiss: Bool = true,
         mergeIdentifier: String? = nil,
@@ -1172,7 +1172,7 @@ final class IslandModel: ObservableObject {
         notification = IslandNotification(
             title: event?.title ?? "",
             body: event?.body ?? "",
-            source: event?.source ?? "MacBook Island",
+            source: event?.source ?? "顶屿",
             count: count
         )
     }
@@ -1598,12 +1598,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let title = String(rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         guard !title.isEmpty else { return }
         let body = String(rawBody.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
-        let rawSource = userInfo["source"] as? String ?? "MacBook Island"
+        let rawSource = userInfo["source"] as? String ?? "顶屿"
         let source = String(rawSource.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
         model.triggerNotification(
             title: title,
             body: body,
-            source: source.isEmpty ? "MacBook Island" : source
+            source: source.isEmpty ? "顶屿" : source
         )
     }
 
@@ -1667,17 +1667,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func createStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let image = NSImage(systemSymbolName: "capsule.fill", accessibilityDescription: "MacBook Island") {
+        if let image = NSImage(systemSymbolName: "capsule.fill", accessibilityDescription: "顶屿") {
             image.isTemplate = true
             item.button?.image = image
             item.button?.imagePosition = .imageOnly
         } else {
-            item.button?.title = "岛"
+            item.button?.title = "屿"
         }
-        item.button?.toolTip = "MacBook Island"
+        item.button?.toolTip = "顶屿"
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "显示 / 隐藏灵动岛", action: #selector(toggleVisibility), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "显示 / 隐藏顶屿", action: #selector(toggleVisibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "显示汽水音乐", action: #selector(showMusic), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "启动 25 分钟计时", action: #selector(showTimer), keyEquivalent: ""))
         menu.addItem(.separator())
@@ -1687,7 +1687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "设置...", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "校准布局...", action: #selector(showCalibration), keyEquivalent: ""))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "退出顶屿", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
     }
@@ -2146,7 +2146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "MacBook 灵动岛设置"
+            window.title = "顶屿设置"
             window.contentView = hostingView
             window.delegate = self
             window.isReleasedWhenClosed = false
@@ -2194,7 +2194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "灵动岛布局校准"
+            window.title = "顶屿布局校准"
             window.contentView = hostingView
             window.delegate = self
             window.isReleasedWhenClosed = false
@@ -2270,11 +2270,11 @@ private struct GeneralSettingsPane: View {
     var body: some View {
         Form {
             Section {
-                Toggle("启动后显示灵动岛", isOn: $settings.showIslandOnLaunch)
+                Toggle("启动后显示顶屿", isOn: $settings.showIslandOnLaunch)
 
                 Toggle("点击外部自动收起展开面板", isOn: $settings.autoCollapseExpandedIsland)
 
-                Toggle("当前显示灵动岛", isOn: $model.isVisible)
+                Toggle("当前显示顶屿", isOn: $model.isVisible)
             }
 
             Section {
@@ -2293,7 +2293,7 @@ private struct GeneralSettingsPane: View {
             Section {
                 LabeledContent("默认主活动", value: "汽水音乐")
 
-                Text("计时器和提醒只在事件发生时临时出现，不再作为灵动岛里的固定入口。")
+                Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
 
@@ -2501,7 +2501,7 @@ private struct EventKitSettingsPane: View {
             }
 
             Section {
-                Text("授权仅用于读取日程和提醒事项，并把临近或到期事件送入灵动岛。不会读取其他 App 的系统通知，也不会修改你的日历和提醒事项。")
+                Text("授权仅用于读取日程和提醒事项，并把临近或到期事件送入顶屿。不会读取其他 App 的系统通知，也不会修改你的日历和提醒事项。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2524,8 +2524,10 @@ private struct AboutSettingsPane: View {
                     .frame(width: 54, height: 54)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("MacBook 灵动岛")
+                    Text("顶屿")
                         .font(.system(size: 20, weight: .semibold))
+                    Text("TopIslet")
+                        .foregroundStyle(.secondary)
                     Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
                         .foregroundStyle(.secondary)
                 }
@@ -2536,6 +2538,9 @@ private struct AboutSettingsPane: View {
             Text("当前版本以汽水音乐为默认主活动；计时器和提醒只在事件发生时临时接管。发布前仍需要处理签名、公证和系统更新兼容性。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Text("源代码许可证：GPL-3.0-only")
+                .foregroundStyle(.secondary)
 
             Spacer()
         }

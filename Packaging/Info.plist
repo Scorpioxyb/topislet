@@ -9,13 +9,13 @@
     <key>CFBundleIconFile</key>
     <string>IslandAppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>local.macbook-island.prototype</string>
+    <string>io.github.scorpioxyb.topislet</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>MacBook 灵动岛</string>
+    <string>顶屿</string>
     <key>CFBundleDisplayName</key>
-    <string>MacBook 灵动岛</string>
+    <string>顶屿</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,8 +29,8 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>用于读取即将开始的日程，并在灵动岛中提供低打扰提醒。</string>
+    <string>用于读取即将开始的日程，并在顶屿中提供低打扰提醒。</string>
     <key>NSRemindersFullAccessUsageDescription</key>
-    <string>用于读取刚到期的提醒事项，并在灵动岛中提供低打扰提醒。</string>
+    <string>用于读取刚到期的提醒事项，并在顶屿中提供低打扰提醒。</string>
 </dict>
 </plist>
