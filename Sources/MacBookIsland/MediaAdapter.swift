@@ -196,6 +196,7 @@ final class MusicAdapterCoordinator {
     private var realtimeRefreshInFlight = false
     private var realtimeRefreshQueued = false
     private var playbackPositionRefreshInFlight = false
+    private var targetedControlConfirmationGeneration: Int?
     private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
@@ -342,14 +343,31 @@ final class MusicAdapterCoordinator {
         attempt: TargetedControlAttempt
     ) async -> ControlDispatchResult {
         let targetedResult = await postTargetedControl(command)
-        let confirmation = targetedResult.didSend
-            ? await confirmTargetedControl(attempt)
-            : .inconclusive
+        let targetedDispatchCompletedAt = Date()
+        let confirmationBaselineSampleID = max(
+            attempt.baselineSampleID,
+            latestMediaRemoteSnapshot?.sampleID ?? 0
+        )
+        let confirmation: PlaybackControlTimeline.TargetedControlConfirmation
+        if targetedResult.didSend {
+            targetedControlConfirmationGeneration = attempt.generation
+            confirmation = await confirmTargetedControl(
+                attempt,
+                dispatchCompletedAt: targetedDispatchCompletedAt,
+                baselineSampleID: confirmationBaselineSampleID
+            )
+            if targetedControlConfirmationGeneration == attempt.generation {
+                targetedControlConfirmationGeneration = nil
+            }
+        } else {
+            confirmation = .inconclusive
+        }
         guard PlaybackControlTimeline.shouldRunAXFallback(
             controlGeneration: attempt.generation,
             currentGeneration: controlGeneration,
             targetedDispatched: targetedResult.didSend,
-            confirmation: confirmation
+            confirmation: confirmation,
+            elapsedSinceDispatch: Date().timeIntervalSince(targetedDispatchCompletedAt)
         ) else {
             let targetedConfirmed = confirmation == .confirmed
             return ControlDispatchResult(
@@ -430,47 +448,55 @@ final class MusicAdapterCoordinator {
     }
 
     private func confirmTargetedControl(
-        _ attempt: TargetedControlAttempt
+        _ attempt: TargetedControlAttempt,
+        dispatchCompletedAt: Date,
+        baselineSampleID: UInt64
     ) async -> PlaybackControlTimeline.TargetedControlConfirmation {
         guard attempt.generation == controlGeneration else { return .inconclusive }
         var observations: [PlaybackControlTimeline.TargetedControlObservation] = []
         var observedSampleIDs = Set<UInt64>()
+        var encounteredInconclusiveRead = false
 
-        func appendLatestObservation() {
+        for offset in [0.12, 0.28, 0.52] {
+            guard await waitForTargetedControlCheckpoint(
+                dispatchCompletedAt.addingTimeInterval(offset),
+                generation: attempt.generation
+            ) else { return .inconclusive }
+            guard attempt.generation == controlGeneration else { return .inconclusive }
+
+            let snapshot = await refreshTargetedControlPositionSnapshot(
+                generation: attempt.generation
+            )
+            guard attempt.generation == controlGeneration else { return .inconclusive }
             guard let observation = targetedControlObservation(
                 attempt,
-                snapshot: latestMediaRemoteSnapshot
-            ), observedSampleIDs.insert(observation.sampleID).inserted else { return }
-            observations.append(observation)
-        }
+                snapshot: snapshot,
+                dispatchCompletedAt: dispatchCompletedAt,
+                baselineSampleID: baselineSampleID
+            ) else {
+                encounteredInconclusiveRead = true
+                continue
+            }
+            if observedSampleIDs.insert(observation.sampleID).inserted {
+                observations.append(observation)
+            }
 
-        appendLatestObservation()
-        schedulePlaybackPositionRefresh()
-        for index in 0..<3 {
-            try? await Task.sleep(nanoseconds: 160_000_000)
-            guard attempt.generation == controlGeneration else { return .inconclusive }
-            appendLatestObservation()
             let result = PlaybackControlTimeline.targetedControlConfirmation(
                 expectation: attempt.expectation,
-                baselineSampleID: attempt.baselineSampleID,
+                baselineSampleID: baselineSampleID,
                 observations: observations
             )
             if result == .confirmed {
                 if let playbackOperationID = attempt.playbackOperationID,
                    pendingPlaybackOperation?.id == playbackOperationID {
-                    if index < 2 {
-                        schedulePlaybackPositionRefresh()
-                    }
                     continue
                 }
                 return .confirmed
             }
-            if result == .explicitlyUnchanged { return result }
-            if index < 2 { schedulePlaybackPositionRefresh() }
         }
         let finalResult = PlaybackControlTimeline.targetedControlConfirmation(
             expectation: attempt.expectation,
-            baselineSampleID: attempt.baselineSampleID,
+            baselineSampleID: baselineSampleID,
             observations: observations
         )
         if finalResult == .confirmed,
@@ -478,15 +504,64 @@ final class MusicAdapterCoordinator {
            pendingPlaybackOperation?.id == playbackOperationID {
             return .inconclusive
         }
+        if encounteredInconclusiveRead,
+           finalResult != .confirmed {
+            return .inconclusive
+        }
         return finalResult
+    }
+
+    private func waitForTargetedControlCheckpoint(
+        _ deadline: Date,
+        generation: Int
+    ) async -> Bool {
+        while true {
+            guard generation == controlGeneration,
+                  !Task.isCancelled else { return false }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return true }
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(min(remaining, 0.02) * 1_000_000_000)
+                )
+            } catch {
+                return false
+            }
+        }
+    }
+
+    private func refreshTargetedControlPositionSnapshot(
+        generation: Int
+    ) async -> MediaRemoteNowPlayingSnapshot? {
+        while playbackPositionRefreshInFlight {
+            guard generation == controlGeneration,
+                  !Task.isCancelled else { return nil }
+            do {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            } catch {
+                return nil
+            }
+        }
+        guard generation == controlGeneration else { return nil }
+
+        playbackPositionRefreshInFlight = true
+        lastPlaybackPositionRefreshAt = Date()
+        let snapshot = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+        _ = refreshSourceStatus()
+        playbackPositionRefreshInFlight = false
+        publishCurrentState()
+        return generation == controlGeneration ? snapshot : nil
     }
 
     private func targetedControlObservation(
         _ attempt: TargetedControlAttempt,
-        snapshot: MediaRemoteNowPlayingSnapshot?
+        snapshot: MediaRemoteNowPlayingSnapshot?,
+        dispatchCompletedAt: Date,
+        baselineSampleID: UInt64
     ) -> PlaybackControlTimeline.TargetedControlObservation? {
         guard let snapshot,
-              snapshot.sampleID > attempt.baselineSampleID else { return nil }
+              snapshot.sampleID > baselineSampleID,
+              snapshot.checkedAt >= dispatchCompletedAt else { return nil }
         let track = snapshot.currentTrack
         let processIdentifierIsValid = attempt.baselineProcessIdentifier.map {
             track?.sourceProcessIdentifier == $0
@@ -611,8 +686,12 @@ final class MusicAdapterCoordinator {
     }
 
     func refreshControlFollowUp() async -> (music: MusicState, status: MusicSourceStatus) {
-        if pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline() {
+        if (pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
+           targetedControlConfirmationGeneration == nil,
+           !playbackPositionRefreshInFlight {
+            playbackPositionRefreshInFlight = true
             _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+            playbackPositionRefreshInFlight = false
         }
         let status = refreshSourceStatus()
         return (currentMusicState(), status)

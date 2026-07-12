@@ -299,7 +299,8 @@ func noFreshSampleIsInconclusiveAndDoesNotFallback() {
         controlGeneration: 12,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: result
+        confirmation: result,
+        elapsedSinceDispatch: 0.52
     ))
 }
 
@@ -323,7 +324,8 @@ func oneFreshUnchangedSampleIsInconclusive() {
         controlGeneration: 12,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: result
+        confirmation: result,
+        elapsedSinceDispatch: 0.52
     ))
 }
 
@@ -349,7 +351,8 @@ func invalidFreshSamplePreventsAXFallback() {
         controlGeneration: 12,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: result
+        confirmation: result,
+        elapsedSinceDispatch: 0.52
     ))
 }
 
@@ -373,7 +376,8 @@ func twoFreshUnchangedSamplesAllowAXFallback() {
         controlGeneration: 12,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: result
+        confirmation: result,
+        elapsedSinceDispatch: 0.52
     ))
 }
 
@@ -396,7 +400,8 @@ func targetPlaybackChangeConfirmsWithoutAX() {
         controlGeneration: 12,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: result
+        confirmation: result,
+        elapsedSinceDispatch: 0.52
     ))
 }
 
@@ -419,6 +424,25 @@ func staleGenerationCannotFallbackAfterExplicitUnchanged() {
         controlGeneration: 11,
         currentGeneration: 12,
         targetedDispatched: true,
-        confirmation: .explicitlyUnchanged
+        confirmation: .explicitlyUnchanged,
+        elapsedSinceDispatch: 0.52
+    ))
+}
+
+@Test("两个未变化样本在确认窗口满 500ms 前仍不得 AX")
+func explicitUnchangedWaitsForConfirmationWindow() {
+    #expect(!PlaybackControlTimeline.shouldRunAXFallback(
+        controlGeneration: 12,
+        currentGeneration: 12,
+        targetedDispatched: true,
+        confirmation: .explicitlyUnchanged,
+        elapsedSinceDispatch: 0.28
+    ))
+    #expect(PlaybackControlTimeline.shouldRunAXFallback(
+        controlGeneration: 12,
+        currentGeneration: 12,
+        targetedDispatched: true,
+        confirmation: .explicitlyUnchanged,
+        elapsedSinceDispatch: 0.52
     ))
 }

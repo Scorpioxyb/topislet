@@ -269,9 +269,12 @@ enum PlaybackControlTimeline {
         controlGeneration: Int,
         currentGeneration: Int,
         targetedDispatched: Bool,
-        confirmation: TargetedControlConfirmation
+        confirmation: TargetedControlConfirmation,
+        elapsedSinceDispatch: TimeInterval
     ) -> Bool {
         guard controlGeneration == currentGeneration else { return false }
-        return !targetedDispatched || confirmation == .explicitlyUnchanged
+        guard targetedDispatched else { return true }
+        return confirmation == .explicitlyUnchanged
+            && elapsedSinceDispatch >= 0.5
     }
 }
