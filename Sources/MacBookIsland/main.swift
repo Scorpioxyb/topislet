@@ -3093,7 +3093,7 @@ struct ExpandedMusic: View {
                     }
                     .help("上一首")
 
-                    ControlButton(icon: model.music.isPlaying ? "pause.fill" : "play.fill", prominent: true, pending: model.music.isPlaybackPending) {
+                    ControlButton(icon: model.music.isPlaying ? "pause.fill" : "play.fill", prominent: true) {
                         model.playPause()
                     }
                     .help(model.music.isPlaying ? "暂停" : "播放")
@@ -3389,15 +3389,15 @@ private struct MusicSourceBadge: View {
             if let applicationIcon {
                 Image(nsImage: applicationIcon)
                     .resizable()
-                    .scaledToFill()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size + 2, height: size + 2)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
-                    .overlay {
+                    .clipShape(
                         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-                            .stroke(Color.black.opacity(0.9), lineWidth: 1.5)
-                    }
-                    .shadow(color: .black.opacity(0.34), radius: 1.5, y: 0.5)
-                    .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    )
+                    .compositingGroup()
+                    .transition(.opacity)
             } else if bundleIdentifier != nil {
                 Image(systemName: "music.note")
                     .font(.system(size: 8, weight: .bold))
@@ -3407,12 +3407,7 @@ private struct MusicSourceBadge: View {
                         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
                             .fill(Color.black.opacity(0.9))
                     )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-                            .stroke(Color.black.opacity(0.9), lineWidth: 1.5)
-                    }
-                    .shadow(color: .black.opacity(0.34), radius: 1.5, y: 0.5)
-                    .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
         .frame(width: size, height: size)
@@ -3423,12 +3418,8 @@ private struct MusicSourceBadge: View {
 struct ControlButton: View {
     let icon: String
     var prominent = false
-    var pending = false
     var size: CGFloat = 30
     let action: () -> Void
-    @State private var showsPending = false
-    @State private var pendingRingRotation = 0.0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -3440,41 +3431,8 @@ struct ControlButton: View {
                     Circle()
                         .fill(prominent ? Color.white : Color.white.opacity(0.1))
                 )
-                .overlay {
-                    if showsPending {
-                        Circle()
-                            .trim(from: 0.08, to: 0.82)
-                            .stroke(
-                                prominent ? Color.black.opacity(0.42) : Color.white.opacity(0.46),
-                                style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
-                            )
-                            .rotationEffect(.degrees(-90 + pendingRingRotation))
-                            .padding(2)
-                            .transition(
-                                reduceMotion
-                                    ? .opacity
-                                    : .scale(scale: 0.84).combined(with: .opacity)
-                            )
-                    }
-                }
         }
         .buttonStyle(IslandControlButtonStyle())
-        .task(id: pending) {
-            if pending {
-                try? await Task.sleep(nanoseconds: 180_000_000)
-                guard !Task.isCancelled else { return }
-                pendingRingRotation = 0
-                withAnimation(.easeOut(duration: 0.16)) {
-                    showsPending = true
-                    pendingRingRotation = 220
-                }
-            } else {
-                withAnimation(.easeOut(duration: 0.1)) {
-                    showsPending = false
-                }
-                pendingRingRotation = 0
-            }
-        }
     }
 }
 
