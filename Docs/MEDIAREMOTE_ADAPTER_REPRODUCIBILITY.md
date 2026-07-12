@@ -8,17 +8,16 @@
 - commit：`3ac3d4bdf862c7b5399b4fba4df5689f5c38609a`
 - 上游及本地许可证：BSD 3-Clause
 
-仓库内的 `topislet-client-targeting.patch` 在该 commit 上增加按 Bundle ID 读取指定 MediaRemote client 的 `get-client` 和 `stream-client` 能力。补丁不修改汽水音乐 App，也不包含汽水音乐的解包源码或账号数据。
+仓库内的 `topislet-client-targeting.patch` 在该 commit 上增加按 Bundle ID 读取指定 MediaRemote client 的 `get-client`、`stream-client`，以及只允许播放/暂停、上一首、下一首的 `send-client` 能力。补丁不修改汽水音乐 App，也不包含汽水音乐的解包源码或账号数据。
 
-项目另有 `qishui-targeted-control.py`，用于把播放、暂停、上一首和下一首命令限制到 `com.soda.music`。它是顶屿项目源码，不是上游文件或第三方二进制。
+顶屿运行时通过系统 `/usr/bin/perl` 加载随 App 分发的 Adapter，并使用 `send-client com.soda.music COMMAND` 定向控制；不再运行或分发 `/usr/bin/python3` 控制脚本。
 
 ## 当前发布二进制
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter` | `3446ebb0889757c8d4cee0ac7a577bbbd530e3ba61225d30b47e3b85d31f95ab` |
-| `mediaremote-adapter.pl` | `70c56f2263ff1476629e00d30ca2718497b7fc9ebe6e9125849a1c4bb7bcd7c5` |
-| `qishui-targeted-control.py` | `16ad6bc1f0c5a6c4da8f0650c1e31c0c01acc8d16d9cca63abaa96eb18dcb8ce` |
+| `MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter` | `6de4ad829488b12e2b969ddf17e2459f855781b2130f8fb554a40958fe224374` |
+| `mediaremote-adapter.pl` | `16d37cfdc7886f1f8908a356c0199eb1f0f31a365d3aa705dad73a586cf5392d` |
 
 已确认当前 Framework 同时包含 `arm64` 和 `x86_64`，并可使用下述脚本从固定上游 commit 和仓库补丁逐字节重建。
 
