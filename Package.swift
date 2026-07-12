@@ -15,6 +15,10 @@ let package = Package(
     targets: [
         .executableTarget(name: "MacBookIsland"),
         .executableTarget(name: "QishuiProbe"),
-        .executableTarget(name: "QishuiStateProbe")
+        .executableTarget(name: "QishuiStateProbe"),
+        .testTarget(
+            name: "MacBookIslandTests",
+            dependencies: ["MacBookIsland"]
+        )
     ]
 )

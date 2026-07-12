@@ -8,17 +8,19 @@ struct QishuiTargetedControlResult: Sendable {
 final class QishuiTargetedMediaController: Sendable {
     private struct HelperPaths {
         let script: URL
-        let frameworkBinary: URL
+        let framework: URL
     }
 
+    static let perlExecutablePath = "/usr/bin/perl"
+    static let processTimeout: TimeInterval = 2.0
+
     private let bundleIdentifier = "com.soda.music"
-    private let timeout: TimeInterval = 0.6
 
     func post(_ command: MusicControlCommand) -> QishuiTargetedControlResult {
-        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else {
+        guard FileManager.default.isExecutableFile(atPath: Self.perlExecutablePath) else {
             return QishuiTargetedControlResult(
                 didSend: false,
-                diagnostic: "系统 Python 不可用，未启动汽水 client 定向控制。"
+                diagnostic: "系统 Perl 不可用，未启动汽水 client 定向控制。"
             )
         }
         guard let paths = helperPaths() else {
@@ -31,13 +33,13 @@ final class QishuiTargetedMediaController: Sendable {
         let process = Process()
         let output = Pipe()
         let error = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [
-            paths.script.path,
-            paths.frameworkBinary.path,
-            bundleIdentifier,
-            String(command.targetedMediaRemoteCommandID)
-        ]
+        process.executableURL = URL(fileURLWithPath: Self.perlExecutablePath)
+        process.arguments = Self.commandArguments(
+            script: paths.script,
+            framework: paths.framework,
+            bundleIdentifier: bundleIdentifier,
+            command: command
+        )
         process.standardOutput = output
         process.standardError = error
 
@@ -50,15 +52,16 @@ final class QishuiTargetedMediaController: Sendable {
             )
         }
 
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = Date().addingTimeInterval(Self.processTimeout)
         while process.isRunning, Date() < deadline {
             usleep(5_000)
         }
         if process.isRunning {
             process.terminate()
+            process.waitUntilExit()
             return QishuiTargetedControlResult(
                 didSend: false,
-                diagnostic: "汽水 client 定向控制超时，未把命令转发给系统当前媒体源。"
+                diagnostic: "汽水 client 定向控制超时，未向其他媒体源发送命令。"
             )
         }
 
@@ -71,14 +74,35 @@ final class QishuiTargetedMediaController: Sendable {
             data: error.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8
         ) ?? ""
-        let didSend = process.terminationStatus == 0
-            && standardOutput.contains("targetedControlSent=true")
+        let didSend = Self.didSend(
+            terminationStatus: process.terminationStatus,
+            standardOutput: standardOutput
+        )
         return QishuiTargetedControlResult(
             didSend: didSend,
             diagnostic: didSend
                 ? "已将\(command.label)直接发送给汽水音乐 MediaRemote client。"
                 : "汽水 client 定向控制不可用：\(standardError.trimmingCharacters(in: .whitespacesAndNewlines))"
         )
+    }
+
+    static func commandArguments(
+        script: URL,
+        framework: URL,
+        bundleIdentifier: String,
+        command: MusicControlCommand
+    ) -> [String] {
+        [
+            script.path,
+            framework.path,
+            "send-client",
+            bundleIdentifier,
+            String(command.targetedMediaRemoteCommandID)
+        ]
+    }
+
+    static func didSend(terminationStatus: Int32, standardOutput: String) -> Bool {
+        terminationStatus == 0 && standardOutput.contains("targetedControlSent=true")
     }
 
     private func helperPaths() -> HelperPaths? {
@@ -90,13 +114,11 @@ final class QishuiTargetedMediaController: Sendable {
         ].compactMap { $0 }
 
         for root in roots {
-            let script = root.appendingPathComponent("qishui-targeted-control.py")
-            let frameworkBinary = root
-                .appendingPathComponent("MediaRemoteAdapter.framework")
-                .appendingPathComponent("Versions/A/MediaRemoteAdapter")
+            let script = root.appendingPathComponent("mediaremote-adapter.pl")
+            let framework = root.appendingPathComponent("MediaRemoteAdapter.framework")
             if fileManager.fileExists(atPath: script.path),
-               fileManager.fileExists(atPath: frameworkBinary.path) {
-                return HelperPaths(script: script, frameworkBinary: frameworkBinary)
+               fileManager.fileExists(atPath: framework.path) {
+                return HelperPaths(script: script, framework: framework)
             }
         }
         return nil
