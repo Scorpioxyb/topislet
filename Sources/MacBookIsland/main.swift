@@ -1500,8 +1500,21 @@ final class IslandModel: ObservableObject {
 }
 
 final class IslandPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow {
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+}
+
+final class IslandHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
 }
 
 @MainActor
@@ -1614,14 +1627,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = makeIslandPanel(size: size, level: .statusBar)
 
         let root = IslandRootView(model: model)
-        let host = NSHostingView(rootView: root)
+        let host = IslandHostingView(rootView: root)
         configureIslandHostingView(host, size: size)
         panel.contentView = host
 
         let expandedSize = expandedPanelSize()
         let expandedPanel = makeIslandPanel(size: expandedSize, level: .floating)
         let expandedRoot = ExpandedIslandBodyPanel(model: model)
-        let expandedHost = NSHostingView(rootView: expandedRoot)
+        let expandedHost = IslandHostingView(rootView: expandedRoot)
         configureIslandHostingView(expandedHost, size: expandedSize)
         expandedPanel.contentView = expandedHost
         expandedPanel.ignoresMouseEvents = true
@@ -2028,7 +2041,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelAnimationID += 1
         let animationID = panelAnimationID
         let animationDuration = IslandMotion.duration(for: mode)
-        expandedPanel?.ignoresMouseEvents = true
+        // The body is already at its final frame when expanding. Accept clicks
+        // immediately so a visible control cannot be inert during the animation.
+        expandedPanel?.ignoresMouseEvents = mode != .expanded
 
         if model.isVisible {
             panel.orderFrontRegardless()
