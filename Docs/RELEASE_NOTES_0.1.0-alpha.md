@@ -40,3 +40,5 @@ shasum -a 256 -c TopIslet-v0.1.0-arm64.dmg.sha256
 ```
 
 打开 `TopIslet-v0.1.0-arm64.dmg`，将“顶屿.app”拖到“Applications”快捷入口即可完成安装。
+
+如果 macOS 阻止首次打开，请在 Finder 的“应用程序”中右键顶屿并选择“打开”。不要关闭 Gatekeeper，也不要运行来源不明的解除安全限制命令。

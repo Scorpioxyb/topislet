@@ -6,12 +6,12 @@ App 版本：`0.1.0`
 
 ## 当前结论
 
-源码仓库结构和自动化发布骨架已经准备，但**尚不满足公开二进制 Release 条件**。在下列 P0 全部完成前，只能继续作为本机开发版本或私有仓库候选。
+本版本按**公开 GitHub Alpha 开发者预览版**发布。项目负责人已接受 ad-hoc 签名和未公证带来的 Gatekeeper 提示；未完成的动态回归继续作为 Alpha 已知风险跟踪，不能把本版本宣传为稳定版。
 
 ## P0：公开前必须完成
 
 - [x] 项目负责人确认仓库名称：`topislet`。
-- [ ] 项目负责人确认仓库可见性：公开或私有。
+- [x] 项目负责人确认仓库可见性：公开。
 - [x] 项目负责人选择 `GPL-3.0-only`，并加入根目录 `LICENSE`。
 - [x] 确认稳定 Bundle ID：`io.github.scorpioxyb.topislet`。
 - [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
@@ -19,8 +19,8 @@ App 版本：`0.1.0`
 - [ ] 在最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
 - [ ] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
-  - [ ] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
-- [ ] 使用无个人信息、封面展示权明确的真实 MacBook Hero 照片或录屏替换临时截图。
+  - [x] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
+- [x] README 首发使用项目自有 App 图标，不公开展示权不明确的真实专辑封面截图。
 - [x] 将 `.github/ISSUE_TEMPLATE/config.yml` 中的安全报告链接替换为正式仓库地址。
 
 ## 已完成的仓库准备

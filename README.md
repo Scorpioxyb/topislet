@@ -3,13 +3,13 @@
 > A lightweight activity island built around the MacBook notch.
 > 把 MacBook 刘海周围变成低打扰、可交互的活动区域。
 
-![展开音乐状态](Docs/Assets/expanded-music.png)
+<img src="Packaging/IslandAppIcon.png" alt="顶屿 App 图标" width="160">
 
 ## 发布状态
 
 当前版本为 **v0.1.0-alpha 开发者预览版**，重点验证汽水音乐同步、媒体控制和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
 
-项目代码已采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。公开 GitHub Release 前仍需完成最终实机回归以及签名 / 公证决策，进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
+项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
 Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNING_AND_NOTARIZATION.md)；MediaRemote Adapter 的固定上游 commit、项目补丁和逐字节重建记录见 [供应链与可复现构建](Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md)。
 

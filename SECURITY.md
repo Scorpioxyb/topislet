@@ -8,7 +8,7 @@
 
 请不要在公开 Issue 中披露可直接利用的漏洞、隐私数据、权限绕过方法或用户凭据。
 
-仓库创建后应立即启用 GitHub Private Vulnerability Reporting。启用前，可创建一个不包含技术细节的 Issue，请求项目维护者提供私密联系渠道。
+请使用仓库的 GitHub Private Vulnerability Reporting 私密提交安全问题；不要把漏洞细节发布到公开 Issue。
 
 报告建议包含：
 
