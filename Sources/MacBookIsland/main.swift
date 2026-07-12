@@ -280,6 +280,7 @@ struct MusicTrack: Equatable {
     let hasArtwork: Bool
     let artworkData: Data?
     let artworkURL: URL?
+    let sourceBundleIdentifier: String?
 }
 
 struct MusicState: Equatable {
@@ -436,6 +437,7 @@ final class IslandModel: ObservableObject {
     @Published var music: MusicState
     @Published var musicAccentColor = Color.white
     @Published var pendingTrackControl: MusicControlCommand?
+    @Published private(set) var trackControlFeedbackGeneration: UInt64 = 0
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -462,6 +464,8 @@ final class IslandModel: ObservableObject {
     private var musicAccentGeneration = 0
     private var trackControlFeedbackTask: Task<Void, Never>?
     private var pendingTrackControlBaselineSignature: String?
+    private var pendingTrackControlGeneration: UInt64?
+    private var pendingTrackControlChainCount = 0
     private var layoutCancellable: AnyCancellable?
     private var eventKitSettingsCancellable: AnyCancellable?
     private var lastTimerUpdateAt: Date?
@@ -638,22 +642,41 @@ final class IslandModel: ObservableObject {
     private func beginTrackControlFeedback(
         _ command: MusicControlCommand,
         baselineSignature: String
-    ) {
+    ) -> UInt64 {
+        trackControlFeedbackGeneration &+= 1
+        let generation = trackControlFeedbackGeneration
+        pendingTrackControlChainCount = pendingTrackControl == nil
+            ? 1
+            : pendingTrackControlChainCount + 1
         pendingTrackControl = command
         pendingTrackControlBaselineSignature = baselineSignature
+        pendingTrackControlGeneration = generation
         trackControlFeedbackTask?.cancel()
+        let feedbackDuration: UInt64 = pendingTrackControlChainCount > 1
+            ? 520_000_000
+            : 1_200_000_000
         trackControlFeedbackTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            try? await Task.sleep(nanoseconds: feedbackDuration)
             guard !Task.isCancelled, let self,
-                  pendingTrackControl == command else { return }
-            finishTrackControlFeedback(command)
+                  pendingTrackControl == command,
+                  pendingTrackControlGeneration == generation else { return }
+            finishTrackControlFeedback(command, generation: generation)
         }
+        return generation
     }
 
-    private func finishTrackControlFeedback(_ command: MusicControlCommand) {
+    private func finishTrackControlFeedback(
+        _ command: MusicControlCommand,
+        generation: UInt64? = nil
+    ) {
         guard pendingTrackControl == command else { return }
+        if let generation {
+            guard pendingTrackControlGeneration == generation else { return }
+        }
         pendingTrackControl = nil
         pendingTrackControlBaselineSignature = nil
+        pendingTrackControlGeneration = nil
+        pendingTrackControlChainCount = 0
         trackControlFeedbackTask?.cancel()
         trackControlFeedbackTask = nil
     }
@@ -682,7 +705,10 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
-        beginTrackControlFeedback(.nextTrack, baselineSignature: previousSignature)
+        let feedbackGeneration = beginTrackControlFeedback(
+            .nextTrack,
+            baselineSignature: previousSignature
+        )
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
@@ -693,9 +719,13 @@ final class IslandModel: ObservableObject {
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
                 musicAdapter.invalidateQishuiCache()
-                startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
+                startMusicControlRefreshBurst(
+                    previousSignature: previousSignature,
+                    requireTrackChange: true,
+                    trackControlGeneration: feedbackGeneration
+                )
             } else {
-                finishTrackControlFeedback(.nextTrack)
+                finishTrackControlFeedback(.nextTrack, generation: feedbackGeneration)
                 if outcome.shouldAdvancePreview {
                     applyMusicUpdate(musicAdapter.nextTrack(), status: outcome.status, forceMusic: true)
                 }
@@ -707,7 +737,10 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
-        beginTrackControlFeedback(.previousTrack, baselineSignature: previousSignature)
+        let feedbackGeneration = beginTrackControlFeedback(
+            .previousTrack,
+            baselineSignature: previousSignature
+        )
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
@@ -718,9 +751,13 @@ final class IslandModel: ObservableObject {
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
                 musicAdapter.invalidateQishuiCache()
-                startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: true)
+                startMusicControlRefreshBurst(
+                    previousSignature: previousSignature,
+                    requireTrackChange: true,
+                    trackControlGeneration: feedbackGeneration
+                )
             } else {
-                finishTrackControlFeedback(.previousTrack)
+                finishTrackControlFeedback(.previousTrack, generation: feedbackGeneration)
                 if outcome.shouldAdvancePreview {
                     applyMusicUpdate(musicAdapter.previousTrack(), status: outcome.status, forceMusic: true)
                 }
@@ -1157,7 +1194,15 @@ final class IslandModel: ObservableObject {
         updateNotificationDisplay()
     }
 
-    private func startMusicControlRefreshBurst(previousSignature: String, requireTrackChange: Bool) {
+    private func startMusicControlRefreshBurst(
+        previousSignature: String,
+        requireTrackChange: Bool,
+        trackControlGeneration: UInt64? = nil
+    ) {
+        if let trackControlGeneration,
+           pendingTrackControlGeneration != trackControlGeneration {
+            return
+        }
         musicRefreshBurstTask?.cancel()
         let intervalsInNanoseconds: [UInt64] = [
             80_000_000,
@@ -1176,15 +1221,28 @@ final class IslandModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
+                if let trackControlGeneration,
+                   self.pendingTrackControlGeneration != trackControlGeneration {
+                    return
+                }
                 let update = await self.musicAdapter.refreshControlFollowUp()
                 guard !Task.isCancelled else { return }
-                self.applyMusicUpdate(update.music, status: update.status, forceMusic: true)
+                self.applyMusicUpdate(
+                    update.music,
+                    status: update.status,
+                    forceMusic: true,
+                    trackControlConfirmationGeneration: trackControlGeneration
+                )
                 if self.shouldStopMusicControlRefreshBurst(
                     music: update.music,
                     status: update.status,
                     previousSignature: previousSignature,
                     requireTrackChange: requireTrackChange
                 ) {
+                    if let trackControlGeneration,
+                       self.pendingTrackControlGeneration == trackControlGeneration {
+                        continue
+                    }
                     self.musicRefreshBurstTask?.cancel()
                 }
             }
@@ -1194,7 +1252,8 @@ final class IslandModel: ObservableObject {
     private func applyMusicUpdate(
         _ newMusic: MusicState,
         status newStatus: MusicSourceStatus?,
-        forceMusic: Bool = false
+        forceMusic: Bool = false,
+        trackControlConfirmationGeneration: UInt64? = nil
     ) {
         if isMusicScrubbing, !forceMusic {
             if let newStatus,
@@ -1222,17 +1281,31 @@ final class IslandModel: ObservableObject {
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
             refreshMusicAccent(for: reconciledMusic.track)
-            if let pendingTrackControl,
-               let baseline = pendingTrackControlBaselineSignature,
-               musicSignature(reconciledMusic) != baseline {
-                finishTrackControlFeedback(pendingTrackControl)
-            }
+            confirmTrackControlFeedbackIfNeeded(
+                with: reconciledMusic,
+                generation: trackControlConfirmationGeneration
+            )
         }
 
         if let newStatus,
            shouldPublishMusicStatus(newStatus) {
             musicSourceStatus = newStatus
         }
+    }
+
+    private func confirmTrackControlFeedbackIfNeeded(
+        with music: MusicState,
+        generation: UInt64?
+    ) {
+        guard let generation,
+              pendingTrackControlGeneration == generation,
+              pendingTrackControlChainCount == 1,
+              let pendingTrackControl,
+              let baseline = pendingTrackControlBaselineSignature else { return }
+
+        let signature = musicSignature(music)
+        guard signature != baseline else { return }
+        finishTrackControlFeedback(pendingTrackControl, generation: generation)
     }
 
     private func refreshMusicAccent(for track: MusicTrack) {
@@ -2980,7 +3053,7 @@ struct ExpandedMusic: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AlbumArt(track: model.music.track, size: 80)
+            AlbumArt(track: model.music.track, size: 88)
 
             VStack(alignment: .leading, spacing: 6) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -3015,7 +3088,9 @@ struct ExpandedMusic: View {
                 HStack(spacing: 12) {
                     ControlButton(
                         icon: "backward.fill",
-                        pending: model.pendingTrackControl == .previousTrack
+                        pending: model.pendingTrackControl == .previousTrack,
+                        pendingGeneration: model.trackControlFeedbackGeneration,
+                        feedbackDirection: -1
                     ) {
                         model.previousTrack()
                     }
@@ -3028,18 +3103,21 @@ struct ExpandedMusic: View {
 
                     ControlButton(
                         icon: "forward.fill",
-                        pending: model.pendingTrackControl == .nextTrack
+                        pending: model.pendingTrackControl == .nextTrack,
+                        pendingGeneration: model.trackControlFeedbackGeneration,
+                        feedbackDirection: 1
                     ) {
                         model.nextTrack()
                     }
                     .help("下一首")
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(width: 224, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(width: 308, alignment: .leading)
         }
-        .frame(width: 400, alignment: .center)
-        .offset(x: 6)
+        .frame(width: 408, alignment: .center)
+        .offset(x: 2)
     }
 }
 
@@ -3246,6 +3324,12 @@ struct AlbumArt: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if size >= 60 {
+                MusicSourceBadge(bundleIdentifier: track.sourceBundleIdentifier, size: 22)
+                    .padding(3)
+            }
+        }
         .animation(.easeInOut(duration: 0.16), value: artworkIdentity)
     }
 
@@ -3271,19 +3355,93 @@ struct AlbumArt: View {
     }
 }
 
+@MainActor
+private final class MusicSourceIconCache {
+    static let shared = MusicSourceIconCache()
+
+    private var icons: [String: NSImage] = [:]
+    private var missingBundleIdentifiers: Set<String> = []
+
+    func icon(for bundleIdentifier: String) -> NSImage? {
+        if let cached = icons[bundleIdentifier] {
+            return cached
+        }
+        if missingBundleIdentifiers.contains(bundleIdentifier) {
+            return nil
+        }
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: bundleIdentifier
+        ) else {
+            missingBundleIdentifiers.insert(bundleIdentifier)
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
+        icons[bundleIdentifier] = icon
+        return icon
+    }
+}
+
+private struct MusicSourceBadge: View {
+    let bundleIdentifier: String?
+    let size: CGFloat
+
+    private var applicationIcon: NSImage? {
+        guard let bundleIdentifier else { return nil }
+        return MusicSourceIconCache.shared.icon(for: bundleIdentifier)
+    }
+
+    var body: some View {
+        Group {
+            if let applicationIcon {
+                Image(nsImage: applicationIcon)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size - 6, height: size - 6)
+                    .clipShape(Circle())
+                    .padding(3)
+                    .background(Circle().fill(Color.black.opacity(0.92)))
+                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.42), radius: 2, y: 1)
+                    .transition(.scale(scale: 0.82).combined(with: .opacity))
+            } else if bundleIdentifier != nil {
+                Image(systemName: "music.note")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(Color.black.opacity(0.92)))
+                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.42), radius: 2, y: 1)
+                    .transition(.scale(scale: 0.82).combined(with: .opacity))
+            }
+        }
+        .frame(width: size, height: size)
+        .animation(.easeOut(duration: 0.14), value: bundleIdentifier)
+    }
+}
+
 struct ControlButton: View {
     let icon: String
     var prominent = false
     var pending = false
+    var pendingGeneration: UInt64 = 0
+    var feedbackDirection: CGFloat = 0
     var size: CGFloat = 30
     let action: () -> Void
     @State private var showsPending = false
+    @State private var feedbackOffset: CGFloat = 0
+    @State private var feedbackGeneration = 0
+    @State private var pendingRingRotation = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            triggerImmediateFeedback()
+            action()
+        } label: {
             Image(systemName: icon)
                 .font(.system(size: prominent ? 13 : 12, weight: .bold))
                 .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.86))
+                .offset(x: feedbackOffset)
                 .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
                 .background(
                     Circle()
@@ -3297,30 +3455,72 @@ struct ControlButton: View {
                                 prominent ? Color.black.opacity(0.42) : Color.white.opacity(0.46),
                                 style: StrokeStyle(lineWidth: 1.4, lineCap: .round)
                             )
-                            .rotationEffect(.degrees(-90))
+                            .rotationEffect(.degrees(-90 + pendingRingRotation))
                             .padding(2)
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .scale(scale: 0.84).combined(with: .opacity)
+                            )
                     }
                 }
         }
         .buttonStyle(IslandControlButtonStyle())
-        .task(id: pending) {
+        .task(id: "\(pending)-\(pendingGeneration)") {
             if pending {
-                try? await Task.sleep(nanoseconds: 120_000_000)
+                try? await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled else { return }
-                showsPending = true
+                pendingRingRotation = 0
+                withAnimation(.easeOut(duration: 0.16)) {
+                    showsPending = true
+                    pendingRingRotation = 220
+                }
             } else {
-                showsPending = false
+                withAnimation(.easeOut(duration: 0.1)) {
+                    showsPending = false
+                }
+                pendingRingRotation = 0
+            }
+        }
+    }
+
+    private func triggerImmediateFeedback() {
+        guard feedbackDirection != 0, !reduceMotion else { return }
+        feedbackGeneration += 1
+        let generation = feedbackGeneration
+        Task { @MainActor in
+            var resetTransaction = Transaction()
+            resetTransaction.disablesAnimations = true
+            withTransaction(resetTransaction) {
+                feedbackOffset = 0
+            }
+            await Task.yield()
+            guard generation == feedbackGeneration else { return }
+            withAnimation(.easeOut(duration: 0.055)) {
+                feedbackOffset = feedbackDirection * 1.5
+            }
+            try? await Task.sleep(nanoseconds: 55_000_000)
+            guard generation == feedbackGeneration else { return }
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.86)) {
+                feedbackOffset = 0
             }
         }
     }
 }
 
 private struct IslandControlButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.93 : 1)
-            .opacity(configuration.isPressed ? 0.82 : 1)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.06)
+                    : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
+                value: configuration.isPressed
+            )
     }
 }
 

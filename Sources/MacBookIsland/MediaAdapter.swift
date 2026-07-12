@@ -980,7 +980,8 @@ final class MusicAdapterCoordinator {
             lyrics: [],
             hasArtwork: false,
             artworkData: nil,
-            artworkURL: nil
+            artworkURL: nil,
+            sourceBundleIdentifier: "com.soda.music"
         )
     }
 
@@ -992,7 +993,8 @@ final class MusicAdapterCoordinator {
             lyrics: [],
             hasArtwork: track.artworkData != nil,
             artworkData: track.artworkData,
-            artworkURL: nil
+            artworkURL: nil,
+            sourceBundleIdentifier: track.sourceBundleIdentifier
         )
     }
 
@@ -1005,7 +1007,8 @@ final class MusicAdapterCoordinator {
             lyrics: lyrics,
             hasArtwork: track.artworkURL != nil,
             artworkData: nil,
-            artworkURL: track.artworkURL
+            artworkURL: track.artworkURL,
+            sourceBundleIdentifier: "com.soda.music"
         )
     }
 
@@ -1017,7 +1020,8 @@ final class MusicAdapterCoordinator {
             lyrics: [],
             hasArtwork: false,
             artworkData: nil,
-            artworkURL: nil
+            artworkURL: nil,
+            sourceBundleIdentifier: "com.soda.music"
         )
     }
 
