@@ -15,7 +15,7 @@ App 版本：`0.1.0`
 - [x] 项目负责人选择 `GPL-3.0-only`，并加入根目录 `LICENSE`。
 - [x] 确认稳定 Bundle ID：`io.github.scorpioxyb.topislet`。
 - [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
-- [ ] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令。
+- [x] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令，并完成逐字节重建验证。
 - [ ] 在最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
 - [ ] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
@@ -32,8 +32,10 @@ App 版本：`0.1.0`
 - [x] 增加 `THIRD_PARTY_NOTICES.md` 并保留 BSD 3-Clause 正文。
 - [x] 增加 GitHub Issue 和 Pull Request 模板。
 - [x] 增加 GitHub Actions Debug / Release 构建与打包冒烟测试。
-- [x] 增加手动 GitHub prerelease 工作流，默认不会自动发布。
+- [x] 增加 GitHub ad-hoc 候选包构建工作流；该工作流只上传临时 Artifact，不允许直接发布未公证 DMG。
 - [x] 增加独立 Release 打包脚本，生成可拖放安装的 arm64 DMG 与 SHA-256。
+- [x] 增加独立 DMG 自动验收脚本，检查镜像结构、Finder 布局资源、身份、架构、最低系统版本、许可证和校验和。
+- [x] 增加 Developer ID 就绪检查、公证与 staple 脚本；账号和证书就绪后可直接执行。
 - [x] Git 跟踪文件中未发现第三方 App 解包 JavaScript、`.DS_Store` 或常见 token 格式。
 - [x] 本机 Debug、Release 和 x86_64 交叉构建通过。
 
@@ -43,6 +45,7 @@ App 版本：`0.1.0`
 VERSION="0.1.0" \
 BUILD_NUMBER="2" \
 bash Scripts/build-release.sh
+bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
 ```
 
 正式签名时额外设置：

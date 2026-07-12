@@ -16,7 +16,7 @@ jobs:
 
       - name: Validate repository files
         run: |
-          bash -n Scripts/package-app.sh Scripts/build-release.sh
+          bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/rebuild-mediaremote-adapter.sh Scripts/verify-release-dmg.sh Scripts/check-signing-readiness.sh Scripts/notarize-release.sh
           plutil -lint Packaging/Info.plist
           test "$(plutil -extract CFBundleIdentifier raw Packaging/Info.plist)" = "io.github.scorpioxyb.topislet"
           plutil -lint Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/Resources/Info.plist
@@ -32,7 +32,9 @@ jobs:
         run: swift build -c release
 
       - name: Package smoke test
-        run: bash Scripts/build-release.sh
+        run: |
+          bash Scripts/build-release.sh
+          bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
 
       - name: Upload package smoke artifact
         uses: actions/upload-artifact@v4

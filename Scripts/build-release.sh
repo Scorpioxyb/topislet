@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DISPLAY_NAME="顶屿"
+VOLUME_NAME="顶屿 TopIslet"
 EXECUTABLE_NAME="MacBookIsland"
 VERSION="${VERSION:-$(plutil -extract CFBundleShortVersionString raw "$ROOT/Packaging/Info.plist")}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(plutil -extract CFBundleVersion raw "$ROOT/Packaging/Info.plist")}"
@@ -14,6 +15,7 @@ APP="$WORK_DIR/$APP_DISPLAY_NAME.app"
 ARCHIVE_BASENAME="TopIslet-v$VERSION-arm64"
 DISK_IMAGE="$OUTPUT_DIR/$ARCHIVE_BASENAME.dmg"
 CHECKSUM="$DISK_IMAGE.sha256"
+READ_WRITE_IMAGE="$WORK_DIR/$ARCHIVE_BASENAME-rw.dmg"
 MOUNT_POINT=""
 
 cleanup() {
@@ -79,15 +81,57 @@ vtool -show-build \
   | grep -q 'minos 26.0'
 
 DMG_SOURCE="$WORK_DIR/dmg-source"
-mkdir -p "$DMG_SOURCE"
+BACKGROUND="$DMG_SOURCE/.background/background.png"
+mkdir -p "$DMG_SOURCE/.background"
 COPYFILE_DISABLE=1 ditto --norsrc "$APP" "$DMG_SOURCE/$APP_DISPLAY_NAME.app"
 ln -s /Applications "$DMG_SOURCE/Applications"
+swift "$ROOT/Scripts/create-dmg-background.swift" "$BACKGROUND"
+chflags hidden "$DMG_SOURCE/.background"
 hdiutil create \
-  -volname "$APP_DISPLAY_NAME" \
+  -volname "$VOLUME_NAME" \
   -srcfolder "$DMG_SOURCE" \
   -ov \
-  -format UDZO \
-  "$DISK_IMAGE"
+  -format UDRW \
+  "$READ_WRITE_IMAGE"
+
+MOUNT_POINT="$(hdiutil attach "$READ_WRITE_IMAGE" -readwrite -nobrowse -noautoopen | awk -F '\t' 'END {print $NF}')"
+if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
+  echo "error: failed to mount read-write disk image" >&2
+  exit 1
+fi
+
+osascript <<APPLESCRIPT
+tell application "Finder"
+  set backgroundFile to file ".background:background.png" of disk "$VOLUME_NAME"
+  tell disk "$VOLUME_NAME"
+    open
+    tell container window
+      set current view to icon view
+      set toolbar visible to false
+      set statusbar visible to false
+      set pathbar visible to false
+      set sidebar width to 0
+      set bounds to {200, 120, 860, 520}
+    end tell
+    tell icon view options of container window
+      set arrangement to not arranged
+      set icon size to 128
+      set text size to 12
+      set background picture to backgroundFile
+    end tell
+    set position of item "$APP_DISPLAY_NAME.app" of container window to {170, 190}
+    set position of item "Applications" of container window to {490, 190}
+    update without registering applications
+    delay 1
+    close container window
+  end tell
+end tell
+APPLESCRIPT
+
+sync
+hdiutil detach "$MOUNT_POINT" >/dev/null
+MOUNT_POINT=""
+hdiutil convert "$READ_WRITE_IMAGE" -ov -format UDZO -o "$DISK_IMAGE" >/dev/null
 
 if [[ "$SIGN_IDENTITY" != "-" ]]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DISK_IMAGE"
@@ -108,6 +152,11 @@ fi
 codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/$APP_DISPLAY_NAME.app"
 test -L "$MOUNT_POINT/Applications"
 test "$(readlink "$MOUNT_POINT/Applications")" = "/Applications"
+test -s "$MOUNT_POINT/.DS_Store"
+test -s "$MOUNT_POINT/.background/background.png"
+test "$(sips -g pixelWidth "$MOUNT_POINT/.background/background.png" | awk '/pixelWidth/ {print $2}')" = "1320"
+test "$(sips -g pixelHeight "$MOUNT_POINT/.background/background.png" | awk '/pixelHeight/ {print $2}')" = "800"
+test "$(sips -g dpiWidth "$MOUNT_POINT/.background/background.png" | awk '/dpiWidth/ {print $2}')" = "144.000"
 hdiutil detach "$MOUNT_POINT" >/dev/null
 MOUNT_POINT=""
 (

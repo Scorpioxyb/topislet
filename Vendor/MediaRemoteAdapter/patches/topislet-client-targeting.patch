@@ -1,0 +1,582 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0563972..3767403 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -16,7 +16,9 @@ set(MEDIAREMOTEADAPTER_TEST_CLIENT_NAME "MediaRemoteAdapterTestClient"
+ 
+ set(ADAPTER_SOURCES
+     src/adapter/env.m
++    src/adapter/client.m
+     src/adapter/get.m
++    src/adapter/get_client.m
+     src/adapter/globals.m
+     src/adapter/keys.m
+     src/adapter/now_playing.m
+@@ -26,6 +28,7 @@ set(ADAPTER_SOURCES
+     src/adapter/shuffle.m
+     src/adapter/speed.m
+     src/adapter/stream.m
++    src/adapter/stream_client.m
+     src/adapter/test.m
+     src/private/MediaRemote.m
+     src/utility/Debounce.m
+diff --git a/bin/mediaremote-adapter.pl b/bin/mediaremote-adapter.pl
+index f4c794b..6e097d6 100755
+--- a/bin/mediaremote-adapter.pl
++++ b/bin/mediaremote-adapter.pl
+@@ -25,7 +25,9 @@ TEST_CLIENT_PATH: (optional)
+ FUNCTION:
+   stream   Streams now playing information (as diff by default)
+   get      Prints now playing information once with all available metadata
++  get-client Prints now playing information for a specific client
+   send     Sends a command to the now playing application
++  stream-client Streams now playing information for a specific client
+   seek     Seeks to a specific timeline position
+   shuffle  Sets the shuffle mode
+   repeat   Sets the repeat mode
+@@ -36,6 +38,10 @@ FUNCTION:
+ PARAMS:
+   send(command)
+     command: The MRCommand ID as a number (e.g. kMRPlay = 0)
++  get-client(bundle)
++    bundle: Target application bundle identifier
++  stream-client(bundle)
++    bundle: Target application bundle identifier
+   seek(position)
+     position: The timeline position in microseconds
+   shuffle(mode)
+@@ -71,6 +77,8 @@ OPTIONS:
+ Examples (script name and framework path omitted):
+   stream --no-diff --debounce=100
+   send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
++  get-client com.soda.music --now
++  stream-client com.soda.music --no-diff --no-artwork
+   repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
+ 
+ HELP
+@@ -115,7 +123,9 @@ my $function_name = shift @ARGV or fail "Missing function name";
+ fail "Invalid function name: '$function_name'"
+   unless $function_name eq "stream"
+   || $function_name eq "get"
++  || $function_name eq "get-client"
+   || $function_name eq "send"
++  || $function_name eq "stream-client"
+   || $function_name eq "seek"
+   || $function_name eq "shuffle"
+   || $function_name eq "repeat"
+@@ -187,6 +197,47 @@ if ($function_name eq "send") {
+   set_env_param($symbol_name, 0, "command", "$id");
+   $symbol_name = env_func($symbol_name);
+ }
++elsif ($function_name eq "get-client") {
++  my $bundle = shift @ARGV;
++  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
++  $symbol_name = "adapter_get_client";
++  set_env_param($symbol_name, 0, "bundle", "$bundle");
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "micros" || $key eq "no-artwork" || $key eq "now") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "stream-client") {
++  my $bundle = shift @ARGV;
++  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
++  $symbol_name = "adapter_stream_client";
++  set_env_param($symbol_name, 0, "bundle", "$bundle");
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "no-diff" || $key eq "micros" || $key eq "no-artwork") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "debounce") {
++      set_env_option_value($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
+ elsif ($function_name eq "stream") {
+   my $options = parse_options(0);
+   foreach my $key (keys %{$options}) {
+diff --git a/include/MediaRemoteAdapter.h b/include/MediaRemoteAdapter.h
+index c90321c..904540f 100644
+--- a/include/MediaRemoteAdapter.h
++++ b/include/MediaRemoteAdapter.h
+@@ -66,12 +66,20 @@ extern NSString *kMRAMediaType;
+ extern void adapter_get();
+ extern void adapter_get_env();
+ 
++// Prints now playing information for a specific MediaRemote client.
++extern void adapter_get_client(NSString *bundleIdentifier);
++extern void adapter_get_client_env();
++
+ // Streams MediaRemote now playing updates to stdout.
+ // Each update is printed on a separate lined, encoded as a JSON dictionary.
+ // Exits when the process receives a SIGTERM signal.
+ extern void adapter_stream();
+ extern void adapter_stream_env();
+ 
++// Streams now playing information for a specific MediaRemote client.
++extern void adapter_stream_client(NSString *bundleIdentifier);
++extern void adapter_stream_client_env();
++
+ typedef enum {
+     kMRAPlay = 0,
+     kMRAPause = 1,
+diff --git a/src/adapter/client.h b/src/adapter/client.h
+new file mode 100644
+index 0000000..cd0aa17
+--- /dev/null
++++ b/src/adapter/client.h
+@@ -0,0 +1,11 @@
++// Copyright (c) 2025 Jonas van den Berg
++// This file is licensed under the BSD 3-Clause License.
++
++#ifndef MEDIAREMOTEADAPTER_ADAPTER_CLIENT_H
++#define MEDIAREMOTEADAPTER_ADAPTER_CLIENT_H
++
++#import <Foundation/Foundation.h>
++
++id findNowPlayingClient(NSString *bundleIdentifier);
++
++#endif // MEDIAREMOTEADAPTER_ADAPTER_CLIENT_H
+diff --git a/src/adapter/client.m b/src/adapter/client.m
+new file mode 100644
+index 0000000..d06b23f
+--- /dev/null
++++ b/src/adapter/client.m
+@@ -0,0 +1,47 @@
++// Copyright (c) 2025 Jonas van den Berg
++// This file is licensed under the BSD 3-Clause License.
++
++#import "client.h"
++
++#import "adapter/globals.h"
++#import "utility/helpers.h"
++
++#define CLIENT_LOOKUP_TIMEOUT_MILLIS 1000
++
++id findNowPlayingClient(NSString *bundleIdentifier) {
++    if ([bundleIdentifier length] == 0 ||
++        !g_mediaRemote.getNowPlayingClients ||
++        !g_mediaRemote.clientGetBundleIdentifier ||
++        !g_mediaRemote.clientGetParentAppBundleIdentifier) {
++        return nil;
++    }
++
++    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
++    __block NSArray *clients = nil;
++    g_mediaRemote.getNowPlayingClients(g_serialdispatchQueue,
++                                       ^(CFArrayRef value) {
++      clients = (__bridge NSArray *)value;
++      dispatch_semaphore_signal(semaphore);
++    });
++
++    dispatch_time_t timeout = dispatch_time(
++        DISPATCH_TIME_NOW, CLIENT_LOOKUP_TIMEOUT_MILLIS * NSEC_PER_MSEC);
++    if (dispatch_semaphore_wait(semaphore, timeout) != 0) {
++        return nil;
++    }
++
++    for (id candidate in clients) {
++        const void *client = (__bridge const void *)candidate;
++        CFStringRef bundle =
++            g_mediaRemote.clientGetBundleIdentifier(client);
++        CFStringRef parent =
++            g_mediaRemote.clientGetParentAppBundleIdentifier(client);
++        if ((bundle && [(__bridge NSString *)bundle
++                           isEqualToString:bundleIdentifier]) ||
++            (parent && [(__bridge NSString *)parent
++                           isEqualToString:bundleIdentifier])) {
++            return candidate;
++        }
++    }
++    return nil;
++}
+diff --git a/src/adapter/get_client.h b/src/adapter/get_client.h
+new file mode 100644
+index 0000000..f13a758
+--- /dev/null
++++ b/src/adapter/get_client.h
+@@ -0,0 +1,11 @@
++// Copyright (c) 2025 Jonas van den Berg
++// This file is licensed under the BSD 3-Clause License.
++
++#ifndef MEDIAREMOTEADAPTER_ADAPTER_GET_CLIENT_H
++#define MEDIAREMOTEADAPTER_ADAPTER_GET_CLIENT_H
++
++#import <Foundation/Foundation.h>
++
++NSDictionary *internal_get_client(NSString *bundleIdentifier);
++
++#endif // MEDIAREMOTEADAPTER_ADAPTER_GET_CLIENT_H
+diff --git a/src/adapter/get_client.m b/src/adapter/get_client.m
+new file mode 100644
+index 0000000..3c556b0
+--- /dev/null
++++ b/src/adapter/get_client.m
+@@ -0,0 +1,98 @@
++// Copyright (c) 2025 Jonas van den Berg
++// This file is licensed under the BSD 3-Clause License.
++
++#import "get_client.h"
++
++#import "MediaRemoteAdapter.h"
++#import "adapter/client.h"
++#import "adapter/env.h"
++#import "adapter/globals.h"
++#import "adapter/keys.h"
++#import "adapter/now_playing.h"
++#import "utility/helpers.h"
++
++#define GET_CLIENT_TIMEOUT_MILLIS 2000
++#define JSON_NULL @"null"
++
++NSDictionary *internal_get_client(NSString *bundleIdentifier) {
++    if (!g_mediaRemote.getNowPlayingInfoForClient ||
++        !g_mediaRemote.getLocalOrigin ||
++        !g_mediaRemote.clientGetProcessIdentifier) {
++        return nil;
++    }
++
++    id clientObject = findNowPlayingClient(bundleIdentifier);
++    const void *origin = g_mediaRemote.getLocalOrigin();
++    if (!clientObject || !origin) {
++        return nil;
++    }
++
++    NSString *microsOption = getEnvOption(@"micros");
++    NSString *humanReadableOption = getEnvOption(@"human-readable");
++    NSString *nowOption = getEnvOption(@"now");
++    NSString *noArtworkOption = getEnvOption(@"no-artwork");
++    const bool convertMicros = microsOption != nil;
++    const bool humanReadable = humanReadableOption != nil;
++    const bool calculateNow = nowOption != nil;
++    const bool noArtwork = noArtworkOption != nil;
++
++    const void *client = (__bridge const void *)clientObject;
++    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
++    __block NSDictionary *information = nil;
++    g_mediaRemote.getNowPlayingInfoForClient(
++        client, origin, !noArtwork, g_serialdispatchQueue,
++        ^(CFDictionaryRef value, const void *error) {
++          information = (__bridge NSDictionary *)value;
++          dispatch_semaphore_signal(semaphore);
++        });
++
++    dispatch_time_t timeout = dispatch_time(
++        DISPATCH_TIME_NOW, GET_CLIENT_TIMEOUT_MILLIS * NSEC_PER_MSEC);
++    if (dispatch_semaphore_wait(semaphore, timeout) != 0 || !information) {
++        return nil;
++    }
++
++    NSMutableDictionary *result = convertNowPlayingInformation(
++        information, convertMicros, calculateNow, noArtwork);
++    pid_t pid = g_mediaRemote.clientGetProcessIdentifier(client);
++    if (pid > 0) {
++        result[kMRAProcessIdentifier] = @(pid);
++    }
++    CFStringRef bundle = g_mediaRemote.clientGetBundleIdentifier(client);
++    if (bundle) {
++        result[kMRABundleIdentifier] = (__bridge NSString *)bundle;
++    }
++    CFStringRef parent =
++        g_mediaRemote.clientGetParentAppBundleIdentifier(client);
++    if (parent) {
++        result[kMRAParentApplicationBundleIdentifier] =
++            (__bridge NSString *)parent;
++    }
++    NSNumber *playbackRate = result[kMRAPlaybackRate];
++    if ([playbackRate isKindOfClass:[NSNumber class]]) {
++        result[kMRAPlaying] = @([playbackRate doubleValue] > 0.01);
++    }
++
++    if (humanReadable) {
++        makePayloadHumanReadable(result);
++    }
++    return allMandatoryPayloadKeysSet(result) ? result : nil;
++}
++
++void adapter_get_client(NSString *bundleIdentifier) {
++    NSDictionary *result = internal_get_client(bundleIdentifier);
++    NSString *serialized = result
++        ? serializeJsonDictionarySafe(
++              result, getEnvOption(@"human-readable") != nil)
++        : JSON_NULL;
++    if (!serialized) {
++        fail(@"Failed to serialize targeted now playing information");
++    }
++    printOut(serialized);
++}
++
++void adapter_get_client_env() {
++    NSString *bundleIdentifier =
++        getEnvFuncParamSafe(@"adapter_get_client", 0, @"bundle");
++    adapter_get_client(bundleIdentifier);
++}
+diff --git a/src/adapter/stream_client.m b/src/adapter/stream_client.m
+new file mode 100644
+index 0000000..5b5c538
+--- /dev/null
++++ b/src/adapter/stream_client.m
+@@ -0,0 +1,78 @@
++// Copyright (c) 2025 Jonas van den Berg
++// This file is licensed under the BSD 3-Clause License.
++
++#import <AppKit/AppKit.h>
++#import <Foundation/Foundation.h>
++
++#import "adapter/env.h"
++#import "adapter/get_client.h"
++#import "adapter/globals.h"
++#import "private/MediaRemote.h"
++#import "utility/Debounce.h"
++#import "utility/helpers.h"
++
++static NSString *serializeClientData(NSDictionary *data) {
++    return serializeJsonDictionarySafe(
++        @{
++            @"type" : @"data",
++            @"diff" : @NO,
++            @"payload" : data ?: @{},
++        },
++        getEnvOption(@"human-readable") != nil);
++}
++
++void adapter_stream_client(NSString *bundleIdentifier) {
++    int debounceMillis = 60;
++    NSNumber *debounceOption = getEnvOptionInt(@"debounce");
++    if (debounceOption != nil) {
++        debounceMillis = MAX(0, [debounceOption intValue]);
++    }
++    dispatch_queue_t fetchQueue = dispatch_queue_create(
++        "mediaremote-adapter.client-stream", DISPATCH_QUEUE_SERIAL);
++    Debounce *debounce = [[Debounce alloc]
++        initWithDelay:(debounceMillis / 1000.0)
++                 queue:fetchQueue];
++
++    void (^emit)() = ^{
++      NSDictionary *data = internal_get_client(bundleIdentifier);
++      NSString *serialized = serializeClientData(data);
++      if (serialized) {
++          printOutUnique(serialized);
++      }
++    };
++    void (^scheduleEmit)() = ^{
++      [debounce call:emit];
++    };
++
++    dispatch_async(fetchQueue, emit);
++
++    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
++    NSMutableArray *observers = [NSMutableArray array];
++    for (NSString *name in @[
++             kMRMediaRemoteNowPlayingInfoDidChangeNotification,
++             kMRMediaRemoteNowPlayingPlaybackQueueDidChangeNotification,
++             kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification,
++             kMRMediaRemoteNowPlayingApplicationDidChangeNotification,
++         ]) {
++        id observer = [center addObserverForName:name
++                                         object:nil
++                                          queue:nil
++                                     usingBlock:^(NSNotification *note) {
++                                       scheduleEmit();
++                                     }];
++        [observers addObject:observer];
++    }
++
++    g_mediaRemote.registerForNowPlayingNotifications(g_serialdispatchQueue);
++    CFRunLoopRun();
++    g_mediaRemote.unregisterForNowPlayingNotifications();
++    for (id observer in observers) {
++        [center removeObserver:observer];
++    }
++}
++
++void adapter_stream_client_env() {
++    NSString *bundleIdentifier =
++        getEnvFuncParamSafe(@"adapter_stream_client", 0, @"bundle");
++    adapter_stream_client(bundleIdentifier);
++}
+diff --git a/src/private/MediaRemote.h b/src/private/MediaRemote.h
+index e23de3a..49204d2 100644
+--- a/src/private/MediaRemote.h
++++ b/src/private/MediaRemote.h
+@@ -99,6 +99,53 @@ typedef enum {
+ extern CFStringRef MRMediaRemoteSendCommand;
+ typedef bool (*MRMediaRemoteSendCommand_t)(MRCommand command, id userInfo);
+ 
++extern CFStringRef MRMediaRemoteSendCommandToClient;
++extern CFStringRef MRMediaRemoteSendCommandToPlayer;
++extern CFStringRef MRMediaRemoteGetNowPlayingClients;
++extern CFStringRef MRMediaRemoteGetNowPlayingInfoForClient;
++extern CFStringRef MRMediaRemoteGetNowPlayingPlayerForClient;
++extern CFStringRef MRMediaRemoteGetSupportedCommandsForClient;
++extern CFStringRef MRMediaRemoteGetLocalOrigin;
++
++typedef void (^MRMediaRemoteSendCommandToClientCompletion_t)(
++    uint32_t sendError, CFArrayRef handlerStatuses);
++typedef void (^MRMediaRemoteGetNowPlayingClientsCompletion_t)(CFArrayRef clients);
++typedef bool (*MRMediaRemoteSendCommandToClient_t)(
++    MRCommand command, CFDictionaryRef userInfo, const void *origin,
++    const void *client, const void *sourcePlayerPath,
++    dispatch_queue_t queue,
++    MRMediaRemoteSendCommandToClientCompletion_t completion);
++typedef bool (*MRMediaRemoteSendCommandToPlayer_t)(
++    MRCommand command, CFDictionaryRef userInfo, const void *playerPath,
++    const void *resolvedPlayerPath, dispatch_queue_t queue,
++    MRMediaRemoteSendCommandToClientCompletion_t completion);
++typedef void (*MRMediaRemoteGetNowPlayingClients_t)(
++    dispatch_queue_t queue,
++    MRMediaRemoteGetNowPlayingClientsCompletion_t completion);
++typedef const void *(*MRMediaRemoteGetLocalOrigin_t)(void);
++typedef void (^MRMediaRemoteGetNowPlayingInfoForClientCompletion_t)(
++    CFDictionaryRef information, const void *error);
++typedef void (*MRMediaRemoteGetNowPlayingInfoForClient_t)(
++    const void *client, const void *origin, bool includeArtwork,
++    dispatch_queue_t queue,
++    MRMediaRemoteGetNowPlayingInfoForClientCompletion_t completion);
++typedef void (^MRMediaRemoteGetNowPlayingPlayerForClientCompletion_t)(
++    const void *player, const void *error);
++typedef void (*MRMediaRemoteGetNowPlayingPlayerForClient_t)(
++    const void *client, const void *origin, dispatch_queue_t queue,
++    MRMediaRemoteGetNowPlayingPlayerForClientCompletion_t completion);
++typedef void (^MRMediaRemoteGetSupportedCommandsForClientCompletion_t)(
++    CFArrayRef commands, const void *error);
++typedef void (*MRMediaRemoteGetSupportedCommandsForClient_t)(
++    const void *client, const void *origin, dispatch_queue_t queue,
++    MRMediaRemoteGetSupportedCommandsForClientCompletion_t completion);
++
++extern CFStringRef MRNowPlayingClientGetBundleIdentifier;
++extern CFStringRef MRNowPlayingClientGetParentAppBundleIdentifier;
++extern CFStringRef MRNowPlayingClientGetProcessIdentifier;
++typedef CFStringRef (*MRNowPlayingClientGetString_t)(const void *client);
++typedef pid_t (*MRNowPlayingClientGetProcessIdentifier_t)(const void *client);
++
+ extern CFStringRef MRMediaRemoteSetPlaybackSpeed;
+ extern CFStringRef MRMediaRemoteSetElapsedTime;
+ extern CFStringRef MRMediaRemoteSetShuffleMode;
+@@ -143,6 +190,21 @@ extern NSString *kMRNowPlayingClientUserInfoKey;
+ @interface MediaRemote : NSObject
+ // Commands
+ @property(readonly) MRMediaRemoteSendCommand_t sendCommand;
++@property(readonly) MRMediaRemoteSendCommandToClient_t sendCommandToClient;
++@property(readonly) MRMediaRemoteSendCommandToPlayer_t sendCommandToPlayer;
++@property(readonly) MRMediaRemoteGetNowPlayingClients_t getNowPlayingClients;
++@property(readonly) MRMediaRemoteGetNowPlayingInfoForClient_t
++    getNowPlayingInfoForClient;
++@property(readonly) MRMediaRemoteGetNowPlayingPlayerForClient_t
++    getNowPlayingPlayerForClient;
++@property(readonly) MRMediaRemoteGetSupportedCommandsForClient_t
++    getSupportedCommandsForClient;
++@property(readonly) MRMediaRemoteGetLocalOrigin_t getLocalOrigin;
++@property(readonly) MRNowPlayingClientGetString_t clientGetBundleIdentifier;
++@property(readonly) MRNowPlayingClientGetString_t
++    clientGetParentAppBundleIdentifier;
++@property(readonly) MRNowPlayingClientGetProcessIdentifier_t
++    clientGetProcessIdentifier;
+ // Other controls
+ @property(readonly) MRMediaRemoteSetPlaybackSpeed_t setPlaybackSpeed;
+ @property(readonly) MRMediaRemoteSetElapsedTime_t setElapsedTime;
+diff --git a/src/private/MediaRemote.m b/src/private/MediaRemote.m
+index 0c66908..e4f68cc 100644
+--- a/src/private/MediaRemote.m
++++ b/src/private/MediaRemote.m
+@@ -59,6 +59,25 @@
+ NSString *kMRMediaRemoteRouteStatusUserInfoKey = @"kMRMediaRemoteRouteStatusUserInfoKey";
+ 
+ CFStringRef MRMediaRemoteSendCommand = CFSTR("MRMediaRemoteSendCommand");
++CFStringRef MRMediaRemoteSendCommandToClient =
++    CFSTR("MRMediaRemoteSendCommandToClient");
++CFStringRef MRMediaRemoteSendCommandToPlayer =
++    CFSTR("MRMediaRemoteSendCommandToPlayer");
++CFStringRef MRMediaRemoteGetNowPlayingClients =
++    CFSTR("MRMediaRemoteGetNowPlayingClients");
++CFStringRef MRMediaRemoteGetNowPlayingInfoForClient =
++    CFSTR("MRMediaRemoteGetNowPlayingInfoForClient");
++CFStringRef MRMediaRemoteGetNowPlayingPlayerForClient =
++    CFSTR("MRMediaRemoteGetNowPlayingPlayerForClient");
++CFStringRef MRMediaRemoteGetSupportedCommandsForClient =
++    CFSTR("MRMediaRemoteGetSupportedCommandsForClient");
++CFStringRef MRMediaRemoteGetLocalOrigin = CFSTR("MRMediaRemoteGetLocalOrigin");
++CFStringRef MRNowPlayingClientGetBundleIdentifier =
++    CFSTR("MRNowPlayingClientGetBundleIdentifier");
++CFStringRef MRNowPlayingClientGetParentAppBundleIdentifier =
++    CFSTR("MRNowPlayingClientGetParentAppBundleIdentifier");
++CFStringRef MRNowPlayingClientGetProcessIdentifier =
++    CFSTR("MRNowPlayingClientGetProcessIdentifier");
+ 
+ CFStringRef MRMediaRemoteSetPlaybackSpeed = CFSTR("MRMediaRemoteSetPlaybackSpeed");
+ CFStringRef MRMediaRemoteSetElapsedTime = CFSTR("MRMediaRemoteSetElapsedTime");
+@@ -78,6 +97,16 @@
+ 
+ @implementation MediaRemote
+ @synthesize sendCommand;
++@synthesize sendCommandToClient;
++@synthesize sendCommandToPlayer;
++@synthesize getNowPlayingClients;
++@synthesize getNowPlayingInfoForClient;
++@synthesize getNowPlayingPlayerForClient;
++@synthesize getSupportedCommandsForClient;
++@synthesize getLocalOrigin;
++@synthesize clientGetBundleIdentifier;
++@synthesize clientGetParentAppBundleIdentifier;
++@synthesize clientGetProcessIdentifier;
+ @synthesize setPlaybackSpeed;
+ @synthesize setElapsedTime;
+ @synthesize setShuffleMode;
+@@ -99,6 +128,40 @@ -(id)init
+         return nil;
+     }
+     sendCommand = (MRMediaRemoteSendCommand_t)CFBundleGetFunctionPointerForName(bundle, MRMediaRemoteSendCommand);
++    sendCommandToClient =
++        (MRMediaRemoteSendCommandToClient_t)CFBundleGetFunctionPointerForName(
++            bundle, MRMediaRemoteSendCommandToClient);
++    sendCommandToPlayer =
++        (MRMediaRemoteSendCommandToPlayer_t)CFBundleGetFunctionPointerForName(
++            bundle, MRMediaRemoteSendCommandToPlayer);
++    getNowPlayingClients =
++        (MRMediaRemoteGetNowPlayingClients_t)CFBundleGetFunctionPointerForName(
++            bundle, MRMediaRemoteGetNowPlayingClients);
++    getNowPlayingInfoForClient =
++        (MRMediaRemoteGetNowPlayingInfoForClient_t)
++            CFBundleGetFunctionPointerForName(
++                bundle, MRMediaRemoteGetNowPlayingInfoForClient);
++    getNowPlayingPlayerForClient =
++        (MRMediaRemoteGetNowPlayingPlayerForClient_t)
++            CFBundleGetFunctionPointerForName(
++                bundle, MRMediaRemoteGetNowPlayingPlayerForClient);
++    getSupportedCommandsForClient =
++        (MRMediaRemoteGetSupportedCommandsForClient_t)
++            CFBundleGetFunctionPointerForName(
++                bundle, MRMediaRemoteGetSupportedCommandsForClient);
++    getLocalOrigin =
++        (MRMediaRemoteGetLocalOrigin_t)CFBundleGetFunctionPointerForName(
++            bundle, MRMediaRemoteGetLocalOrigin);
++    clientGetBundleIdentifier =
++        (MRNowPlayingClientGetString_t)CFBundleGetFunctionPointerForName(
++            bundle, MRNowPlayingClientGetBundleIdentifier);
++    clientGetParentAppBundleIdentifier =
++        (MRNowPlayingClientGetString_t)CFBundleGetFunctionPointerForName(
++            bundle, MRNowPlayingClientGetParentAppBundleIdentifier);
++    clientGetProcessIdentifier =
++        (MRNowPlayingClientGetProcessIdentifier_t)
++            CFBundleGetFunctionPointerForName(
++                bundle, MRNowPlayingClientGetProcessIdentifier);
+     setPlaybackSpeed = (MRMediaRemoteSetPlaybackSpeed_t)CFBundleGetFunctionPointerForName(bundle, MRMediaRemoteSetPlaybackSpeed);
+     setElapsedTime = (MRMediaRemoteSetElapsedTime_t)CFBundleGetFunctionPointerForName(bundle, MRMediaRemoteSetElapsedTime);
+     setShuffleMode = (MRMediaRemoteSetShuffleMode_t)CFBundleGetFunctionPointerForName(bundle, MRMediaRemoteSetShuffleMode);

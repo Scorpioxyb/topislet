@@ -11,6 +11,8 @@
 
 项目代码已采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。公开 GitHub Release 前仍需完成最终实机回归以及签名 / 公证决策，进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
+Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNING_AND_NOTARIZATION.md)；MediaRemote Adapter 的固定上游 commit、项目补丁和逐字节重建记录见 [供应链与可复现构建](Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md)。
+
 ## 当前能力
 
 - 围绕 MacBook 摄像头区域显示折叠、紧凑和展开三种状态。
