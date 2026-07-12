@@ -152,6 +152,20 @@ private struct CachedPlaybackOverride {
     let updatedAt: Date
 }
 
+private struct TargetedControlAttempt {
+    let generation: Int
+    let expectation: PlaybackControlTimeline.TargetedControlExpectation
+    let baselineSampleID: UInt64
+    let baselineProcessIdentifier: pid_t?
+    let playbackOperationID: Int?
+}
+
+private struct ControlDispatchResult {
+    let didPress: Bool
+    let targetedConfirmed: Bool
+    let diagnostic: String
+}
+
 @MainActor
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
@@ -172,6 +186,7 @@ final class MusicAdapterCoordinator {
     private var pendingPlaybackOperation: PendingPlaybackOperation?
     private var pendingPlaybackTimeoutTask: Task<Void, Never>?
     private var nextPlaybackOperationID = 0
+    private var controlGeneration = 0
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
     private var lastCachedOverrideRefreshAttemptAt: Date?
@@ -251,10 +266,12 @@ final class MusicAdapterCoordinator {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
+        _ = refreshSourceStatus()
+        let requestedState = currentMusicState()
         let playbackOperationID: Int?
         if command == .playPause {
             playbackOperationID = beginPendingPlaybackOperation(
-                requestedState: currentMusicState()
+                requestedState: requestedState
             )
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水音乐",
@@ -267,24 +284,33 @@ final class MusicAdapterCoordinator {
         } else {
             playbackOperationID = nil
         }
+        let controlAttempt = beginTargetedControlAttempt(
+            command: command,
+            requestedState: requestedState,
+            playbackOperationID: playbackOperationID
+        )
 
-        _ = refreshSourceStatus()
-        let controlResult = await sendControl(command)
+        let controlResult = await sendControl(command, attempt: controlAttempt)
+        guard controlAttempt.generation == controlGeneration else {
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        }
         let didPost = controlResult.didPress
 
         if let playbackOperationID {
             if didPost {
-                if isCurrentPlaybackOperation(playbackOperationID) {
-                    cachedStatus = MusicSourceStatus(
-                        sourceName: "汽水音乐",
-                        availability: .qishuiControlSent,
-                        headline: "已执行\(command.label)",
-                        detail: controlResult.diagnostic,
-                        checkedAt: Date()
-                    )
+                if controlResult.targetedConfirmed {
+                    finishPendingPlaybackOperation(id: playbackOperationID)
+                } else if isCurrentPlaybackOperation(playbackOperationID) {
                     schedulePendingPlaybackConfirmationTimeout(id: playbackOperationID)
-                    publishCurrentState()
                 }
+                cachedStatus = MusicSourceStatus(
+                    sourceName: "汽水音乐",
+                    availability: .qishuiControlSent,
+                    headline: "已执行\(command.label)",
+                    detail: controlResult.diagnostic,
+                    checkedAt: Date()
+                )
+                publishCurrentState()
             } else {
                 let failureStatus = MusicSourceStatus(
                     sourceName: "汽水音乐",
@@ -311,32 +337,178 @@ final class MusicAdapterCoordinator {
         return MusicControlOutcome(status: cachedStatus, didSendCommand: didPost)
     }
 
-    private func sendControl(_ command: MusicControlCommand) async -> QishuiSemanticAXControlResult {
+    private func sendControl(
+        _ command: MusicControlCommand,
+        attempt: TargetedControlAttempt
+    ) async -> ControlDispatchResult {
+        let targetedResult = await postTargetedControl(command)
+        let confirmation = targetedResult.didSend
+            ? await confirmTargetedControl(attempt)
+            : .inconclusive
+        guard PlaybackControlTimeline.shouldRunAXFallback(
+            controlGeneration: attempt.generation,
+            currentGeneration: controlGeneration,
+            targetedDispatched: targetedResult.didSend,
+            confirmation: confirmation
+        ) else {
+            let targetedConfirmed = confirmation == .confirmed
+            return ControlDispatchResult(
+                didPress: targetedConfirmed,
+                targetedConfirmed: targetedConfirmed,
+                diagnostic: targetedConfirmed
+                    ? targetedResult.diagnostic
+                    : attempt.generation == controlGeneration
+                        ? "汽水定向回读不足或异常，未执行 AX 降级并已安全回滚。"
+                        : "旧控制操作已失效，未执行 AX 降级。"
+            )
+        }
+
+        let semanticResult = await pressSemanticControl(command)
+        let targetedDiagnostic = targetedResult.didSend
+            ? "\(targetedResult.diagnostic) 未观察到预期变化。"
+            : targetedResult.diagnostic
+        return ControlDispatchResult(
+            didPress: semanticResult.didPress,
+            targetedConfirmed: false,
+            diagnostic: "\(targetedDiagnostic) \(semanticResult.diagnostic)"
+        )
+    }
+
+    private func postTargetedControl(
+        _ command: MusicControlCommand
+    ) async -> QishuiTargetedControlResult {
         let targetedController = qishuiTargetedMediaController
+        return await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                continuation.resume(returning: targetedController.post(command))
+            }
+        }
+    }
+
+    private func pressSemanticControl(
+        _ command: MusicControlCommand
+    ) async -> QishuiSemanticAXControlResult {
         let semanticController = qishuiSemanticAXController
         return await withCheckedContinuation { continuation in
             qishuiControlQueue.async {
-                let targetedResult = targetedController.post(command)
-                if targetedResult.didSend {
-                    continuation.resume(
-                        returning: QishuiSemanticAXControlResult(
-                            didPress: true,
-                            diagnostic: targetedResult.diagnostic
-                        )
-                    )
-                } else {
-                    let semanticResult = semanticController.press(command)
-                    continuation.resume(
-                        returning: QishuiSemanticAXControlResult(
-                            didPress: semanticResult.didPress,
-                            diagnostic: semanticResult.didPress
-                                ? semanticResult.diagnostic
-                                : "\(targetedResult.diagnostic) \(semanticResult.diagnostic)"
-                        )
-                    )
-                }
+                continuation.resume(returning: semanticController.press(command))
             }
         }
+    }
+
+    private func beginTargetedControlAttempt(
+        command: MusicControlCommand,
+        requestedState: MusicState,
+        playbackOperationID: Int?
+    ) -> TargetedControlAttempt {
+        controlGeneration += 1
+        let expectation: PlaybackControlTimeline.TargetedControlExpectation
+        if command == .playPause {
+            expectation = .playbackState(
+                baselineTrackIdentity: controlTrackIdentity(
+                    title: requestedState.track.title,
+                    artist: requestedState.track.artist
+                ),
+                baselineIsPlaying: requestedState.isPlaying,
+                expectedIsPlaying: !requestedState.isPlaying
+            )
+        } else {
+            expectation = .trackChange(
+                baselineIdentity: controlTrackIdentity(
+                    title: requestedState.track.title,
+                    artist: requestedState.track.artist
+                )
+            )
+        }
+        return TargetedControlAttempt(
+            generation: controlGeneration,
+            expectation: expectation,
+            baselineSampleID: latestMediaRemoteSnapshot?.sampleID ?? 0,
+            baselineProcessIdentifier: latestMediaRemoteSnapshot?.currentTrack?.sourceProcessIdentifier,
+            playbackOperationID: playbackOperationID
+        )
+    }
+
+    private func confirmTargetedControl(
+        _ attempt: TargetedControlAttempt
+    ) async -> PlaybackControlTimeline.TargetedControlConfirmation {
+        guard attempt.generation == controlGeneration else { return .inconclusive }
+        var observations: [PlaybackControlTimeline.TargetedControlObservation] = []
+        var observedSampleIDs = Set<UInt64>()
+
+        func appendLatestObservation() {
+            guard let observation = targetedControlObservation(
+                attempt,
+                snapshot: latestMediaRemoteSnapshot
+            ), observedSampleIDs.insert(observation.sampleID).inserted else { return }
+            observations.append(observation)
+        }
+
+        appendLatestObservation()
+        schedulePlaybackPositionRefresh()
+        for index in 0..<3 {
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard attempt.generation == controlGeneration else { return .inconclusive }
+            appendLatestObservation()
+            let result = PlaybackControlTimeline.targetedControlConfirmation(
+                expectation: attempt.expectation,
+                baselineSampleID: attempt.baselineSampleID,
+                observations: observations
+            )
+            if result == .confirmed {
+                if let playbackOperationID = attempt.playbackOperationID,
+                   pendingPlaybackOperation?.id == playbackOperationID {
+                    if index < 2 {
+                        schedulePlaybackPositionRefresh()
+                    }
+                    continue
+                }
+                return .confirmed
+            }
+            if result == .explicitlyUnchanged { return result }
+            if index < 2 { schedulePlaybackPositionRefresh() }
+        }
+        let finalResult = PlaybackControlTimeline.targetedControlConfirmation(
+            expectation: attempt.expectation,
+            baselineSampleID: attempt.baselineSampleID,
+            observations: observations
+        )
+        if finalResult == .confirmed,
+           let playbackOperationID = attempt.playbackOperationID,
+           pendingPlaybackOperation?.id == playbackOperationID {
+            return .inconclusive
+        }
+        return finalResult
+    }
+
+    private func targetedControlObservation(
+        _ attempt: TargetedControlAttempt,
+        snapshot: MediaRemoteNowPlayingSnapshot?
+    ) -> PlaybackControlTimeline.TargetedControlObservation? {
+        guard let snapshot,
+              snapshot.sampleID > attempt.baselineSampleID else { return nil }
+        let track = snapshot.currentTrack
+        let processIdentifierIsValid = attempt.baselineProcessIdentifier.map {
+            track?.sourceProcessIdentifier == $0
+        } ?? (track?.sourceProcessIdentifier != nil)
+        let isValidQishuiSample = snapshot.isVerifiedQishuiSource
+            && snapshot.sampleSource == .adapterStream
+            && snapshot.sampleOrigin != .cached
+            && snapshot.sampleOrigin != .unknown
+            && processIdentifierIsValid
+            && track != nil
+        return PlaybackControlTimeline.TargetedControlObservation(
+            sampleID: snapshot.sampleID,
+            trackIdentity: track.map {
+                controlTrackIdentity(title: $0.title, artist: $0.artist)
+            },
+            isPlaying: track?.isPlaying,
+            isValidQishuiSample: isValidQishuiSample
+        )
+    }
+
+    private func controlTrackIdentity(title: String, artist: String) -> String {
+        "\(title.trimmingCharacters(in: .whitespacesAndNewlines))\u{1f}\(artist.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
