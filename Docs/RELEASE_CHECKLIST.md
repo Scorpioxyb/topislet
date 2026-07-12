@@ -1,7 +1,7 @@
 # GitHub 发布检查清单
 
-目标版本：`v0.1.0-alpha.1`
-App 版本：`0.1.0`
+目标版本：`v0.1.1-alpha.1`
+App 版本：`0.1.1 (3)`
 目标平台：macOS 26.0+、带刘海的 Apple Silicon MacBook
 
 ## 当前结论
@@ -42,10 +42,10 @@ App 版本：`0.1.0`
 ## 最终候选构建
 
 ```bash
-VERSION="0.1.0" \
-BUILD_NUMBER="2" \
+VERSION="0.1.1" \
+BUILD_NUMBER="3" \
 bash Scripts/build-release.sh
-bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
+bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 ```
 
 正式签名时额外设置：
@@ -56,8 +56,8 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 
 输出必须包含：
 
-- `TopIslet-v0.1.0-arm64.dmg`
-- `TopIslet-v0.1.0-arm64.dmg.sha256`
+- `TopIslet-v0.1.1-arm64.dmg`
+- `TopIslet-v0.1.1-arm64.dmg.sha256`
 
 ## 最终验证
 

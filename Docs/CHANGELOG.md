@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### v0.1.1-alpha.1 音乐适配稳定化
+
+- 汽水播放、暂停改为点击瞬间乐观反馈，后台定向事件负责确认；失败或超时仅回滚当前操作代次。
+- 修复启动、展开、切歌和 metadata 回包竞争时的旧进度覆盖，优先采用新鲜 `elapsedTimeNow`，稳定播放由本地单调时间轴推进。
+- AX 降级只补充播放状态；同曲已有可信 MediaRemote 时间时，不再用旧 AX 进度覆盖。
+- 汽水定向控制从 `/usr/bin/python3` 迁移到现有 Perl + MediaRemote Adapter 通道，运行时不再受 Xcode 许可证影响。
+- 新增 21 项音乐时间轴、stream 差分、快速连续操作和控制桥回归测试。
+
 ### GitHub 发布准备
 
 - 统一公开预览版本为 `v0.1.0-alpha`，最低系统版本调整为 macOS 26.0，与当前 MediaRemote Adapter framework 一致。
