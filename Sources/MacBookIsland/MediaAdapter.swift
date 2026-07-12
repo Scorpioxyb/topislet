@@ -152,17 +152,8 @@ private struct CachedPlaybackOverride {
     let updatedAt: Date
 }
 
-private struct TargetedControlAttempt {
-    let generation: Int
-    let expectation: PlaybackControlTimeline.TargetedControlExpectation
-    let baselineSampleID: UInt64
-    let baselineProcessIdentifier: pid_t?
-    let playbackOperationID: Int?
-}
-
 private struct ControlDispatchResult {
     let didPress: Bool
-    let targetedConfirmed: Bool
     let diagnostic: String
 }
 
@@ -170,7 +161,6 @@ private struct ControlDispatchResult {
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
     private let qishuiAXChangeMonitor = QishuiAXChangeMonitor()
-    private let qishuiTargetedMediaController = QishuiTargetedMediaController()
     private let qishuiSemanticAXController = QishuiSemanticAXController()
     private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
@@ -187,6 +177,7 @@ final class MusicAdapterCoordinator {
     private var pendingPlaybackTimeoutTask: Task<Void, Never>?
     private var nextPlaybackOperationID = 0
     private var controlGeneration = 0
+    private var lastTrackControlStartedAt: Date?
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
     private var lastCachedOverrideRefreshAttemptAt: Date?
@@ -196,7 +187,6 @@ final class MusicAdapterCoordinator {
     private var realtimeRefreshInFlight = false
     private var realtimeRefreshQueued = false
     private var playbackPositionRefreshInFlight = false
-    private var targetedControlConfirmationGeneration: Int?
     private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
@@ -267,7 +257,26 @@ final class MusicAdapterCoordinator {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
+        let now = Date()
+        let followsRecentTrackControl = command == .playPause
+            && lastTrackControlStartedAt.map { now.timeIntervalSince($0) < 1.0 } == true
+        controlGeneration += 1
+        let controlAttemptGeneration = controlGeneration
+        if command != .playPause {
+            lastTrackControlStartedAt = now
+        }
+        if followsRecentTrackControl {
+            guard await synchronizeAfterQueuedTrackControl(
+                generation: controlAttemptGeneration
+            ) else {
+                return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+            }
+        }
+
         _ = refreshSourceStatus()
+        if command != .playPause {
+            resetPendingPlaybackOperation(clearTimelineFloor: true)
+        }
         let requestedState = currentMusicState()
         let playbackOperationID: Int?
         if command == .playPause {
@@ -278,30 +287,25 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水音乐",
                 availability: .qishuiControlSent,
                 headline: "正在执行\(command.label)",
-                detail: "已立即切换本地播放状态，等待汽水定向事件确认。",
+                detail: "已立即切换本地播放状态，等待汽水状态回读确认。",
                 checkedAt: Date()
             )
             publishCurrentState()
         } else {
             playbackOperationID = nil
         }
-        let controlAttempt = beginTargetedControlAttempt(
-            command: command,
-            requestedState: requestedState,
-            playbackOperationID: playbackOperationID
+        let controlResult = await sendControl(
+            command,
+            generation: controlAttemptGeneration
         )
-
-        let controlResult = await sendControl(command, attempt: controlAttempt)
-        guard controlAttempt.generation == controlGeneration else {
+        guard controlAttemptGeneration == controlGeneration else {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
         let didPost = controlResult.didPress
 
         if let playbackOperationID {
             if didPost {
-                if controlResult.targetedConfirmed {
-                    finishPendingPlaybackOperation(id: playbackOperationID)
-                } else if isCurrentPlaybackOperation(playbackOperationID) {
+                if isCurrentPlaybackOperation(playbackOperationID) {
                     schedulePendingPlaybackConfirmationTimeout(id: playbackOperationID)
                 }
                 cachedStatus = MusicSourceStatus(
@@ -340,67 +344,25 @@ final class MusicAdapterCoordinator {
 
     private func sendControl(
         _ command: MusicControlCommand,
-        attempt: TargetedControlAttempt
+        generation: Int
     ) async -> ControlDispatchResult {
-        let targetedResult = await postTargetedControl(command)
-        let targetedDispatchCompletedAt = Date()
-        let confirmationBaselineSampleID = max(
-            attempt.baselineSampleID,
-            latestMediaRemoteSnapshot?.sampleID ?? 0
-        )
-        let confirmation: PlaybackControlTimeline.TargetedControlConfirmation
-        if targetedResult.didSend {
-            targetedControlConfirmationGeneration = attempt.generation
-            confirmation = await confirmTargetedControl(
-                attempt,
-                dispatchCompletedAt: targetedDispatchCompletedAt,
-                baselineSampleID: confirmationBaselineSampleID
-            )
-            if targetedControlConfirmationGeneration == attempt.generation {
-                targetedControlConfirmationGeneration = nil
-            }
-        } else {
-            confirmation = .inconclusive
-        }
-        guard PlaybackControlTimeline.shouldRunAXFallback(
-            controlGeneration: attempt.generation,
-            currentGeneration: controlGeneration,
-            targetedDispatched: targetedResult.didSend,
-            confirmation: confirmation,
-            elapsedSinceDispatch: Date().timeIntervalSince(targetedDispatchCompletedAt)
-        ) else {
-            let targetedConfirmed = confirmation == .confirmed
+        guard generation == controlGeneration else {
             return ControlDispatchResult(
-                didPress: targetedConfirmed,
-                targetedConfirmed: targetedConfirmed,
-                diagnostic: targetedConfirmed
-                    ? targetedResult.diagnostic
-                    : attempt.generation == controlGeneration
-                        ? "汽水定向回读不足或异常，未执行 AX 降级并已安全回滚。"
-                        : "旧控制操作已失效，未执行 AX 降级。"
+                didPress: false,
+                diagnostic: "旧控制操作已失效，未触发汽水语义控件。"
             )
         }
-
         let semanticResult = await pressSemanticControl(command)
-        let targetedDiagnostic = targetedResult.didSend
-            ? "\(targetedResult.diagnostic) 未观察到预期变化。"
-            : targetedResult.diagnostic
+        guard generation == controlGeneration else {
+            return ControlDispatchResult(
+                didPress: false,
+                diagnostic: "旧控制操作已失效，忽略其执行结果。"
+            )
+        }
         return ControlDispatchResult(
             didPress: semanticResult.didPress,
-            targetedConfirmed: false,
-            diagnostic: "\(targetedDiagnostic) \(semanticResult.diagnostic)"
+            diagnostic: semanticResult.diagnostic
         )
-    }
-
-    private func postTargetedControl(
-        _ command: MusicControlCommand
-    ) async -> QishuiTargetedControlResult {
-        let targetedController = qishuiTargetedMediaController
-        return await withCheckedContinuation { continuation in
-            qishuiControlQueue.async {
-                continuation.resume(returning: targetedController.post(command))
-            }
-        }
     }
 
     private func pressSemanticControl(
@@ -414,168 +376,36 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func beginTargetedControlAttempt(
-        command: MusicControlCommand,
-        requestedState: MusicState,
-        playbackOperationID: Int?
-    ) -> TargetedControlAttempt {
-        controlGeneration += 1
-        let expectation: PlaybackControlTimeline.TargetedControlExpectation
-        if command == .playPause {
-            expectation = .playbackState(
-                baselineTrackIdentity: controlTrackIdentity(
-                    title: requestedState.track.title,
-                    artist: requestedState.track.artist
-                ),
-                baselineIsPlaying: requestedState.isPlaying,
-                expectedIsPlaying: !requestedState.isPlaying
-            )
-        } else {
-            expectation = .trackChange(
-                baselineIdentity: controlTrackIdentity(
-                    title: requestedState.track.title,
-                    artist: requestedState.track.artist
-                )
-            )
-        }
-        return TargetedControlAttempt(
-            generation: controlGeneration,
-            expectation: expectation,
-            baselineSampleID: latestMediaRemoteSnapshot?.sampleID ?? 0,
-            baselineProcessIdentifier: latestMediaRemoteSnapshot?.currentTrack?.sourceProcessIdentifier,
-            playbackOperationID: playbackOperationID
-        )
-    }
-
-    private func confirmTargetedControl(
-        _ attempt: TargetedControlAttempt,
-        dispatchCompletedAt: Date,
-        baselineSampleID: UInt64
-    ) async -> PlaybackControlTimeline.TargetedControlConfirmation {
-        guard attempt.generation == controlGeneration else { return .inconclusive }
-        var observations: [PlaybackControlTimeline.TargetedControlObservation] = []
-        var observedSampleIDs = Set<UInt64>()
-
-        for offset in [0.12, 0.28, 0.52] {
-            guard await waitForTargetedControlCheckpoint(
-                dispatchCompletedAt.addingTimeInterval(offset),
-                generation: attempt.generation
-            ) else { return .inconclusive }
-            guard attempt.generation == controlGeneration else { return .inconclusive }
-
-            let snapshot = await refreshTargetedControlPositionSnapshot(
-                generation: attempt.generation
-            )
-            guard attempt.generation == controlGeneration else { return .inconclusive }
-            guard let observation = targetedControlObservation(
-                attempt,
-                snapshot: snapshot,
-                dispatchCompletedAt: dispatchCompletedAt,
-                baselineSampleID: baselineSampleID
-            ) else { continue }
-            if observedSampleIDs.insert(observation.sampleID).inserted {
-                observations.append(observation)
-            }
-
-            let result = PlaybackControlTimeline.targetedControlConfirmation(
-                expectation: attempt.expectation,
-                baselineSampleID: baselineSampleID,
-                observations: observations
-            )
-            if result == .confirmed {
-                if let playbackOperationID = attempt.playbackOperationID,
-                   pendingPlaybackOperation?.id == playbackOperationID {
-                    continue
-                }
-                return .confirmed
-            }
-        }
-        let finalResult = PlaybackControlTimeline.targetedControlConfirmation(
-            expectation: attempt.expectation,
-            baselineSampleID: baselineSampleID,
-            observations: observations
-        )
-        if finalResult == .confirmed,
-           let playbackOperationID = attempt.playbackOperationID,
-           pendingPlaybackOperation?.id == playbackOperationID {
-            return .inconclusive
-        }
-        return finalResult
-    }
-
-    private func waitForTargetedControlCheckpoint(
-        _ deadline: Date,
+    private func synchronizeAfterQueuedTrackControl(
         generation: Int
     ) async -> Bool {
-        while true {
+        await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                continuation.resume()
+            }
+        }
+        guard generation == controlGeneration,
+              !Task.isCancelled else { return false }
+        do {
+            try await Task.sleep(nanoseconds: 120_000_000)
+        } catch {
+            return false
+        }
+        guard generation == controlGeneration else { return false }
+        while playbackPositionRefreshInFlight {
             guard generation == controlGeneration,
                   !Task.isCancelled else { return false }
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else { return true }
             do {
-                try await Task.sleep(
-                    nanoseconds: UInt64(min(remaining, 0.02) * 1_000_000_000)
-                )
+                try await Task.sleep(nanoseconds: 10_000_000)
             } catch {
                 return false
             }
         }
-    }
-
-    private func refreshTargetedControlPositionSnapshot(
-        generation: Int
-    ) async -> MediaRemoteNowPlayingSnapshot? {
-        while playbackPositionRefreshInFlight {
-            guard generation == controlGeneration,
-                  !Task.isCancelled else { return nil }
-            do {
-                try await Task.sleep(nanoseconds: 20_000_000)
-            } catch {
-                return nil
-            }
-        }
-        guard generation == controlGeneration else { return nil }
-
+        guard generation == controlGeneration else { return false }
         playbackPositionRefreshInFlight = true
-        lastPlaybackPositionRefreshAt = Date()
-        let snapshot = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-        _ = refreshSourceStatus()
+        _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
         playbackPositionRefreshInFlight = false
-        publishCurrentState()
-        return generation == controlGeneration ? snapshot : nil
-    }
-
-    private func targetedControlObservation(
-        _ attempt: TargetedControlAttempt,
-        snapshot: MediaRemoteNowPlayingSnapshot?,
-        dispatchCompletedAt: Date,
-        baselineSampleID: UInt64
-    ) -> PlaybackControlTimeline.TargetedControlObservation? {
-        guard let snapshot,
-              snapshot.sampleID > baselineSampleID,
-              snapshot.checkedAt >= dispatchCompletedAt else { return nil }
-        let track = snapshot.currentTrack
-        let processIdentifierIsValid = attempt.baselineProcessIdentifier.map {
-            track?.sourceProcessIdentifier == $0
-        } ?? (track?.sourceProcessIdentifier != nil)
-        let isValidQishuiSample = snapshot.isVerifiedQishuiSource
-            && snapshot.sampleSource == .adapterStream
-            && snapshot.sampleOrigin != .cached
-            && snapshot.sampleOrigin != .unknown
-            && processIdentifierIsValid
-            && track != nil
-        return PlaybackControlTimeline.TargetedControlObservation(
-            sampleID: snapshot.sampleID,
-            trackIdentity: track.map {
-                controlTrackIdentity(title: $0.title, artist: $0.artist)
-            },
-            isPlaying: track?.isPlaying,
-            isValidQishuiSample: isValidQishuiSample
-        )
-    }
-
-    private func controlTrackIdentity(title: String, artist: String) -> String {
-        "\(title.trimmingCharacters(in: .whitespacesAndNewlines))\u{1f}\(artist.trimmingCharacters(in: .whitespacesAndNewlines))"
+        return generation == controlGeneration
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
@@ -677,9 +507,12 @@ final class MusicAdapterCoordinator {
         return (optimisticMusic, cachedStatus)
     }
 
-    func refreshControlFollowUp() async -> (music: MusicState, status: MusicSourceStatus) {
-        if (pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
-           targetedControlConfirmationGeneration == nil,
+    func refreshControlFollowUp(
+        forcePositionRefresh: Bool = false
+    ) async -> (music: MusicState, status: MusicSourceStatus) {
+        if (forcePositionRefresh
+            || pendingPlaybackOperation != nil
+            || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
            !playbackPositionRefreshInFlight {
             playbackPositionRefreshInFlight = true
             _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
@@ -1375,7 +1208,7 @@ final class MusicAdapterCoordinator {
         case .qishuiNotRunning:
             return "未检测到汽水音乐"
         case .accessibilityRequired:
-            return "媒体键控制需要辅助功能权限"
+            return "汽水语义控制需要辅助功能权限"
         case .qishuiMediaRemoteSynced:
             return latestMediaRemoteSnapshot?.diagnostic ?? "已接入 macOS Now Playing 实时事件源"
         case .qishuiMediaRemoteCached:
@@ -1387,7 +1220,7 @@ final class MusicAdapterCoordinator {
         case .systemNowPlayingUnavailable:
             return "手动系统诊断暂不可读"
         case .qishuiControlSent:
-            return "已发送媒体键控制，等待真实状态回读"
+            return "已触发汽水语义控制，等待真实状态回读"
         case .preview:
             return "等待汽水音乐真实数据"
         }
@@ -1553,7 +1386,7 @@ final class MusicAdapterCoordinator {
             sourceName: "汽水音乐",
             availability: .qishuiMediaRemoteCached,
             headline: "播放状态确认超时",
-            detail: "未收到匹配的汽水定向事件，已恢复请求前的可信播放状态。",
+            detail: "未收到匹配的汽水状态回读，已恢复请求前的可信播放状态。",
             checkedAt: Date()
         )
         rollbackPendingPlaybackOperation(id: id, status: timeoutStatus)

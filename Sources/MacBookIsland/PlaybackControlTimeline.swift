@@ -1,40 +1,6 @@
 import Foundation
 
 enum PlaybackControlTimeline {
-    enum TargetedControlExpectation: Equatable {
-        case playbackState(
-            baselineTrackIdentity: String,
-            baselineIsPlaying: Bool,
-            expectedIsPlaying: Bool
-        )
-        case trackChange(baselineIdentity: String)
-    }
-
-    enum TargetedControlConfirmation: Equatable {
-        case confirmed
-        case explicitlyUnchanged
-        case inconclusive
-    }
-
-    struct TargetedControlObservation: Equatable {
-        let sampleID: UInt64
-        let trackIdentity: String?
-        let isPlaying: Bool?
-        let isValidQishuiSample: Bool
-
-        init(
-            sampleID: UInt64,
-            trackIdentity: String?,
-            isPlaying: Bool?,
-            isValidQishuiSample: Bool = true
-        ) {
-            self.sampleID = sampleID
-            self.trackIdentity = trackIdentity
-            self.isPlaying = isPlaying
-            self.isValidQishuiSample = isValidQishuiSample
-        }
-    }
-
     struct AuthoritativeAnchor: Equatable {
         let trackIdentity: String
         let elapsedAtAnchor: TimeInterval
@@ -211,70 +177,4 @@ enum PlaybackControlTimeline {
         return min(max(elapsed, 0), duration)
     }
 
-    static func targetedControlConfirmation(
-        expectation: TargetedControlExpectation,
-        baselineSampleID: UInt64,
-        observations: [TargetedControlObservation]
-    ) -> TargetedControlConfirmation {
-        var seenSampleIDs = Set<UInt64>()
-        var unchangedSampleCount = 0
-        var encounteredInvalidSample = false
-
-        for observation in observations {
-            guard observation.sampleID > baselineSampleID,
-                  seenSampleIDs.insert(observation.sampleID).inserted else {
-                continue
-            }
-            guard observation.isValidQishuiSample else {
-                encounteredInvalidSample = true
-                continue
-            }
-
-            switch expectation {
-            case let .playbackState(
-                baselineTrackIdentity,
-                baselineIsPlaying,
-                expectedIsPlaying
-            ):
-                guard observation.trackIdentity == baselineTrackIdentity,
-                      let isPlaying = observation.isPlaying else {
-                    encounteredInvalidSample = true
-                    continue
-                }
-                if isPlaying == expectedIsPlaying {
-                    return .confirmed
-                }
-                if isPlaying == baselineIsPlaying {
-                    unchangedSampleCount += 1
-                } else {
-                    encounteredInvalidSample = true
-                }
-            case let .trackChange(baselineIdentity):
-                guard let trackIdentity = observation.trackIdentity else {
-                    encounteredInvalidSample = true
-                    continue
-                }
-                if trackIdentity != baselineIdentity {
-                    return .confirmed
-                }
-                unchangedSampleCount += 1
-            }
-        }
-
-        guard !encounteredInvalidSample else { return .inconclusive }
-        return unchangedSampleCount >= 2 ? .explicitlyUnchanged : .inconclusive
-    }
-
-    static func shouldRunAXFallback(
-        controlGeneration: Int,
-        currentGeneration: Int,
-        targetedDispatched: Bool,
-        confirmation: TargetedControlConfirmation,
-        elapsedSinceDispatch: TimeInterval
-    ) -> Bool {
-        guard controlGeneration == currentGeneration else { return false }
-        guard targetedDispatched else { return true }
-        return confirmation == .explicitlyUnchanged
-            && elapsedSinceDispatch >= 0.5
-    }
 }

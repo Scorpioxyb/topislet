@@ -1225,7 +1225,9 @@ final class IslandModel: ObservableObject {
                    self.pendingTrackControlGeneration != trackControlGeneration {
                     return
                 }
-                let update = await self.musicAdapter.refreshControlFollowUp()
+                let update = await self.musicAdapter.refreshControlFollowUp(
+                    forcePositionRefresh: requireTrackChange
+                )
                 guard !Task.isCancelled else { return }
                 self.applyMusicUpdate(
                     update.music,
@@ -2278,9 +2280,9 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("音乐控制", value: "汽水 client 定向控制")
+                LabeledContent("音乐控制", value: "汽水语义控件直控")
 
-                Text("播放、暂停和切歌直接发送给汽水音乐的 MediaRemote client；不切换前台 App，不移动鼠标，也不发送全局媒体键。")
+                Text("播放、暂停和切歌只触发汽水音乐窗口内经过结构校验的唯一语义控件；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2365,7 +2367,7 @@ private struct MusicSettingsPane: View {
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
                 LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
-                LabeledContent("控制策略", value: "MediaRemote client + 安全 AX")
+                LabeledContent("控制策略", value: "汽水唯一语义 AX")
             }
 
             Section {
