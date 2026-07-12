@@ -3087,10 +3087,7 @@ struct ExpandedMusic: View {
 
                 HStack(spacing: 12) {
                     ControlButton(
-                        icon: "backward.fill",
-                        pending: model.pendingTrackControl == .previousTrack,
-                        pendingGeneration: model.trackControlFeedbackGeneration,
-                        feedbackDirection: -1
+                        icon: "backward.fill"
                     ) {
                         model.previousTrack()
                     }
@@ -3102,10 +3099,7 @@ struct ExpandedMusic: View {
                     .help(model.music.isPlaying ? "暂停" : "播放")
 
                     ControlButton(
-                        icon: "forward.fill",
-                        pending: model.pendingTrackControl == .nextTrack,
-                        pendingGeneration: model.trackControlFeedbackGeneration,
-                        feedbackDirection: 1
+                        icon: "forward.fill"
                     ) {
                         model.nextTrack()
                     }
@@ -3326,8 +3320,8 @@ struct AlbumArt: View {
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
             if size >= 60 {
-                MusicSourceBadge(bundleIdentifier: track.sourceBundleIdentifier, size: 22)
-                    .padding(3)
+                MusicSourceBadge(bundleIdentifier: track.sourceBundleIdentifier, size: 18)
+                    .offset(x: 3, y: 3)
             }
         }
         .animation(.easeInOut(duration: 0.16), value: artworkIdentity)
@@ -3396,21 +3390,28 @@ private struct MusicSourceBadge: View {
                 Image(nsImage: applicationIcon)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: size - 6, height: size - 6)
-                    .clipShape(Circle())
-                    .padding(3)
-                    .background(Circle().fill(Color.black.opacity(0.92)))
-                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1.5))
-                    .shadow(color: .black.opacity(0.42), radius: 2, y: 1)
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                            .stroke(Color.black.opacity(0.9), lineWidth: 1.5)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 1.5, y: 0.5)
                     .transition(.scale(scale: 0.82).combined(with: .opacity))
             } else if bundleIdentifier != nil {
                 Image(systemName: "music.note")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.white.opacity(0.9))
                     .frame(width: size, height: size)
-                    .background(Circle().fill(Color.black.opacity(0.92)))
-                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1.5))
-                    .shadow(color: .black.opacity(0.42), radius: 2, y: 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                            .fill(Color.black.opacity(0.9))
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                            .stroke(Color.black.opacity(0.9), lineWidth: 1.5)
+                    }
+                    .shadow(color: .black.opacity(0.34), radius: 1.5, y: 0.5)
                     .transition(.scale(scale: 0.82).combined(with: .opacity))
             }
         }
@@ -3423,25 +3424,17 @@ struct ControlButton: View {
     let icon: String
     var prominent = false
     var pending = false
-    var pendingGeneration: UInt64 = 0
-    var feedbackDirection: CGFloat = 0
     var size: CGFloat = 30
     let action: () -> Void
     @State private var showsPending = false
-    @State private var feedbackOffset: CGFloat = 0
-    @State private var feedbackGeneration = 0
     @State private var pendingRingRotation = 0.0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Button {
-            triggerImmediateFeedback()
-            action()
-        } label: {
+        Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: prominent ? 13 : 12, weight: .bold))
                 .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.86))
-                .offset(x: feedbackOffset)
                 .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
                 .background(
                     Circle()
@@ -3466,7 +3459,7 @@ struct ControlButton: View {
                 }
         }
         .buttonStyle(IslandControlButtonStyle())
-        .task(id: "\(pending)-\(pendingGeneration)") {
+        .task(id: pending) {
             if pending {
                 try? await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled else { return }
@@ -3483,29 +3476,6 @@ struct ControlButton: View {
             }
         }
     }
-
-    private func triggerImmediateFeedback() {
-        guard feedbackDirection != 0, !reduceMotion else { return }
-        feedbackGeneration += 1
-        let generation = feedbackGeneration
-        Task { @MainActor in
-            var resetTransaction = Transaction()
-            resetTransaction.disablesAnimations = true
-            withTransaction(resetTransaction) {
-                feedbackOffset = 0
-            }
-            await Task.yield()
-            guard generation == feedbackGeneration else { return }
-            withAnimation(.easeOut(duration: 0.055)) {
-                feedbackOffset = feedbackDirection * 1.5
-            }
-            try? await Task.sleep(nanoseconds: 55_000_000)
-            guard generation == feedbackGeneration else { return }
-            withAnimation(.spring(response: 0.2, dampingFraction: 0.86)) {
-                feedbackOffset = 0
-            }
-        }
-    }
 }
 
 private struct IslandControlButtonStyle: ButtonStyle {
@@ -3513,12 +3483,12 @@ private struct IslandControlButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
-            .opacity(configuration.isPressed ? 0.86 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .brightness(configuration.isPressed ? 0.08 : 0)
             .animation(
                 reduceMotion
                     ? .easeOut(duration: 0.06)
-                    : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
+                    : .interactiveSpring(response: 0.16, dampingFraction: 0.9),
                 value: configuration.isPressed
             )
     }
