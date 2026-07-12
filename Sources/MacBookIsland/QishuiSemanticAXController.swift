@@ -8,11 +8,24 @@ struct QishuiSemanticAXControlResult: Sendable {
 }
 
 final class QishuiSemanticAXController: @unchecked Sendable {
+    struct CandidateFacts: Equatable {
+        let windowIsNormal: Bool
+        let windowIsMainOrFocused: Bool
+        let windowIsVisible: Bool
+        let windowIsMinimized: Bool
+        let containerIsVisible: Bool
+        let controlsAreEnabled: Bool
+        let controlsAreInsideWindow: Bool
+        let relativeY: Double?
+        let hasPlaybackTimeContext: Bool
+    }
+
     private struct CachedControls {
         let processIdentifier: pid_t
         let previous: AXUIElement
         let playPause: AXUIElement
         let next: AXUIElement
+        let container: AXUIElement
 
         func element(for command: MusicControlCommand) -> AXUIElement {
             switch command {
@@ -31,12 +44,31 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         let depth: Int
     }
 
+    private struct DiscoveredControls {
+        let controls: CachedControls
+        let container: AXUIElement
+    }
+
     private struct ElementIdentity: Hashable {
-        let rawValue: UInt
+        let element: AXUIElement
 
         init(element: AXUIElement) {
-            rawValue = UInt(bitPattern: Unmanaged.passUnretained(element).toOpaque())
+            self.element = element
         }
+
+        static func == (lhs: ElementIdentity, rhs: ElementIdentity) -> Bool {
+            CFEqual(lhs.element, rhs.element)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(CFHash(element))
+        }
+    }
+
+    private struct ControlSetIdentity: Hashable {
+        let previous: ElementIdentity
+        let playPause: ElementIdentity
+        let next: ElementIdentity
     }
 
     private let bundleIdentifier = "com.soda.music"
@@ -69,7 +101,8 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
         let processIdentifier = app.processIdentifier
         if let cachedControls,
-           cachedControls.processIdentifier == processIdentifier {
+           cachedControls.processIdentifier == processIdentifier,
+           Self.isEligibleCandidate(candidateFacts(for: cachedControls)) {
             let cachedResult = performPress(cachedControls.element(for: command))
             if cachedResult == .success {
                 return QishuiSemanticAXControlResult(
@@ -81,7 +114,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
 
         let discovery = discoverControls(processIdentifier: processIdentifier)
-        guard discovery.matches.count == 1, let controls = discovery.matches.first else {
+        guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
             let detail = discovery.matches.isEmpty
                 ? "扫描 \(discovery.scanned) 个汽水辅助功能节点后未找到唯一播放控制组；为避免误操作，未发送\(command.label)。"
@@ -89,6 +122,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             return QishuiSemanticAXControlResult(didPress: false, diagnostic: detail)
         }
 
+        let controls = match.controls
         cachedControls = controls
         let result = performPress(controls.element(for: command))
         guard result == .success else {
@@ -111,7 +145,41 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         cachedControls = nil
     }
 
-    private func discoverControls(processIdentifier: pid_t) -> (matches: [CachedControls], scanned: Int) {
+    func diagnostic() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard AXIsProcessTrusted() else { return "accessibilityTrusted=false" }
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first else { return "qishuiRunning=false" }
+
+        let discovery = discoverControls(processIdentifier: app.processIdentifier)
+        var lines = [
+            "accessibilityTrusted=true",
+            "pid=\(app.processIdentifier)",
+            "scanned=\(discovery.scanned)",
+            "candidateCount=\(discovery.matches.count)"
+        ]
+        for (index, match) in discovery.matches.enumerated() {
+            lines.append("candidate[\(index)]=\(diagnosticDescription(for: match))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func isEligibleCandidate(_ facts: CandidateFacts) -> Bool {
+        guard facts.windowIsNormal,
+              facts.windowIsMainOrFocused,
+              facts.windowIsVisible,
+              !facts.windowIsMinimized,
+              facts.containerIsVisible,
+              facts.controlsAreEnabled,
+              facts.controlsAreInsideWindow,
+              facts.hasPlaybackTimeContext,
+              let relativeY = facts.relativeY else { return false }
+        return relativeY >= 0.72 && relativeY <= 1.02
+    }
+
+    private func discoverControls(processIdentifier: pid_t) -> (matches: [DiscoveredControls], scanned: Int) {
         let application = AXUIElementCreateApplication(processIdentifier)
         AXUIElementSetMessagingTimeout(application, messagingTimeout)
 
@@ -121,8 +189,8 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
         var queueIndex = 0
         var visited = Set<ElementIdentity>()
-        var matches: [CachedControls] = []
-        var matchedElements = Set<ElementIdentity>()
+        var matches: [DiscoveredControls] = []
+        var matchedControlSets = Set<ControlSetIdentity>()
 
         while queueIndex < queue.count, visited.count < maximumNodeCount {
             let item = queue[queueIndex]
@@ -134,13 +202,24 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
             if let orderedControls = playbackControls(in: item.element),
                hasPlaybackTimeContext(around: item.element) {
-                if matchedElements.insert(identity).inserted {
+                let controls = CachedControls(
+                    processIdentifier: processIdentifier,
+                    previous: orderedControls[0],
+                    playPause: orderedControls[1],
+                    next: orderedControls[2],
+                    container: item.element
+                )
+                let controlSetIdentity = ControlSetIdentity(
+                    previous: ElementIdentity(element: orderedControls[0]),
+                    playPause: ElementIdentity(element: orderedControls[1]),
+                    next: ElementIdentity(element: orderedControls[2])
+                )
+                if Self.isEligibleCandidate(candidateFacts(for: controls)),
+                   matchedControlSets.insert(controlSetIdentity).inserted {
                     matches.append(
-                        CachedControls(
-                            processIdentifier: processIdentifier,
-                            previous: orderedControls[0],
-                            playPause: orderedControls[1],
-                            next: orderedControls[2]
+                        DiscoveredControls(
+                            controls: controls,
+                            container: item.element
                         )
                     )
                 }
@@ -154,6 +233,70 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
 
         return (matches, visited.count)
+    }
+
+    private func diagnosticDescription(for match: DiscoveredControls) -> String {
+        let window = windowAncestor(of: match.container)
+        let containerFrame = frame(of: match.container)
+        let windowFrame = window.flatMap(frame)
+        let relativeY = containerFrame.flatMap { controlsFrame in
+            windowFrame.map { windowFrame in
+                (controlsFrame.midY - windowFrame.minY) / max(windowFrame.height, 1)
+            }
+        }
+        let context = nearbyContext(around: match.container)
+            .replacingOccurrences(of: "\n", with: " ")
+            .prefix(180)
+        return [
+            "windowTitle=\(window.map { stringAttribute($0, kAXTitleAttribute as String) } ?? "")",
+            "windowRole=\(window.map { stringAttribute($0, kAXRoleAttribute as String) } ?? "")",
+            "windowSubrole=\(window.map { stringAttribute($0, kAXSubroleAttribute as String) } ?? "")",
+            "windowMain=\(window.map { boolAttribute($0, kAXMainAttribute as String) } ?? false)",
+            "windowFocused=\(window.map { boolAttribute($0, kAXFocusedAttribute as String) } ?? false)",
+            "windowMinimized=\(window.map { boolAttribute($0, kAXMinimizedAttribute as String) } ?? false)",
+            "windowVisible=\(window.map(isVisible) ?? false)",
+            "containerVisible=\(isVisible(match.container))",
+            "containerFrame=\(frameDescription(containerFrame))",
+            "windowFrame=\(frameDescription(windowFrame))",
+            "relativeY=\(relativeY.map { String(format: "%.3f", $0) } ?? "nil")",
+            "context=\(context)"
+        ].joined(separator: ",")
+    }
+
+    private func candidateFacts(for controls: CachedControls) -> CandidateFacts {
+        let window = windowAncestor(of: controls.container)
+        let controlsFrame = frame(of: controls.container)
+        let windowFrame = window.flatMap(frame)
+        let relativeY = controlsFrame.flatMap { controlsFrame in
+            windowFrame.map { windowFrame in
+                Double((controlsFrame.midY - windowFrame.minY) / max(windowFrame.height, 1))
+            }
+        }
+        let controlsAreInsideWindow = controlsFrame.flatMap { controlsFrame in
+            windowFrame.map { windowFrame in
+                windowFrame.insetBy(dx: -1, dy: -1).contains(controlsFrame)
+            }
+        } ?? false
+        let windowRole = window.map { stringAttribute($0, kAXRoleAttribute as String) } ?? ""
+        let windowSubrole = window.map { stringAttribute($0, kAXSubroleAttribute as String) } ?? ""
+        return CandidateFacts(
+            windowIsNormal: windowRole == kAXWindowRole as String
+                && windowSubrole == kAXStandardWindowSubrole as String,
+            windowIsMainOrFocused: window.map {
+                boolAttribute($0, kAXMainAttribute as String)
+                    || boolAttribute($0, kAXFocusedAttribute as String)
+            } ?? false,
+            windowIsVisible: window.map(isVisible) ?? false,
+            windowIsMinimized: window.map {
+                boolAttribute($0, kAXMinimizedAttribute as String)
+            } ?? true,
+            containerIsVisible: isVisible(controls.container),
+            controlsAreEnabled: [controls.previous, controls.playPause, controls.next]
+                .allSatisfy { supportsPress($0) && isEnabled($0) },
+            controlsAreInsideWindow: controlsAreInsideWindow,
+            relativeY: relativeY,
+            hasPlaybackTimeContext: hasPlaybackTimeContext(around: controls.container)
+        )
     }
 
     private func playbackControls(in element: AXUIElement) -> [AXUIElement]? {
@@ -233,6 +376,61 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             }
         }
         return false
+    }
+
+    private func windowAncestor(of element: AXUIElement) -> AXUIElement? {
+        var current: AXUIElement? = element
+        for _ in 0..<24 {
+            guard let candidate = current else { return nil }
+            if stringAttribute(candidate, kAXRoleAttribute as String) == kAXWindowRole as String {
+                return candidate
+            }
+            guard let parent = copyAttribute(candidate, kAXParentAttribute as String),
+                  CFGetTypeID(parent as CFTypeRef) == AXUIElementGetTypeID() else {
+                return nil
+            }
+            current = (parent as! AXUIElement)
+        }
+        return nil
+    }
+
+    private func nearbyContext(around element: AXUIElement) -> String {
+        var current: AXUIElement? = element
+        for _ in 0..<3 {
+            guard let candidate = current else { break }
+            let texts = descendantTexts(in: candidate, maximumDepth: 2)
+            if !texts.isEmpty { return texts.joined(separator: " | ") }
+            guard let parent = copyAttribute(candidate, kAXParentAttribute as String),
+                  CFGetTypeID(parent as CFTypeRef) == AXUIElementGetTypeID() else { break }
+            current = (parent as! AXUIElement)
+        }
+        return ""
+    }
+
+    private func descendantTexts(in root: AXUIElement, maximumDepth: Int) -> [String] {
+        var queue = [QueueItem(element: root, depth: 0)]
+        var queueIndex = 0
+        var visited = Set<ElementIdentity>()
+        var texts: [String] = []
+        while queueIndex < queue.count, visited.count < 300, texts.count < 20 {
+            let item = queue[queueIndex]
+            queueIndex += 1
+            guard visited.insert(ElementIdentity(element: item.element)).inserted else { continue }
+            for attribute in [
+                kAXTitleAttribute as String,
+                kAXValueAttribute as String,
+                kAXDescriptionAttribute as String
+            ] {
+                let text = stringAttribute(item.element, attribute)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty, !texts.contains(text) { texts.append(text) }
+            }
+            guard item.depth < maximumDepth else { continue }
+            for child in children(of: item.element) {
+                queue.append(QueueItem(element: child, depth: item.depth + 1))
+            }
+        }
+        return texts
     }
 
     private func performPress(_ element: AXUIElement) -> AXError {
@@ -338,6 +536,34 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             return nil
         }
         return CGRect(origin: point, size: size)
+    }
+
+    private func frameDescription(_ frame: CGRect?) -> String {
+        guard let frame else { return "nil" }
+        return String(
+            format: "%.1f:%.1f:%.1f:%.1f",
+            frame.origin.x,
+            frame.origin.y,
+            frame.width,
+            frame.height
+        )
+    }
+
+    private func boolAttribute(_ element: AXUIElement, _ attribute: String) -> Bool {
+        guard let value = copyAttribute(element, attribute) else { return false }
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        return false
+    }
+
+    private func isVisible(_ element: AXUIElement) -> Bool {
+        if boolAttribute(element, "AXHidden") { return false }
+        if let value = copyAttribute(element, "AXVisible") {
+            if let visible = value as? Bool { return visible }
+            if let visible = value as? NSNumber { return visible.boolValue }
+        }
+        guard let frame = frame(of: element) else { return false }
+        return frame.width > 0 && frame.height > 0
     }
 
     private func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String {

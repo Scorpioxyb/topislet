@@ -37,9 +37,11 @@ final class MediaRemoteAdapterStreamSource {
     private var deferredTrackPublicationTask: Task<Void, Never>?
     private var deferredTrackPublicationGeneration = 0
     private var deferredTrackPublicationStartedAt: Date?
+    private var deferredTimelinePayload: [String: Any]?
     private var latestSnapshot: MediaRemoteNowPlayingSnapshot?
     private var latestRawSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastVerifiedQishuiSnapshot: MediaRemoteNowPlayingSnapshot?
+    private var playbackPositionAnchor: PlaybackControlTimeline.AuthoritativeAnchor?
     private var latestSignature: String?
     private var artworkCache: [String: Data] = [:]
     private var artworkCacheOrder: [String] = []
@@ -124,7 +126,8 @@ final class MediaRemoteAdapterStreamSource {
         if !mergedPayload.isEmpty {
             let rawSnapshot = snapshot(
                 from: mergedPayload,
-                existingArtwork: reusableArtwork(for: mergedPayload)
+                existingArtwork: reusableArtwork(for: mergedPayload),
+                timelinePayload: nil
             )
             return remember(snapshot: rawSnapshot)
         }
@@ -143,6 +146,10 @@ final class MediaRemoteAdapterStreamSource {
         }
         clearSeekTimelineAnchor()
         return false
+    }
+
+    func hasAdapterResources() -> Bool {
+        adapterPaths() != nil
     }
 
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
@@ -169,7 +176,11 @@ final class MediaRemoteAdapterStreamSource {
         }
 
         advanceSample(origin: .synchronousRead)
-        let rawSnapshot = snapshot(from: payload, existingArtwork: nil)
+        let rawSnapshot = snapshot(
+            from: payload,
+            existingArtwork: nil,
+            timelinePayload: payload
+        )
         return remember(snapshot: rawSnapshot)
     }
 
@@ -189,6 +200,7 @@ final class MediaRemoteAdapterStreamSource {
 
     func refreshPlaybackPositionAsync() async -> MediaRemoteNowPlayingSnapshot? {
         guard let paths = adapterPaths() else { return nil }
+        let requestSampleID = sampleID
         let data = await Task.detached(priority: .utility) {
             Self.runGetData(
                 script: paths.script,
@@ -200,13 +212,33 @@ final class MediaRemoteAdapterStreamSource {
         guard let data,
               let object = try? JSONSerialization.jsonObject(with: data),
               let payload = object as? [String: Any] else { return nil }
-        return applyPlaybackPositionPayload(payload)
+        return applyPlaybackPositionPayload(payload, requestSampleID: requestSampleID)
     }
 
-    private func applyPlaybackPositionPayload(_ payload: [String: Any]) -> MediaRemoteNowPlayingSnapshot {
+    private func applyPlaybackPositionPayload(
+        _ payload: [String: Any],
+        requestSampleID: UInt64? = nil,
+        receivedAt: Date = Date(),
+        receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> MediaRemoteNowPlayingSnapshot? {
+        if let requestSampleID,
+           !PlaybackControlTimeline.shouldAcceptAsyncSample(
+                requestSampleID: requestSampleID,
+                currentSampleID: sampleID,
+                responseTrackIdentity: payloadPlaybackTimelineIdentity(payload),
+                currentTrackIdentity: playbackPositionAnchor?.trackIdentity
+           ) {
+            return latestSnapshot
+        }
         advanceSample(origin: .synchronousRead)
         mergedPayload.merge(payload) { _, new in new }
-        let rawSnapshot = snapshot(from: payload, existingArtwork: reusableArtwork(for: payload))
+        let rawSnapshot = snapshot(
+            from: mergedPayload,
+            existingArtwork: reusableArtwork(for: mergedPayload),
+            timelinePayload: payload,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
         let effectiveSnapshot = remember(snapshot: rawSnapshot)
         if let track = rawSnapshot.currentTrack {
             let signature = trackSignature(track)
@@ -219,6 +251,18 @@ final class MediaRemoteAdapterStreamSource {
             )
         }
         return effectiveSnapshot
+    }
+
+    func applyPlaybackPositionPayloadForTesting(
+        _ payload: [String: Any],
+        receivedAt: Date,
+        receivedUptime: TimeInterval
+    ) -> MediaRemoteNowPlayingSnapshot? {
+        applyPlaybackPositionPayload(
+            payload,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
     }
 
     func seek(
@@ -287,6 +331,8 @@ final class MediaRemoteAdapterStreamSource {
         deferredTrackPublicationTask?.cancel()
         deferredTrackPublicationTask = nil
         deferredTrackPublicationStartedAt = nil
+        deferredTimelinePayload = nil
+        playbackPositionAnchor = nil
         clearSeekTimelineAnchor()
     }
 
@@ -302,27 +348,12 @@ final class MediaRemoteAdapterStreamSource {
     }
 
     private func handleLine(_ lineData: Data, onChange: @escaping ChangeHandler) {
-        guard let object = try? JSONSerialization.jsonObject(with: lineData),
-              let envelope = object as? [String: Any],
-              envelope["type"] as? String == "data",
-              let payload = envelope["payload"] as? [String: Any] else {
-            return
-        }
-
-        let isDiff = boolValue(envelope["diff"]) ?? false
-        if isDiff {
-            for (key, value) in payload {
-                if value is NSNull {
-                    mergedPayload.removeValue(forKey: key)
-                } else {
-                    mergedPayload[key] = value
-                }
-            }
-        } else {
-            mergedPayload = payload
-        }
+        guard let envelope = decodedStreamEnvelope(lineData) else { return }
+        let payload = envelope.payload
+        mergeStreamPayload(payload, isDiff: envelope.isDiff)
 
         if shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload) {
+            deferredTimelinePayload = payload
             scheduleDeferredTrackPublication(onChange: onChange)
             return
         }
@@ -330,17 +361,24 @@ final class MediaRemoteAdapterStreamSource {
         deferredTrackPublicationTask?.cancel()
         deferredTrackPublicationTask = nil
         deferredTrackPublicationStartedAt = nil
-        publishMergedPayload(origin: .streamEvent, onChange: onChange)
+        deferredTimelinePayload = nil
+        publishMergedPayload(
+            origin: .streamEvent,
+            timelinePayload: payload,
+            onChange: onChange
+        )
     }
 
     private func publishMergedPayload(
         origin: MediaRemoteSampleOrigin,
+        timelinePayload: [String: Any]?,
         onChange: @escaping ChangeHandler
     ) {
         advanceSample(origin: origin)
         let rawSnapshot = snapshot(
             from: mergedPayload,
-            existingArtwork: reusableArtwork(for: mergedPayload)
+            existingArtwork: reusableArtwork(for: mergedPayload),
+            timelinePayload: timelinePayload
         )
         _ = remember(snapshot: rawSnapshot)
         lastPublishedPayload = mergedPayload
@@ -358,6 +396,51 @@ final class MediaRemoteAdapterStreamSource {
             }
         }
         onChange()
+    }
+
+    private func decodedStreamEnvelope(
+        _ lineData: Data
+    ) -> (payload: [String: Any], isDiff: Bool)? {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData),
+              let envelope = object as? [String: Any],
+              envelope["type"] as? String == "data",
+              let payload = envelope["payload"] as? [String: Any] else {
+            return nil
+        }
+        return (payload, boolValue(envelope["diff"]) ?? false)
+    }
+
+    private func mergeStreamPayload(_ payload: [String: Any], isDiff: Bool) {
+        guard isDiff else {
+            mergedPayload = payload
+            return
+        }
+        for (key, value) in payload {
+            if value is NSNull {
+                mergedPayload.removeValue(forKey: key)
+            } else {
+                mergedPayload[key] = value
+            }
+        }
+    }
+
+    func ingestStreamEnvelopeForTesting(
+        _ lineData: Data,
+        receivedAt: Date,
+        receivedUptime: TimeInterval
+    ) -> MediaRemoteNowPlayingSnapshot? {
+        guard let envelope = decodedStreamEnvelope(lineData) else { return nil }
+        mergeStreamPayload(envelope.payload, isDiff: envelope.isDiff)
+        advanceSample(origin: .streamEvent)
+        let rawSnapshot = snapshot(
+            from: mergedPayload,
+            existingArtwork: reusableArtwork(for: mergedPayload),
+            timelinePayload: envelope.payload,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
+        lastPublishedPayload = mergedPayload
+        return remember(snapshot: rawSnapshot)
     }
 
     private func shouldDeferTrackPublication(
@@ -410,6 +493,8 @@ final class MediaRemoteAdapterStreamSource {
                         includeArtwork: true
                     )
                 }.value
+                guard !Task.isCancelled,
+                      generation == self.deferredTrackPublicationGeneration else { return }
                 if let data,
                    let object = try? JSONSerialization.jsonObject(with: data),
                    let payload = object as? [String: Any] {
@@ -440,9 +525,15 @@ final class MediaRemoteAdapterStreamSource {
                 }
             }
 
+            let timelinePayload = self.deferredTimelinePayload
             self.deferredTrackPublicationTask = nil
             self.deferredTrackPublicationStartedAt = nil
-            self.publishMergedPayload(origin: .synchronousRead, onChange: onChange)
+            self.deferredTimelinePayload = nil
+            self.publishMergedPayload(
+                origin: .synchronousRead,
+                timelinePayload: timelinePayload,
+                onChange: onChange
+            )
         }
     }
 
@@ -530,8 +621,14 @@ final class MediaRemoteAdapterStreamSource {
         )
     }
 
-    private func snapshot(from payload: [String: Any], existingArtwork: Data?) -> MediaRemoteNowPlayingSnapshot {
-        let checkedAt = Date()
+    private func snapshot(
+        from payload: [String: Any],
+        existingArtwork: Data?,
+        timelinePayload: [String: Any]?,
+        receivedAt: Date = Date(),
+        receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> MediaRemoteNowPlayingSnapshot {
+        let checkedAt = receivedAt
         guard !payload.isEmpty else {
             return MediaRemoteNowPlayingSnapshot(
                 isAvailable: true,
@@ -589,9 +686,12 @@ final class MediaRemoteAdapterStreamSource {
         )
         let elapsed = resolvedElapsedTime(
             from: payload,
+            timelinePayload: timelinePayload,
             trackIdentity: timelineIdentity,
             isPlaying: isPlaying,
-            duration: duration
+            duration: duration,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
         )
         let progress: Double
         if let elapsed, let duration, duration > 0 {
@@ -691,9 +791,11 @@ final class MediaRemoteAdapterStreamSource {
                     self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: nil)
                     return
                 }
-                let nextSnapshot = self.snapshot(
+                let nextSnapshot = self.metadataSnapshot(
                     from: payload,
-                    existingArtwork: nil
+                    existingArtwork: nil,
+                    receivedAt: Date(),
+                    receivedUptime: ProcessInfo.processInfo.systemUptime
                 )
                 guard let nextTrack = nextSnapshot.currentTrack else {
                     _ = self.remember(snapshot: nextSnapshot)
@@ -707,9 +809,11 @@ final class MediaRemoteAdapterStreamSource {
                 }
                 let responseLookupKey = self.trackLookupKey(nextTrack)
                 self.mergeMetadata(from: payload)
-                let mergedSnapshot = self.snapshot(
+                let mergedSnapshot = self.metadataSnapshot(
                     from: self.mergedPayload,
-                    existingArtwork: nextTrack.artworkData
+                    existingArtwork: nextTrack.artworkData,
+                    receivedAt: Date(),
+                    receivedUptime: ProcessInfo.processInfo.systemUptime
                 )
                 _ = self.remember(snapshot: mergedSnapshot)
                 onChange()
@@ -717,6 +821,36 @@ final class MediaRemoteAdapterStreamSource {
             }
         }
         return true
+    }
+
+    private func metadataSnapshot(
+        from payload: [String: Any],
+        existingArtwork: Data?,
+        receivedAt: Date,
+        receivedUptime: TimeInterval
+    ) -> MediaRemoteNowPlayingSnapshot {
+        snapshot(
+            from: payload,
+            existingArtwork: existingArtwork,
+            timelinePayload: nil,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
+    }
+
+    func applyMetadataPayloadForTesting(
+        _ payload: [String: Any],
+        receivedAt: Date,
+        receivedUptime: TimeInterval
+    ) -> MediaRemoteNowPlayingSnapshot? {
+        mergeMetadata(from: payload)
+        let rawSnapshot = metadataSnapshot(
+            from: mergedPayload,
+            existingArtwork: reusableArtwork(for: mergedPayload),
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
+        return remember(snapshot: rawSnapshot)
     }
 
     private func mergeMetadata(from payload: [String: Any]) {
@@ -866,11 +1000,39 @@ final class MediaRemoteAdapterStreamSource {
 
     private func resolvedElapsedTime(
         from payload: [String: Any],
+        timelinePayload: [String: Any]?,
         trackIdentity: MediaRemoteTrackTimelineIdentity,
         isPlaying: Bool?,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        receivedAt: Date,
+        receivedUptime: TimeInterval
     ) -> TimeInterval? {
-        let rawElapsed = doubleValue(payload["elapsedTimeNow"])
+        let identity = playbackTimelineIdentity(from: payload, fallback: trackIdentity)
+        if let timelinePayload {
+            let sourceTimestamp = stringValue(timelinePayload["timestamp"])
+                .flatMap { ISO8601DateFormatter().date(from: $0) }
+            if let candidate = PlaybackControlTimeline.authoritativeAnchor(
+                trackIdentity: identity,
+                elapsedTime: doubleValue(timelinePayload["elapsedTime"]),
+                elapsedTimeNow: doubleValue(timelinePayload["elapsedTimeNow"]),
+                sourceTimestamp: sourceTimestamp,
+                playbackRate: doubleValue(timelinePayload["playbackRate"])
+                    ?? doubleValue(payload["playbackRate"]),
+                isPlaying: isPlaying,
+                duration: duration,
+                receivedAt: receivedAt,
+                receivedUptime: receivedUptime
+            ) {
+                playbackPositionAnchor = PlaybackControlTimeline.accepting(
+                    candidate,
+                    over: playbackPositionAnchor
+                )
+            }
+        }
+        let rawElapsed = playbackPositionAnchor.flatMap { anchor -> TimeInterval? in
+            guard anchor.trackIdentity == identity else { return nil }
+            return PlaybackControlTimeline.elapsed(from: anchor, nowUptime: receivedUptime)
+        } ?? doubleValue(payload["elapsedTimeNow"])
             ?? currentElapsedTime(from: payload)
             ?? doubleValue(payload["elapsedTime"])
         guard var anchor = seekTimelineAnchor else { return rawElapsed }
@@ -922,6 +1084,35 @@ final class MediaRemoteAdapterStreamSource {
             return min(max(elapsed, 0), duration)
         }
         return max(elapsed, 0)
+    }
+
+    private func playbackTimelineIdentity(
+        from payload: [String: Any],
+        fallback: MediaRemoteTrackTimelineIdentity
+    ) -> String {
+        payloadPlaybackTimelineIdentity(payload) ?? [
+            fallback.bundleIdentifier ?? "",
+            fallback.title,
+            fallback.artist ?? "",
+            fallback.album ?? "",
+            fallback.duration.map { String(format: "%.3f", $0) } ?? ""
+        ].joined(separator: "\u{1f}")
+    }
+
+    private func payloadPlaybackTimelineIdentity(_ payload: [String: Any]) -> String? {
+        if let contentIdentifier = stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty {
+            return contentIdentifier
+        }
+        guard let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty else {
+            return nil
+        }
+        return [
+            stringValue(payload["bundleIdentifier"]) ?? "",
+            title,
+            stringValue(payload["artist"]) ?? "",
+            stringValue(payload["album"]) ?? "",
+            doubleValue(payload["duration"]).map { String(format: "%.3f", $0) } ?? ""
+        ].joined(separator: "\u{1f}")
     }
 
     private func currentElapsedTime(from payload: [String: Any]) -> Double? {

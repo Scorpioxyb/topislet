@@ -27,6 +27,7 @@ FUNCTION:
   get      Prints now playing information once with all available metadata
   get-client Prints now playing information for a specific client
   send     Sends a command to the now playing application
+  send-client Sends a command to a specific client
   stream-client Streams now playing information for a specific client
   seek     Seeks to a specific timeline position
   shuffle  Sets the shuffle mode
@@ -40,6 +41,9 @@ PARAMS:
     command: The MRCommand ID as a number (e.g. kMRPlay = 0)
   get-client(bundle)
     bundle: Target application bundle identifier
+  send-client(bundle, command)
+    bundle: Target application bundle identifier
+    command: 2 (play/pause), 4 (next), or 5 (previous)
   stream-client(bundle)
     bundle: Target application bundle identifier
   seek(position)
@@ -78,6 +82,7 @@ Examples (script name and framework path omitted):
   stream --no-diff --debounce=100
   send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
   get-client com.soda.music --now
+  send-client com.soda.music 2
   stream-client com.soda.music --no-diff --no-artwork
   repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
 
@@ -125,6 +130,7 @@ fail "Invalid function name: '$function_name'"
   || $function_name eq "get"
   || $function_name eq "get-client"
   || $function_name eq "send"
+  || $function_name eq "send-client"
   || $function_name eq "stream-client"
   || $function_name eq "seek"
   || $function_name eq "shuffle"
@@ -195,6 +201,16 @@ if ($function_name eq "send") {
   my $id = shift @ARGV;
   fail "Missing ID for '$function_name' command" unless defined $id;
   set_env_param($symbol_name, 0, "command", "$id");
+  $symbol_name = env_func($symbol_name);
+}
+elsif ($function_name eq "send-client") {
+  my $bundle = shift @ARGV;
+  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
+  my $id = shift @ARGV;
+  fail "Missing ID for '$function_name' command" unless defined $id;
+  $symbol_name = "adapter_send_client";
+  set_env_param($symbol_name, 0, "bundle", "$bundle");
+  set_env_param($symbol_name, 1, "command", "$id");
   $symbol_name = env_func($symbol_name);
 }
 elsif ($function_name eq "get-client") {

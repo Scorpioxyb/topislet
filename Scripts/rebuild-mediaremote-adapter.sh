@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_URL="https://github.com/ungive/mediaremote-adapter.git"
 UPSTREAM_COMMIT="3ac3d4bdf862c7b5399b4fba4df5689f5c38609a"
-EXPECTED_BINARY_SHA256="3446ebb0889757c8d4cee0ac7a577bbbd530e3ba61225d30b47e3b85d31f95ab"
+EXPECTED_BINARY_SHA256="6de4ad829488b12e2b969ddf17e2459f855781b2130f8fb554a40958fe224374"
 PATCH="$ROOT/Vendor/MediaRemoteAdapter/patches/topislet-client-targeting.patch"
 VENDORED_FRAMEWORK="$ROOT/Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework"
 BUILD_ROOT="$ROOT/.build"

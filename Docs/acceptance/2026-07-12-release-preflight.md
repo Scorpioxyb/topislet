@@ -17,13 +17,13 @@
 
 ## 等待 Developer ID 后执行
 
-- Developer ID + hardened runtime 下的 Adapter、Perl 和 Python 桥回归。
+- Developer ID + hardened runtime 下的 Adapter、Perl 诊断入口和语义 AX 控制回归。
 - DMG 公证、staple、Gatekeeper 与浏览器下载 quarantine 测试。
 - 新签名身份下辅助功能、日历、提醒事项授权和撤权。
 
 ## 最终实机动态回归
 
 - 汽水单独播放、连续切歌 10 次、播放/暂停、seek。
-- 抖音抢占媒体焦点后同步与定向控制。
+- 抖音抢占媒体焦点后汽水专属流同步与语义 AX 直控。
 - QuickTime / QuickPlayer 并存。
 - 展开、收回、连续点击、悬停与 DMG 拖放安装视觉。

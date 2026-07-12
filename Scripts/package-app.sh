@@ -6,7 +6,16 @@ APP_NAME="顶屿.app"
 APP="$ROOT/.build/package/$APP_NAME"
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$ROOT/Packaging/Info.plist")"
 
+move_to_trash_if_present() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    return
+  fi
+  /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
+}
+
 swift build --package-path "$ROOT"
+move_to_trash_if_present "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
@@ -27,6 +36,7 @@ if [ ! -w "$INSTALL_DIR" ]; then
   mkdir -p "$INSTALL_DIR"
 fi
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME"
+move_to_trash_if_present "$INSTALLED_APP"
 ditto "$APP" "$INSTALLED_APP"
 xattr -cr "$INSTALLED_APP"
 

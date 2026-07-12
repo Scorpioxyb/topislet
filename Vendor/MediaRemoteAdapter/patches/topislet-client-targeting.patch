@@ -21,53 +21,69 @@ index 0563972..3767403 100644
      src/private/MediaRemote.m
      src/utility/Debounce.m
 diff --git a/bin/mediaremote-adapter.pl b/bin/mediaremote-adapter.pl
-index f4c794b..6e097d6 100755
+index f4c794b..6cabe5c 100755
 --- a/bin/mediaremote-adapter.pl
 +++ b/bin/mediaremote-adapter.pl
-@@ -25,7 +25,9 @@ TEST_CLIENT_PATH: (optional)
+@@ -25,7 +25,10 @@ TEST_CLIENT_PATH: (optional)
  FUNCTION:
    stream   Streams now playing information (as diff by default)
    get      Prints now playing information once with all available metadata
 +  get-client Prints now playing information for a specific client
    send     Sends a command to the now playing application
++  send-client Sends a command to a specific client
 +  stream-client Streams now playing information for a specific client
    seek     Seeks to a specific timeline position
    shuffle  Sets the shuffle mode
    repeat   Sets the repeat mode
-@@ -36,6 +38,10 @@ FUNCTION:
+@@ -36,6 +39,13 @@ FUNCTION:
  PARAMS:
    send(command)
      command: The MRCommand ID as a number (e.g. kMRPlay = 0)
 +  get-client(bundle)
 +    bundle: Target application bundle identifier
++  send-client(bundle, command)
++    bundle: Target application bundle identifier
++    command: 2 (play/pause), 4 (next), or 5 (previous)
 +  stream-client(bundle)
 +    bundle: Target application bundle identifier
    seek(position)
      position: The timeline position in microseconds
    shuffle(mode)
-@@ -71,6 +77,8 @@ OPTIONS:
+@@ -71,6 +81,9 @@ OPTIONS:
  Examples (script name and framework path omitted):
    stream --no-diff --debounce=100
    send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
 +  get-client com.soda.music --now
++  send-client com.soda.music 2
 +  stream-client com.soda.music --no-diff --no-artwork
    repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
  
  HELP
-@@ -115,7 +123,9 @@ my $function_name = shift @ARGV or fail "Missing function name";
+@@ -115,7 +128,10 @@ my $function_name = shift @ARGV or fail "Missing function name";
  fail "Invalid function name: '$function_name'"
    unless $function_name eq "stream"
    || $function_name eq "get"
 +  || $function_name eq "get-client"
    || $function_name eq "send"
++  || $function_name eq "send-client"
 +  || $function_name eq "stream-client"
    || $function_name eq "seek"
    || $function_name eq "shuffle"
    || $function_name eq "repeat"
-@@ -187,6 +197,47 @@ if ($function_name eq "send") {
+@@ -187,6 +203,57 @@ if ($function_name eq "send") {
    set_env_param($symbol_name, 0, "command", "$id");
    $symbol_name = env_func($symbol_name);
  }
++elsif ($function_name eq "send-client") {
++  my $bundle = shift @ARGV;
++  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
++  my $id = shift @ARGV;
++  fail "Missing ID for '$function_name' command" unless defined $id;
++  $symbol_name = "adapter_send_client";
++  set_env_param($symbol_name, 0, "bundle", "$bundle");
++  set_env_param($symbol_name, 1, "command", "$id");
++  $symbol_name = env_func($symbol_name);
++}
 +elsif ($function_name eq "get-client") {
 +  my $bundle = shift @ARGV;
 +  fail "Missing bundle ID for '$function_name'" unless defined $bundle;
@@ -113,7 +129,7 @@ index f4c794b..6e097d6 100755
    my $options = parse_options(0);
    foreach my $key (keys %{$options}) {
 diff --git a/include/MediaRemoteAdapter.h b/include/MediaRemoteAdapter.h
-index c90321c..904540f 100644
+index c90321c..72c1241 100644
 --- a/include/MediaRemoteAdapter.h
 +++ b/include/MediaRemoteAdapter.h
 @@ -66,12 +66,20 @@ extern NSString *kMRAMediaType;
@@ -137,6 +153,17 @@ index c90321c..904540f 100644
  typedef enum {
      kMRAPlay = 0,
      kMRAPause = 1,
+@@ -93,6 +101,10 @@ typedef enum {
+ extern void adapter_send(MRACommand command);
+ extern void adapter_send_env();
+ 
++// Sends one of the supported playback commands to a specific MediaRemote client.
++extern void adapter_send_client(NSString *bundleIdentifier, MRACommand command);
++extern void adapter_send_client_env();
++
+ // Seeks the timeline of the nowplaying application to the given position.
+ // The position must be given in microseconds.
+ extern void adapter_seek(long position);
 diff --git a/src/adapter/client.h b/src/adapter/client.h
 new file mode 100644
 index 0000000..cd0aa17
@@ -327,6 +354,93 @@ index 0000000..3c556b0
 +    NSString *bundleIdentifier =
 +        getEnvFuncParamSafe(@"adapter_get_client", 0, @"bundle");
 +    adapter_get_client(bundleIdentifier);
++}
+diff --git a/src/adapter/send.m b/src/adapter/send.m
+index 2534dc0..20f9f65 100644
+--- a/src/adapter/send.m
++++ b/src/adapter/send.m
+@@ -7,12 +7,16 @@
+ #import <Foundation/Foundation.h>
+ 
+ #import "MediaRemoteAdapter.h"
++#import "adapter/client.h"
+ #import "adapter/env.h"
+ #import "adapter/globals.h"
+ #import "adapter/now_playing.h"
+ #import "utility/helpers.h"
+ 
+ static NSArray<NSNumber *> *acceptedCommands;
++static NSArray<NSNumber *> *acceptedClientCommands;
++
++#define CLIENT_COMMAND_COMPLETION_TIMEOUT_MILLIS 500
+ 
+ __attribute__((constructor)) static void init() {
+     acceptedCommands = @[
+@@ -31,6 +35,11 @@
+         @(kMRAGoBackFifteenSeconds),
+         @(kMRASkipFifteenSeconds),
+     ];
++    acceptedClientCommands = @[
++        @(kMRATogglePlayPause),
++        @(kMRANextTrack),
++        @(kMRAPreviousTrack),
++    ];
+     // TODO like/unlike tracks by reading now playing information first,
+     // getting the track ID, station ID and station hash
+     // and then sending the respective MRCommand.
+@@ -67,3 +76,53 @@ static inline int send_0_command() {
+ }
+ 
+ void adapter_send_env() { adapter_send((MRACommand)send_0_command()); }
++
++void adapter_send_client(NSString *bundleIdentifier, MRACommand command) {
++    bool ok = false;
++    MRCommand commandValue = findCommand((int)command, &ok);
++    if (!ok || ![acceptedClientCommands containsObject:@(command)]) {
++        failf(@"Invalid targeted command: %d", command);
++    }
++    if ([bundleIdentifier length] == 0 ||
++        !g_mediaRemote.sendCommandToClient || !g_mediaRemote.getLocalOrigin) {
++        fail(@"Targeted MediaRemote control is unavailable");
++    }
++
++    id clientObject = findNowPlayingClient(bundleIdentifier);
++    const void *origin = g_mediaRemote.getLocalOrigin();
++    if (!clientObject || !origin) {
++        failf(@"MediaRemote client not found: %@", bundleIdentifier);
++    }
++
++    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
++    __block uint32_t sendError = UINT32_MAX;
++    bool accepted = g_mediaRemote.sendCommandToClient(
++        commandValue, nil, origin, (__bridge const void *)clientObject, NULL,
++        g_serialdispatchQueue,
++        ^(uint32_t error, CFArrayRef handlerStatuses) {
++          sendError = error;
++          dispatch_semaphore_signal(semaphore);
++        });
++    if (!accepted) {
++        failf(@"Failed to send targeted command %d", command);
++    }
++
++    dispatch_time_t timeout = dispatch_time(
++        DISPATCH_TIME_NOW,
++        CLIENT_COMMAND_COMPLETION_TIMEOUT_MILLIS * NSEC_PER_MSEC);
++    if (dispatch_semaphore_wait(semaphore, timeout) != 0) {
++        failf(@"Timed out sending targeted command %d", command);
++    }
++    if (sendError != 0) {
++        failf(@"Targeted command %d failed with error %u", command, sendError);
++    }
++    printOut(@"targetedControlSent=true");
++}
++
++void adapter_send_client_env() {
++    NSString *bundleIdentifier =
++        getEnvFuncParamSafe(@"adapter_send_client", 0, @"bundle");
++    int command =
++        getEnvFuncParamIntSafe(@"adapter_send_client", 1, @"command");
++    adapter_send_client(bundleIdentifier, (MRACommand)command);
 +}
 diff --git a/src/adapter/stream_client.m b/src/adapter/stream_client.m
 new file mode 100644

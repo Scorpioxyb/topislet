@@ -33,8 +33,9 @@ jobs:
 
       - name: Package smoke test
         run: |
+          VERSION="$(plutil -extract CFBundleShortVersionString raw Packaging/Info.plist)"
           bash Scripts/build-release.sh
-          bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
+          bash Scripts/verify-release-dmg.sh ".build/release-artifacts/TopIslet-v${VERSION}-arm64.dmg"
 
       - name: Upload package smoke artifact
         uses: actions/upload-artifact@v7

@@ -152,11 +152,15 @@ private struct CachedPlaybackOverride {
     let updatedAt: Date
 }
 
+private struct ControlDispatchResult {
+    let didPress: Bool
+    let diagnostic: String
+}
+
 @MainActor
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
     private let qishuiAXChangeMonitor = QishuiAXChangeMonitor()
-    private let qishuiTargetedMediaController = QishuiTargetedMediaController()
     private let qishuiSemanticAXController = QishuiSemanticAXController()
     private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
@@ -172,6 +176,8 @@ final class MusicAdapterCoordinator {
     private var pendingPlaybackOperation: PendingPlaybackOperation?
     private var pendingPlaybackTimeoutTask: Task<Void, Never>?
     private var nextPlaybackOperationID = 0
+    private var controlGeneration = 0
+    private var lastTrackControlStartedAt: Date?
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
     private var lastCachedOverrideRefreshAttemptAt: Date?
@@ -181,6 +187,7 @@ final class MusicAdapterCoordinator {
     private var realtimeRefreshInFlight = false
     private var realtimeRefreshQueued = false
     private var playbackPositionRefreshInFlight = false
+    private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -199,6 +206,7 @@ final class MusicAdapterCoordinator {
     }
 
     func startRealtimeObservation(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
+        realtimeUpdateHandler = onUpdate
         mediaRemoteAdapterStreamSource.start { [weak self] in
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
@@ -207,9 +215,11 @@ final class MusicAdapterCoordinator {
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
+        schedulePlaybackPositionRefresh()
     }
 
     func stopRealtimeObservation() {
+        realtimeUpdateHandler = nil
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
         resetPendingPlaybackOperation(clearTimelineFloor: true)
@@ -247,38 +257,79 @@ final class MusicAdapterCoordinator {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
-        _ = refreshSourceStatus()
-        let targetedController = qishuiTargetedMediaController
-        let semanticController = qishuiSemanticAXController
-        let controlResult = await withCheckedContinuation { continuation in
-            qishuiControlQueue.async {
-                let targetedResult = targetedController.post(command)
-                if targetedResult.didSend {
-                    continuation.resume(
-                        returning: QishuiSemanticAXControlResult(
-                            didPress: true,
-                            diagnostic: targetedResult.diagnostic
-                        )
-                    )
-                } else {
-                    let semanticResult = semanticController.press(command)
-                    continuation.resume(
-                        returning: QishuiSemanticAXControlResult(
-                            didPress: semanticResult.didPress,
-                            diagnostic: semanticResult.didPress
-                                ? semanticResult.diagnostic
-                                : "\(targetedResult.diagnostic) \(semanticResult.diagnostic)"
-                        )
-                    )
-                }
+        let now = Date()
+        let followsRecentTrackControl = command == .playPause
+            && lastTrackControlStartedAt.map { now.timeIntervalSince($0) < 1.0 } == true
+        controlGeneration += 1
+        let controlAttemptGeneration = controlGeneration
+        if command != .playPause {
+            lastTrackControlStartedAt = now
+        }
+        if followsRecentTrackControl {
+            guard await synchronizeAfterQueuedTrackControl(
+                generation: controlAttemptGeneration
+            ) else {
+                return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
             }
+        }
+
+        _ = refreshSourceStatus()
+        if command != .playPause {
+            resetPendingPlaybackOperation(clearTimelineFloor: true)
+        }
+        let requestedState = currentMusicState()
+        let playbackOperationID: Int?
+        if command == .playPause {
+            playbackOperationID = beginPendingPlaybackOperation(
+                requestedState: requestedState
+            )
+            cachedStatus = MusicSourceStatus(
+                sourceName: "汽水音乐",
+                availability: .qishuiControlSent,
+                headline: "正在执行\(command.label)",
+                detail: "已立即切换本地播放状态，等待汽水状态回读确认。",
+                checkedAt: Date()
+            )
+            publishCurrentState()
+        } else {
+            playbackOperationID = nil
+        }
+        let controlResult = await sendControl(
+            command,
+            generation: controlAttemptGeneration
+        )
+        guard controlAttemptGeneration == controlGeneration else {
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
         let didPost = controlResult.didPress
 
-        if command == .playPause, didPost {
-            let currentState = currentMusicState()
-            beginPendingPlaybackOperation(from: currentState)
-        } else if !didPost {
+        if let playbackOperationID {
+            if didPost {
+                if isCurrentPlaybackOperation(playbackOperationID) {
+                    schedulePendingPlaybackConfirmationTimeout(id: playbackOperationID)
+                }
+                cachedStatus = MusicSourceStatus(
+                    sourceName: "汽水音乐",
+                    availability: .qishuiControlSent,
+                    headline: "已执行\(command.label)",
+                    detail: controlResult.diagnostic,
+                    checkedAt: Date()
+                )
+                publishCurrentState()
+            } else {
+                let failureStatus = MusicSourceStatus(
+                    sourceName: "汽水音乐",
+                    availability: .qishuiMediaRemoteCached,
+                    headline: "未执行\(command.label)",
+                    detail: controlResult.diagnostic,
+                    checkedAt: Date()
+                )
+                rollbackPendingPlaybackOperation(id: playbackOperationID, status: failureStatus)
+            }
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: didPost)
+        }
+
+        if !didPost {
             resetPendingPlaybackOperation(clearTimelineFloor: false)
         }
         cachedStatus = MusicSourceStatus(
@@ -289,6 +340,72 @@ final class MusicAdapterCoordinator {
             checkedAt: Date()
         )
         return MusicControlOutcome(status: cachedStatus, didSendCommand: didPost)
+    }
+
+    private func sendControl(
+        _ command: MusicControlCommand,
+        generation: Int
+    ) async -> ControlDispatchResult {
+        guard generation == controlGeneration else {
+            return ControlDispatchResult(
+                didPress: false,
+                diagnostic: "旧控制操作已失效，未触发汽水语义控件。"
+            )
+        }
+        let semanticResult = await pressSemanticControl(command)
+        guard generation == controlGeneration else {
+            return ControlDispatchResult(
+                didPress: false,
+                diagnostic: "旧控制操作已失效，忽略其执行结果。"
+            )
+        }
+        return ControlDispatchResult(
+            didPress: semanticResult.didPress,
+            diagnostic: semanticResult.diagnostic
+        )
+    }
+
+    private func pressSemanticControl(
+        _ command: MusicControlCommand
+    ) async -> QishuiSemanticAXControlResult {
+        let semanticController = qishuiSemanticAXController
+        return await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                continuation.resume(returning: semanticController.press(command))
+            }
+        }
+    }
+
+    private func synchronizeAfterQueuedTrackControl(
+        generation: Int
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                continuation.resume()
+            }
+        }
+        guard generation == controlGeneration,
+              !Task.isCancelled else { return false }
+        do {
+            try await Task.sleep(nanoseconds: 120_000_000)
+        } catch {
+            return false
+        }
+        guard generation == controlGeneration else { return false }
+        while playbackPositionRefreshInFlight {
+            guard generation == controlGeneration,
+                  !Task.isCancelled else { return false }
+            do {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            } catch {
+                return false
+            }
+        }
+        guard generation == controlGeneration else { return false }
+        playbackPositionRefreshInFlight = true
+        _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+        playbackPositionRefreshInFlight = false
+        return generation == controlGeneration
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
@@ -390,9 +507,16 @@ final class MusicAdapterCoordinator {
         return (optimisticMusic, cachedStatus)
     }
 
-    func refreshControlFollowUp() async -> (music: MusicState, status: MusicSourceStatus) {
-        if pendingPlaybackOperation != nil || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline() {
+    func refreshControlFollowUp(
+        forcePositionRefresh: Bool = false
+    ) async -> (music: MusicState, status: MusicSourceStatus) {
+        if (forcePositionRefresh
+            || pendingPlaybackOperation != nil
+            || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
+           !playbackPositionRefreshInFlight {
+            playbackPositionRefreshInFlight = true
             _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+            playbackPositionRefreshInFlight = false
         }
         let status = refreshSourceStatus()
         return (currentMusicState(), status)
@@ -422,6 +546,10 @@ final class MusicAdapterCoordinator {
         }
     }
 
+    private func publishCurrentState() {
+        realtimeUpdateHandler?(currentMusicState(), cachedStatus)
+    }
+
     func refreshSourceStatus(
         promptForPermission: Bool = false,
         allowSynchronousRefresh: Bool = false
@@ -446,9 +574,11 @@ final class MusicAdapterCoordinator {
             return cachedStatus
         }
 
-        let adapterSnapshot = allowSynchronousRefresh
-            ? (mediaRemoteAdapterStreamSource.refreshPlaybackPosition() ?? mediaRemoteAdapterStreamSource.snapshot())
-            : mediaRemoteAdapterStreamSource.snapshot()
+        let canRefreshAdapterInBackground = mediaRemoteAdapterStreamSource.hasAdapterResources()
+        if allowSynchronousRefresh, canRefreshAdapterInBackground {
+            schedulePlaybackPositionRefresh()
+        }
+        let adapterSnapshot = mediaRemoteAdapterStreamSource.snapshot()
 
         if let adapterSnapshot,
            let track = adapterSnapshot.currentTrack {
@@ -483,6 +613,14 @@ final class MusicAdapterCoordinator {
         }
 
         guard allowSynchronousRefresh else {
+            lastSourceRefreshAt = Date()
+            return cachedStatus
+        }
+
+        // Startup and explicit position refreshes must not run a helper process on the UI actor.
+        // The stream and the one in-flight detached refresh will publish the authoritative state.
+        if canRefreshAdapterInBackground,
+           adapterSnapshot == nil || adapterSnapshot?.isAvailable == true {
             lastSourceRefreshAt = Date()
             return cachedStatus
         }
@@ -591,7 +729,8 @@ final class MusicAdapterCoordinator {
 
     private func refreshPlaybackPositionStatus() -> MusicSourceStatus {
         lastPlaybackPositionRefreshAt = Date()
-        return refreshSourceStatus(allowSynchronousRefresh: true)
+        schedulePlaybackPositionRefresh()
+        return refreshSourceStatus()
     }
 
     private func schedulePlaybackPositionRefresh() {
@@ -603,6 +742,7 @@ final class MusicAdapterCoordinator {
             _ = await self.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
             _ = self.refreshSourceStatus()
             self.playbackPositionRefreshInFlight = false
+            self.publishCurrentState()
         }
     }
 
@@ -752,9 +892,13 @@ final class MusicAdapterCoordinator {
             let elapsed: TimeInterval?
             let progress: Double
             if let anchorElapsed, let duration, duration > 0 {
-                let optimisticElapsed = operation.targetIsPlaying
-                    ? anchorElapsed + Date().timeIntervalSince(operation.issuedAt)
-                    : anchorElapsed
+                let optimisticElapsed = PlaybackControlTimeline.optimisticElapsed(
+                    targetIsPlaying: operation.targetIsPlaying,
+                    anchorElapsed: anchorElapsed,
+                    issuedAt: operation.issuedAt,
+                    now: Date(),
+                    duration: duration
+                ) ?? anchorElapsed
                 let clampedElapsed = min(max(optimisticElapsed, 0), duration)
                 elapsed = clampedElapsed
                 progress = min(max(clampedElapsed / duration, 0), 1)
@@ -855,22 +999,34 @@ final class MusicAdapterCoordinator {
     private func updateCachedPlaybackOverride(from track: QishuiDirectTrack, checkedAt: Date) {
         guard let isPlaying = track.isPlaying ?? inferredQishuiIsPlaying else { return }
         let identity = PlaybackTrackIdentity(title: track.title, artist: track.artist)
-        let mediaTrack = latestMediaRemoteSnapshot?.currentTrack
-        let duration = mediaTrack.flatMap { matches(track: $0, identity: identity) ? $0.duration : nil }
-        let elapsedTime: TimeInterval?
-        if let progress = track.progress, let duration, duration > 0 {
-            elapsedTime = min(max(progress, 0), 1) * duration
-        } else if let existing = cachedPlaybackOverride,
-                  matches(existing.trackIdentity, identity),
-                  let existingElapsed = existing.elapsedTime {
-            elapsedTime = existing.isPlaying
-                ? existingElapsed + checkedAt.timeIntervalSince(existing.updatedAt)
-                : existingElapsed
-        } else if let operation = pendingPlaybackOperation,
-                  matches(operation.trackIdentity, identity) {
-            elapsedTime = operation.anchorElapsed
-        } else {
-            elapsedTime = mediaTrack?.elapsedTime
+        let mediaSnapshot = latestMediaRemoteSnapshot
+        let mediaTrack = mediaSnapshot?.currentTrack.flatMap {
+            matches(track: $0, identity: identity) ? $0 : nil
+        }
+        let existingOverride = cachedPlaybackOverride.flatMap {
+            matches($0.trackIdentity, identity) ? $0 : nil
+        }
+        let duration = mediaTrack?.duration ?? existingOverride?.duration
+        let mediaRemoteElapsed = mediaTrack?.elapsedTime.map { elapsed in
+            guard mediaTrack?.isPlaying == true,
+                  existingOverride?.isPlaying != false,
+                  let mediaSnapshot else { return elapsed }
+            return elapsed + max(checkedAt.timeIntervalSince(mediaSnapshot.checkedAt), 0)
+        }
+        let existingElapsed = existingOverride?.elapsedTime.map { elapsed in
+            guard existingOverride?.isPlaying == true,
+                  let updatedAt = existingOverride?.updatedAt else { return elapsed }
+            return elapsed + max(checkedAt.timeIntervalSince(updatedAt), 0)
+        }
+        let elapsedTime = PlaybackControlTimeline.cachedOverrideElapsed(
+            mediaRemoteElapsed: mediaRemoteElapsed,
+            axProgress: track.progress,
+            duration: duration,
+            existingElapsed: existingElapsed,
+            existingIsPlaying: existingOverride?.isPlaying,
+            axIsPlaying: isPlaying
+        ) ?? pendingPlaybackOperation.flatMap { operation in
+            matches(operation.trackIdentity, identity) ? operation.anchorElapsed : nil
         }
 
         cachedPlaybackOverride = CachedPlaybackOverride(
@@ -904,14 +1060,11 @@ final class MusicAdapterCoordinator {
         checkedAt: Date
     ) {
         let duration = track.duration ?? operation.anchorDuration
-        let elapsedTime: TimeInterval?
-        if operation.targetIsPlaying {
-            elapsedTime = track.elapsedTime ?? operation.anchorElapsed
-        } else if let anchorElapsed = operation.anchorElapsed {
-            elapsedTime = max(track.elapsedTime ?? anchorElapsed, anchorElapsed)
-        } else {
-            elapsedTime = track.elapsedTime
-        }
+        let elapsedTime = PlaybackControlTimeline.confirmedElapsed(
+            targetIsPlaying: operation.targetIsPlaying,
+            anchorElapsed: operation.anchorElapsed,
+            confirmedElapsed: track.elapsedTime
+        )
         cachedPlaybackOverride = CachedPlaybackOverride(
             trackIdentity: operation.trackIdentity,
             isPlaying: operation.targetIsPlaying,
@@ -1055,7 +1208,7 @@ final class MusicAdapterCoordinator {
         case .qishuiNotRunning:
             return "未检测到汽水音乐"
         case .accessibilityRequired:
-            return "媒体键控制需要辅助功能权限"
+            return "汽水语义控制需要辅助功能权限"
         case .qishuiMediaRemoteSynced:
             return latestMediaRemoteSnapshot?.diagnostic ?? "已接入 macOS Now Playing 实时事件源"
         case .qishuiMediaRemoteCached:
@@ -1067,7 +1220,7 @@ final class MusicAdapterCoordinator {
         case .systemNowPlayingUnavailable:
             return "手动系统诊断暂不可读"
         case .qishuiControlSent:
-            return "已发送媒体键控制，等待真实状态回读"
+            return "已触发汽水语义控制，等待真实状态回读"
         case .preview:
             return "等待汽水音乐真实数据"
         }
@@ -1145,19 +1298,25 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func beginPendingPlaybackOperation(from currentState: MusicState) {
+    @discardableResult
+    private func beginPendingPlaybackOperation(requestedState: MusicState) -> Int {
         let replacesPendingOperation = pendingPlaybackOperation != nil
+        let targetIsPlaying = !requestedState.isPlaying
         nextPlaybackOperationID += 1
         let operation = PendingPlaybackOperation(
             id: nextPlaybackOperationID,
-            targetIsPlaying: !currentState.isPlaying,
+            targetIsPlaying: targetIsPlaying,
             issuedAt: Date(),
             trackIdentity: PlaybackTrackIdentity(
-                title: currentState.track.title,
-                artist: currentState.track.artist
+                title: requestedState.track.title,
+                artist: requestedState.track.artist
             ),
-            anchorElapsed: currentState.elapsedTime,
-            anchorDuration: currentState.duration,
+            anchorElapsed: PlaybackControlTimeline.anchorElapsed(
+                targetIsPlaying: targetIsPlaying,
+                requestElapsed: requestedState.elapsedTime,
+                dispatchCompletionElapsed: nil
+            ),
+            anchorDuration: requestedState.duration,
             baselineSampleID: latestMediaRemoteSnapshot?.sampleID ?? 0,
             baselineSampleSource: latestMediaRemoteSnapshot?.sampleSource ?? .unknown,
             requiresObservedOppositeState: replacesPendingOperation,
@@ -1175,11 +1334,17 @@ final class MusicAdapterCoordinator {
         }
 
         pendingPlaybackTimeoutTask?.cancel()
-        let timeoutNanoseconds: UInt64 = replacesPendingOperation ? 1_200_000_000 : 4_000_000_000
+        pendingPlaybackTimeoutTask = nil
+        return operation.id
+    }
+
+    private func schedulePendingPlaybackConfirmationTimeout(id: Int) {
+        guard isCurrentPlaybackOperation(id) else { return }
+        pendingPlaybackTimeoutTask?.cancel()
         pendingPlaybackTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            self?.expirePendingPlaybackOperation(id: operation.id)
+            self?.expirePendingPlaybackOperation(id: id)
         }
     }
 
@@ -1217,20 +1382,34 @@ final class MusicAdapterCoordinator {
     }
 
     private func expirePendingPlaybackOperation(id: Int) {
-        guard let operation = pendingPlaybackOperation,
-              operation.id == id else { return }
+        let timeoutStatus = MusicSourceStatus(
+            sourceName: "汽水音乐",
+            availability: .qishuiMediaRemoteCached,
+            headline: "播放状态确认超时",
+            detail: "未收到匹配的汽水状态回读，已恢复请求前的可信播放状态。",
+            checkedAt: Date()
+        )
+        rollbackPendingPlaybackOperation(id: id, status: timeoutStatus)
+    }
 
-        if !operation.targetIsPlaying {
-            let directState = cachedPlaybackOverride.flatMap { override -> Bool? in
-                guard override.updatedAt >= operation.issuedAt,
-                      matches(override.trackIdentity, operation.trackIdentity) else { return nil }
-                return override.isPlaying
-            }
-            if directState != operation.targetIsPlaying {
-                playbackTimelineFloor = nil
-            }
-        }
-        finishPendingPlaybackOperation(id: id)
+    private func rollbackPendingPlaybackOperation(
+        id: Int,
+        status: MusicSourceStatus
+    ) {
+        guard isCurrentPlaybackOperation(id) else { return }
+        pendingPlaybackOperation = nil
+        pendingPlaybackTimeoutTask?.cancel()
+        pendingPlaybackTimeoutTask = nil
+        playbackTimelineFloor = nil
+        cachedStatus = status
+        publishCurrentState()
+    }
+
+    private func isCurrentPlaybackOperation(_ id: Int) -> Bool {
+        PlaybackControlTimeline.isCurrentOperation(
+            completedOperationID: id,
+            currentOperationID: pendingPlaybackOperation?.id
+        )
     }
 
     private func resetPendingPlaybackOperation(clearTimelineFloor: Bool) {

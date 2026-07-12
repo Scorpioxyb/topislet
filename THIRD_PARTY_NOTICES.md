@@ -13,7 +13,7 @@
 - Project patch: `Vendor/MediaRemoteAdapter/patches/topislet-client-targeting.patch`
 - Rebuild script: `Scripts/rebuild-mediaremote-adapter.sh`
 
-The application bundles `MediaRemoteAdapter.framework` and `mediaremote-adapter.pl`. The local adapter interface includes project-specific client-targeted commands used to read and control `com.soda.music` without following the system-wide current media focus.
+The application bundles `MediaRemoteAdapter.framework` and `mediaremote-adapter.pl`. Project-specific `get-client` and `stream-client` commands read the `com.soda.music` state. The experimental `send-client` command is retained for diagnostics only: it does not guarantee isolation from the system-wide current media focus and is not used by product controls.
 
 The exact upstream commit, project patch, build command and byte-for-byte verification record are documented in `Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md`. The committed rebuild script reproduces the bundled universal framework with SHA-256 `3446ebb0889757c8d4cee0ac7a577bbbd530e3ba61225d30b47e3b85d31f95ab` on the recorded toolchain.
 
