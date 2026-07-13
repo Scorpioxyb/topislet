@@ -169,6 +169,7 @@ final class MediaRemoteAdapterStreamSource {
         maxAge: TimeInterval
     ) -> Bool {
         guard maxAge >= 0,
+              deferredTrackPublicationStartedAt == nil,
               let lastPlaybackEvidenceAt,
               let lastPlaybackEvidenceTrackIdentity,
               now >= lastPlaybackEvidenceAt,

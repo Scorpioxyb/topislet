@@ -82,6 +82,103 @@ func metadataOnlyEventDoesNotRefreshPlaybackEvidence() throws {
     ))
 }
 
+@Test("切歌门控期间不能用新曲证据授权上一首快照")
+@MainActor
+func deferredTrackTransitionInvalidatesPlaybackEvidence() throws {
+    let source = MediaRemoteAdapterStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 990)
+    let initial = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-a",
+        "title": "Song A",
+        "artist": "Artist A",
+        "album": "Album A",
+        "duration": 180.0,
+        "playing": 1,
+        "artworkData": Data([0x01]).base64EncodedString()
+    ])
+    let transition = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-b",
+        "title": "Song B",
+        "artist": "Artist B",
+        "album": "Album B",
+        "duration": 200.0,
+        "playing": 0
+    ])
+
+    let committed = try #require(source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 99
+    ))
+    let deferred = try #require(source.ingestStreamEnvelopeForTesting(
+        transition,
+        receivedAt: startedAt.addingTimeInterval(0.2),
+        receivedUptime: 99.2
+    ))
+
+    #expect(committed.currentTrack?.title == "Song A")
+    #expect(deferred.currentTrack?.title == "Song A")
+    #expect(!source.hasFreshVerifiedPlaybackEvidence(
+        at: startedAt.addingTimeInterval(0.3),
+        maxAge: 1.0
+    ))
+}
+
+@Test("切歌门控期间位置刷新成功也不能授权旧快照")
+@MainActor
+func deferredPositionRefreshCannotAuthorizePreviousSnapshot() throws {
+    let source = MediaRemoteAdapterStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 995)
+    let initial = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-a",
+        "title": "Song A",
+        "artist": "Artist A",
+        "album": "Album A",
+        "duration": 180.0,
+        "playing": 1,
+        "artworkData": Data([0x01]).base64EncodedString()
+    ])
+    let transition = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-b",
+        "title": "Song B",
+        "artist": "Artist B",
+        "album": "Album B",
+        "duration": 200.0,
+        "playing": 0
+    ])
+
+    _ = source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 99.5
+    )
+    _ = source.ingestStreamEnvelopeForTesting(
+        transition,
+        receivedAt: startedAt.addingTimeInterval(0.2),
+        receivedUptime: 99.7
+    )
+    let refreshed = try #require(source.applyPlaybackPositionPayloadForTesting(
+        [
+            "contentItemIdentifier": "song-b",
+            "elapsedTimeNow": 0.0,
+            "playing": 0,
+            "playbackRate": 0.0
+        ],
+        receivedAt: startedAt.addingTimeInterval(0.3),
+        receivedUptime: 99.8
+    ))
+
+    #expect(refreshed.currentTrack?.title == "Song A")
+    #expect(!source.hasFreshVerifiedPlaybackEvidence(
+        at: startedAt.addingTimeInterval(0.4),
+        maxAge: 1.0
+    ))
+}
+
 @Test("元数据差分不能把缓存的 elapsedTimeNow 重新锚定为旧进度")
 @MainActor
 func metadataDiffDoesNotReanchorCachedElapsedTimeNow() throws {
