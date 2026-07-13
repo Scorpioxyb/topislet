@@ -33,6 +33,7 @@
 - 2026-07-13 定位到汽水重启后按钮偶发无反应的根因：Electron/Chromium 的 `AXManualAccessibility` 默认为 `0`，此时只能扫描到不完整控件树；对汽水 PID 的 AXApplication 设置该属性为 `1` 后，无需激活汽水即可稳定发现底部三个语义控件。QuickTime 前台实测播放/暂停、下一首、上一首均只影响汽水。
 - 2026-07-12 定向控制迁移到现有 `/usr/bin/perl` + MediaRemoteAdapter：Adapter 新增 `send-client`，仅接受命令 2/4/5；该入口现仅用于诊断研究。运行链不再调用 `/usr/bin/python3`。
 - 2026-07-09 进度条修正：AX 窗口树会同时暴露当前播放、列表项、旧歌和其他区域的多个 `mm:ss / mm:ss` 文本，不能作为可信进度来源。当前主进度只认 MediaRemote Adapter 的 `elapsedTime/duration`；当媒体焦点被抢走但仍保留最近可信汽水快照时，按最近可信播放态本地推进进度。AX fallback 的 `progress=unavailable` 是刻意降级，避免显示假进度。
+- 2026-07-13 汽水 2.9.1 进度轨道可写性复核：底部播放器栏的轨道、已播放宽度和滑块外观均只暴露为 `AXGroup`，`AXValue` 实测为只读，且没有 `AXSlider`、`AXMinValue`、`AXMaxValue` 或增减动作。`QishuiProbe --settable-attributes` 可输出这些属性的可写性；在出现唯一、可写、可回读确认的汽水专属控件前，产品继续禁用 seek。
 
 ## 架构含义
 
@@ -67,6 +68,7 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 ```bash
 swift run QishuiProbe --summary-only --depth 8
 swift run QishuiProbe --summary-only --depth 12
+swift run QishuiProbe --depth 18 --children 220 --settable-attributes --no-system-extras --no-cg --no-ipc --no-static-asar
 swift run QishuiStateProbe
 swift run QishuiStateProbe --watch 20
 .build/debug/MacBookIsland --qishui-status

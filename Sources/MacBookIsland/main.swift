@@ -3085,7 +3085,10 @@ struct ExpandedMusic: View {
 
                 HStack(spacing: 12) {
                     ControlButton(
-                        icon: "backward.fill"
+                        icon: "backward.fill",
+                        feedbackToken: model.pendingTrackControl == .previousTrack
+                            ? model.trackControlFeedbackGeneration
+                            : 0
                     ) {
                         model.previousTrack()
                     }
@@ -3097,7 +3100,10 @@ struct ExpandedMusic: View {
                     .help(model.music.isPlaying ? "暂停" : "播放")
 
                     ControlButton(
-                        icon: "forward.fill"
+                        icon: "forward.fill",
+                        feedbackToken: model.pendingTrackControl == .nextTrack
+                            ? model.trackControlFeedbackGeneration
+                            : 0
                     ) {
                         model.nextTrack()
                     }
@@ -3417,20 +3423,57 @@ struct ControlButton: View {
     let icon: String
     var prominent = false
     var size: CGFloat = 30
+    var feedbackToken: UInt64 = 0
     let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var feedbackPulse = false
+    @State private var feedbackTask: Task<Void, Never>?
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: prominent ? 13 : 12, weight: .bold))
-                .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.86))
-                .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
-                .background(
-                    Circle()
-                        .fill(prominent ? Color.white : Color.white.opacity(0.1))
-                )
+            ZStack {
+                Circle()
+                    .fill(
+                        prominent
+                            ? Color.white
+                            : Color.white.opacity(feedbackPulse ? 0.24 : 0.1)
+                    )
+
+                Image(systemName: icon)
+                    .font(.system(size: prominent ? 13 : 12, weight: .bold))
+                    .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
+                    .scaleEffect(
+                        feedbackPulse && !reduceMotion && !prominent ? 1.1 : 1
+                    )
+            }
+            .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
         }
         .buttonStyle(IslandControlButtonStyle())
+        .onChange(of: feedbackToken) { _, token in
+            guard token > 0, !prominent else { return }
+            triggerFeedbackPulse(token: token)
+        }
+        .onDisappear {
+            feedbackTask?.cancel()
+            feedbackTask = nil
+        }
+    }
+
+    private func triggerFeedbackPulse(token: UInt64) {
+        feedbackTask?.cancel()
+        feedbackPulse = false
+        withAnimation(.easeOut(duration: reduceMotion ? 0.05 : 0.08)) {
+            feedbackPulse = true
+        }
+
+        feedbackTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: reduceMotion ? 90_000_000 : 120_000_000)
+            guard !Task.isCancelled, token == feedbackToken else { return }
+            withAnimation(.easeOut(duration: reduceMotion ? 0.08 : 0.14)) {
+                feedbackPulse = false
+            }
+        }
     }
 }
 

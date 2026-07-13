@@ -17,6 +17,7 @@ struct ProbeConfig {
     var includeStaticAsar = true
     var includeMediaRemote = false
     var promptForAccessibility = false
+    var includeSettableAttributes = false
     var maxStaticMatchesPerCategory = 24
 }
 
@@ -354,6 +355,9 @@ final class AXProbe {
         let actions = actionNames(element)
         let frame = frameDescription(element)
         let attributeNames = includeAttributeNames(element)
+        let settableAttributes = config.includeSettableAttributes
+            ? settableAttributeDescriptions(element, attributeNames: attributeNames)
+            : []
 
         let candidate = Candidate(
             path: path,
@@ -380,6 +384,9 @@ final class AXProbe {
             if !frame.isEmpty { parts.append("frame=\(frame)") }
             if config.includeAttributeNames, !attributeNames.isEmpty {
                 parts.append("attrs=\(attributeNames.joined(separator: ","))")
+            }
+            if !settableAttributes.isEmpty {
+                parts.append("settable=\(settableAttributes.joined(separator: ","))")
             }
             print("\(indent)- \(path) \(parts.joined(separator: " "))")
         }
@@ -615,6 +622,31 @@ final class AXProbe {
         let result = AXUIElementCopyAttributeNames(element, &names)
         guard result == .success, let names else { return [] }
         return ((names as? [String]) ?? []).sorted()
+    }
+
+    private func settableAttributeDescriptions(
+        _ element: AXUIElement,
+        attributeNames: [String]
+    ) -> [String] {
+        let inspectedAttributes = [
+            kAXValueAttribute as String,
+            kAXMinValueAttribute as String,
+            kAXMaxValueAttribute as String
+        ]
+
+        return inspectedAttributes.compactMap { attribute in
+            guard attributeNames.contains(attribute) else { return nil }
+            var isSettable = DarwinBoolean(false)
+            let result = AXUIElementIsAttributeSettable(
+                element,
+                attribute as CFString,
+                &isSettable
+            )
+            guard result == .success else {
+                return "\(attribute):error(\(result.rawValue))"
+            }
+            return "\(attribute):\(isSettable.boolValue)"
+        }
     }
 
     private func childElements(_ element: AXUIElement) -> [AXUIElement] {
@@ -1239,6 +1271,10 @@ if args.contains("--media-remote") {
 
 if args.contains("--prompt-accessibility") {
     config.promptForAccessibility = true
+}
+
+if args.contains("--settable-attributes") {
+    config.includeSettableAttributes = true
 }
 
 if args.contains("--no-system-extras") {
