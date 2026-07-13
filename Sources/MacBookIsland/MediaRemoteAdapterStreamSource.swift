@@ -73,6 +73,8 @@ final class MediaRemoteAdapterStreamSource {
     private let lastVerifiedQishuiSnapshotTTL: TimeInterval = 5 * 60
     private var sampleID: UInt64 = 0
     private var sampleOrigin: MediaRemoteSampleOrigin = .unknown
+    private var lastPlaybackEvidenceAt: Date?
+    private var lastPlaybackEvidenceTrackIdentity: String?
     private var isStopping = false
     private var changeHandler: ChangeHandler?
 
@@ -162,6 +164,25 @@ final class MediaRemoteAdapterStreamSource {
         return snapshot.isVerifiedQishuiSource
     }
 
+    func hasFreshVerifiedPlaybackEvidence(
+        at now: Date = Date(),
+        maxAge: TimeInterval
+    ) -> Bool {
+        guard maxAge >= 0,
+              let lastPlaybackEvidenceAt,
+              let lastPlaybackEvidenceTrackIdentity,
+              now >= lastPlaybackEvidenceAt,
+              now.timeIntervalSince(lastPlaybackEvidenceAt) <= maxAge,
+              lastPlaybackEvidenceTrackIdentity == payloadTrackIdentity(mergedPayload),
+              let snapshot = latestRawSnapshot ?? latestSnapshot,
+              snapshot.isVerifiedQishuiSource,
+              snapshot.currentTrack != nil,
+              snapshot.sampleOrigin != .cached else {
+            return false
+        }
+        return true
+    }
+
     func hasPendingSeekTimeline() -> Bool {
         guard let anchor = seekTimelineAnchor else { return false }
         if anchor.didObserveTarget || Date() < anchor.confirmationDeadline {
@@ -193,6 +214,8 @@ final class MediaRemoteAdapterStreamSource {
         artworkCacheOrder.removeAll()
         clearSeekTimelineAnchor()
         sampleOrigin = .unknown
+        lastPlaybackEvidenceAt = nil
+        lastPlaybackEvidenceTrackIdentity = nil
     }
 
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
@@ -219,6 +242,11 @@ final class MediaRemoteAdapterStreamSource {
         }
 
         advanceSample(origin: .synchronousRead)
+        recordPlaybackEvidenceIfPresent(
+            payload,
+            identityPayload: payload,
+            receivedAt: Date()
+        )
         let rawSnapshot = snapshot(
             from: payload,
             existingArtwork: nil,
@@ -274,6 +302,11 @@ final class MediaRemoteAdapterStreamSource {
             return latestSnapshot
         }
         mergedPayload.merge(payload) { _, new in new }
+        recordPlaybackEvidenceIfPresent(
+            payload,
+            identityPayload: mergedPayload,
+            receivedAt: receivedAt
+        )
         if deferredTrackPublicationStartedAt != nil {
             return latestSnapshot
         }
@@ -338,11 +371,17 @@ final class MediaRemoteAdapterStreamSource {
 
     private func handleLine(_ lineData: Data, onChange: @escaping ChangeHandler) {
         guard let envelope = decodedStreamEnvelope(lineData) else { return }
+        let receivedAt = Date()
         let payload = envelope.payload
         if holdTransientEmptyPayloadIfNeeded(payload) {
             return
         }
-        mergeObservedStreamPayload(payload, isDiff: envelope.isDiff)
+        mergeObservedStreamPayload(payload, isDiff: envelope.isDiff, observedAt: receivedAt)
+        recordPlaybackEvidenceIfPresent(
+            payload,
+            identityPayload: mergedPayload,
+            receivedAt: receivedAt
+        )
 
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
@@ -483,6 +522,11 @@ final class MediaRemoteAdapterStreamSource {
             isDiff: envelope.isDiff,
             observedAt: receivedAt
         )
+        recordPlaybackEvidenceIfPresent(
+            envelope.payload,
+            identityPayload: mergedPayload,
+            receivedAt: receivedAt
+        )
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
             : shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload)
@@ -620,6 +664,11 @@ final class MediaRemoteAdapterStreamSource {
                    let payload = object as? [String: Any],
                    self.payloadTrackIdentity(payload) == targetIdentity {
                     self.mergedPayload = payload
+                    self.recordPlaybackEvidenceIfPresent(
+                        payload,
+                        identityPayload: payload,
+                        receivedAt: Date()
+                    )
                     if self.shouldDeferDeferredTrackPublication(payload),
                        Date().timeIntervalSince(
                         self.deferredTrackPublicationStartedAt ?? Date()
@@ -885,6 +934,23 @@ final class MediaRemoteAdapterStreamSource {
     private func advanceSample(origin: MediaRemoteSampleOrigin) {
         sampleID &+= 1
         sampleOrigin = origin
+    }
+
+    private func recordPlaybackEvidenceIfPresent(
+        _ payload: [String: Any],
+        identityPayload: [String: Any],
+        receivedAt: Date
+    ) {
+        let hasPlaybackState = boolValue(payload["playing"]) != nil
+            || doubleValue(payload["playbackRate"]) != nil
+        let hasPlaybackPosition = doubleValue(payload["elapsedTimeNow"]) != nil
+            || doubleValue(payload["elapsedTime"]) != nil
+        guard hasPlaybackState || hasPlaybackPosition,
+              let identity = payloadTrackIdentity(identityPayload) else {
+            return
+        }
+        lastPlaybackEvidenceAt = receivedAt
+        lastPlaybackEvidenceTrackIdentity = identity
     }
 
     private func requestFreshMetadataIfNeeded(

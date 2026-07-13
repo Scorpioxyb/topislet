@@ -33,6 +33,55 @@ func invalidatedQishuiSessionCannotRestorePreviousTrack() throws {
     #expect(afterLatePosition?.currentTrack == nil)
 }
 
+@Test("轮询旧 payload 不能伪造新鲜播放证据")
+@MainActor
+func pollingMergedPayloadDoesNotRefreshPlaybackEvidence() throws {
+    let source = MediaRemoteAdapterStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 950)
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTimeNow":30}}"#.utf8)
+
+    _ = source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 95
+    )
+
+    #expect(source.hasFreshVerifiedPlaybackEvidence(
+        at: startedAt.addingTimeInterval(0.5),
+        maxAge: 1.0
+    ))
+    _ = source.snapshot()
+    #expect(!source.hasFreshVerifiedPlaybackEvidence(
+        at: startedAt.addingTimeInterval(2.0),
+        maxAge: 1.0
+    ))
+}
+
+@Test("纯元数据事件不能延长播放证据有效期")
+@MainActor
+func metadataOnlyEventDoesNotRefreshPlaybackEvidence() throws {
+    let source = MediaRemoteAdapterStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 980)
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTimeNow":30}}"#.utf8)
+    let metadata = Data(#"{"type":"data","diff":true,"payload":{"album":"Album A"}}"#.utf8)
+
+    _ = source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 98
+    )
+    _ = source.ingestStreamEnvelopeForTesting(
+        metadata,
+        receivedAt: startedAt.addingTimeInterval(2),
+        receivedUptime: 100
+    )
+
+    #expect(!source.hasFreshVerifiedPlaybackEvidence(
+        at: startedAt.addingTimeInterval(2.1),
+        maxAge: 1.0
+    ))
+}
+
 @Test("元数据差分不能把缓存的 elapsedTimeNow 重新锚定为旧进度")
 @MainActor
 func metadataDiffDoesNotReanchorCachedElapsedTimeNow() throws {

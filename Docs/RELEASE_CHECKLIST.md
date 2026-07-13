@@ -1,6 +1,6 @@
 # GitHub 发布检查清单
 
-目标版本：`v0.1.1-alpha.2`
+目标版本：`v0.1.1-alpha.3`
 App 版本：`0.1.1 (17)`
 目标平台：macOS 26.0+、带刘海的 Apple Silicon MacBook
 

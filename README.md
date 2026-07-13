@@ -7,7 +7,7 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.1-alpha 开发者预览版**，优先验证汽水音乐同步、安全媒体控制和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.1-alpha.3 开发者预览版**，优先验证汽水音乐同步、安全媒体控制、Apple Music 实验适配和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
@@ -17,8 +17,9 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 
 - 围绕 MacBook 摄像头区域显示折叠、紧凑和展开三种状态。
 - 读取汽水音乐的真实歌名、歌手、封面、播放状态与进度。
-- 播放 / 暂停、上一首、下一首只触发汽水窗口内经过结构校验的唯一语义控件，不发送全局媒体键。
+- 汽水播放 / 暂停、上一首、下一首只触发汽水窗口内经过结构校验的唯一语义控件，不发送全局媒体键。
 - 进度条显示汽水专属可信进度；当前保持只读，不发送系统全局跳转命令。
+- Apple Music 实验适配可读取歌曲、播放状态与进度，并通过定向 Apple Event 控制播放、切歌和绝对进度；汽水与 Apple Music 同时可用时按真实播放状态自动选择，汽水同时播放时优先。
 - 计时器按需接管灵动岛，结束后恢复音乐活动。
 - 日历和提醒事项经过用户单独授权后，可提供低打扰临近提醒。
 - 支持悬停展开、移开收回、点击固定展开和刘海位置校准。
@@ -29,7 +30,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 | --- | --- |
 | macOS | **macOS 26.0 或更高版本** |
 | 设备 | 优先支持带刘海的 Apple Silicon MacBook |
-| 音乐来源 | 汽水音乐，Bundle ID `com.soda.music` |
+| 音乐来源 | 汽水音乐；实验支持 Apple Music |
 | 源码构建 | Xcode Command Line Tools、Swift 6 |
 
 > MediaRemote Adapter 当前二进制的最低系统版本为 macOS 26.0，因此项目不再宣称兼容 macOS 14。其他系统版本需要重新构建并单独验证该依赖。
@@ -76,6 +77,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 3. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
 4. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
 5. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
+6. 使用 Apple Music 实验适配时，在“设置 → 音乐”中检查并授权“自动化 - Apple Music”。顶屿不会自动启动 Apple Music。
 
 > 从旧版“MacBook 灵动岛”升级：先退出旧版并将旧 `.app` 移到废纸篓，避免两个进程同时显示顶部岛。由于 App 显示名和 Bundle ID 已更改，macOS 会把顶屿识别为新的 App；首次启动后需要重新授予辅助功能权限，如启用日程功能，也需要重新授予日历和提醒事项权限。旧版布局和设置可能不会自动迁移。
 
@@ -84,6 +86,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 | 权限 | 是否必需 | 用途 |
 | --- | --- | --- |
 | 辅助功能 | 音乐控制必需 | 识别并触发汽水进程内经过结构校验的唯一语义控件 |
+| 自动化 - Apple Music | 使用 Apple Music 时必需 | 按具体 Apple Music 进程读取播放状态并发送定向控制 |
 | 日历 | 可选 | 读取临近开始的定时日程 |
 | 提醒事项 | 可选 | 读取刚到期且具有具体时间的提醒 |
 | 屏幕录制 | 不需要 | 项目不使用 OCR 或屏幕录制同步音乐 |
@@ -92,7 +95,8 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 
 ## 已知限制
 
-- 当前只对汽水音乐进行了产品级适配，其他媒体应用不会自动获得完整控制能力。
+- 汽水音乐是当前产品级主适配；Apple Music 仍是实验适配，暂不提供专辑封面和歌词。
+- 除汽水和 Apple Music 外，其他媒体应用不会自动获得完整控制能力。
 - 项目依赖 macOS 非公开 MediaRemote 能力，系统更新可能导致兼容性变化。
 - 当前没有汽水专属定向 seek 接口，因此进度条保持只读。
 - Developer ID 签名与 Apple 公证尚未完成，当前本机包只是 ad-hoc 签名开发包。
@@ -102,6 +106,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 
 ```bash
 .build/debug/MacBookIsland --music-adapters
+.build/debug/MacBookIsland --apple-music-status
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --qishui-status
 .build/debug/MacBookIsland --mediaremote-status

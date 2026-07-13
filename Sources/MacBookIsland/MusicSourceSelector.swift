@@ -1,0 +1,167 @@
+import Foundation
+
+enum MusicSourceID: Equatable, Sendable {
+    case qishui
+    case appleMusic
+}
+
+enum MusicSourcePlaybackLevel: Equatable, Sendable {
+    case playing
+    case paused
+    case unknown
+}
+
+struct MusicSourceCandidate: Equatable, Sendable {
+    let source: MusicSourceID
+    let isAvailable: Bool
+    let hasTrack: Bool
+    let playback: MusicSourcePlaybackLevel
+    let isCached: Bool
+
+    var isSelectable: Bool {
+        isAvailable && hasTrack
+    }
+}
+
+struct MusicSourceSelection: Equatable, Sendable {
+    let source: MusicSourceID?
+    let generation: UInt64
+}
+
+final class MusicSourceSelector {
+    private(set) var selection = MusicSourceSelection(source: nil, generation: 0)
+    private var pendingSource: MusicSourceID?
+    private var pendingSince: Date?
+
+    func update(
+        qishui: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate,
+        at now: Date = Date()
+    ) -> MusicSourceSelection {
+        let currentCandidate = candidate(
+            for: selection.source,
+            qishui: qishui,
+            appleMusic: appleMusic
+        )
+        let preferred = preferredSource(
+            current: selection.source,
+            qishui: qishui,
+            appleMusic: appleMusic
+        )
+
+        if selection.source == nil || currentCandidate?.isSelectable != true {
+            return commit(preferred)
+        }
+        guard preferred != selection.source else {
+            clearPending()
+            return selection
+        }
+        guard let preferred else {
+            return commit(nil)
+        }
+
+        if pendingSource != preferred {
+            pendingSource = preferred
+            pendingSince = now
+            return selection
+        }
+        let delay: TimeInterval = preferred == .qishui ? 0.25 : 0.8
+        guard let pendingSince,
+              now.timeIntervalSince(pendingSince) >= delay else {
+            return selection
+        }
+        return commit(preferred)
+    }
+
+    func resolveForControl(
+        qishui: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate,
+        at now: Date = Date()
+    ) -> MusicSourceSelection {
+        let preferred = preferredSource(
+            current: selection.source,
+            qishui: qishui,
+            appleMusic: appleMusic
+        )
+        guard preferred != selection.source,
+              let preferredCandidate = candidate(
+                  for: preferred,
+                  qishui: qishui,
+                  appleMusic: appleMusic
+              ) else {
+            return update(qishui: qishui, appleMusic: appleMusic, at: now)
+        }
+
+        if preferredCandidate.isSelectable,
+           preferredCandidate.playback == .playing,
+           !preferredCandidate.isCached {
+            return commit(preferred)
+        }
+        return update(qishui: qishui, appleMusic: appleMusic, at: now)
+    }
+
+    private func preferredSource(
+        current: MusicSourceID?,
+        qishui: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate
+    ) -> MusicSourceID? {
+        let qishuiPlaying = qishui.isSelectable
+            && qishui.playback == .playing
+            && !qishui.isCached
+        let appleMusicPlaying = appleMusic.isSelectable
+            && appleMusic.playback == .playing
+
+        if qishuiPlaying {
+            return .qishui
+        }
+        if appleMusicPlaying {
+            return .appleMusic
+        }
+
+        if let current,
+           candidate(
+               for: current,
+               qishui: qishui,
+               appleMusic: appleMusic
+           )?.isSelectable == true {
+            return current
+        }
+        if qishui.isSelectable {
+            return .qishui
+        }
+        if appleMusic.isSelectable {
+            return .appleMusic
+        }
+        return nil
+    }
+
+    private func candidate(
+        for source: MusicSourceID?,
+        qishui: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate
+    ) -> MusicSourceCandidate? {
+        switch source {
+        case .qishui:
+            return qishui
+        case .appleMusic:
+            return appleMusic
+        case nil:
+            return nil
+        }
+    }
+
+    private func commit(_ source: MusicSourceID?) -> MusicSourceSelection {
+        clearPending()
+        guard source != selection.source else { return selection }
+        selection = MusicSourceSelection(
+            source: source,
+            generation: selection.generation &+ 1
+        )
+        return selection
+    }
+
+    private func clearPending() {
+        pendingSource = nil
+        pendingSince = nil
+    }
+}

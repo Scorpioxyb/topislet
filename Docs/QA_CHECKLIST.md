@@ -14,6 +14,16 @@
 - 三个汽水控制按钮只触发汽水 PID 内的唯一语义 AX 控件，不得启动 `/usr/bin/perl` 的 `send-client` 或 `/usr/bin/python3` 控制脚本。
 - 汽水重启后先确认 `AXManualAccessibility=0`；第一次控制应在不激活汽水的情况下自动置为 `1` 并成功，QuickTime / 抖音前台状态不变。
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
+- 安装包包含 `NSAppleEventsUsageDescription` 和 `com.apple.security.automation.apple-events` entitlement。
+
+## Apple Music 实验适配
+
+- Apple Music 未运行时顶屿不会自动启动它，汽水显示与控制不受影响。
+- 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、播放状态、进度与可用控制。
+- 汽水暂停且 Apple Music 播放时，岛在稳定窗口后切到 Apple Music；两者同时播放时汽水优先。
+- Apple Music 刚开始播放后立即点击控制，命令必须发给 Apple Music，汽水曲目、播放态和进度不变。
+- Apple Music 播放 / 暂停、下一首和绝对进度跳转只影响 Music 进程；抖音、QuickTime 和汽水不得变化。
+- Apple Music 退出或进程 PID 变化后，旧快照和旧控制请求立即失效，不自动重启 Music。
 
 ## 日历与提醒事项
 

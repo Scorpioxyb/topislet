@@ -507,6 +507,11 @@ final class IslandModel: ObservableObject {
     )
     @Published private(set) var appleMusicAutomationAccess: AppleMusicAutomationAccess = .unavailable(status: -1)
     @Published private(set) var appleMusicIsRunning = false
+    @Published private(set) var appleMusicConnectionStatus = "尚未检查"
+    @Published private(set) var appleMusicTrackStatus = "--"
+    @Published private(set) var appleMusicPlaybackStatus = "未知"
+    @Published private(set) var appleMusicProgressStatus = "--:--"
+    @Published private(set) var appleMusicAvailableControls = "无"
     @Published var timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
     @Published var notification = IslandNotification(
         title: "",
@@ -518,6 +523,7 @@ final class IslandModel: ObservableObject {
     @Published var isVisible = true
 
     private let musicAdapter = MusicAdapterCoordinator()
+    private let appleMusicDiagnosticAdapter = AppleMusicAppAdapter()
     private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
@@ -829,8 +835,8 @@ final class IslandModel: ObservableObject {
     }
 
     func showMusicSourceStatus() {
-        let status = musicAdapter.refreshSourceStatus()
-        applyMusicUpdate(musicAdapter.currentState(), status: status, forceMusic: true)
+        let update = musicAdapter.refreshPlaybackPositionNow()
+        applyMusicUpdate(update.music, status: update.status, forceMusic: true)
     }
 
     func showAccessibilityStatus() {
@@ -858,6 +864,80 @@ final class IslandModel: ObservableObject {
         }
         appleMusicAutomationAccess = AppleMusicAppAdapter.automationAccess(prompt: true)
         appleMusicIsRunning = AppleMusicAppAdapter.isRunning
+        if appleMusicAutomationAccess == .allowed {
+            Task { [weak self] in
+                await self?.refreshAppleMusicSnapshot()
+            }
+        }
+    }
+
+    func refreshAppleMusicSnapshot() async {
+        refreshAppleMusicStatus()
+        guard appleMusicIsRunning else {
+            appleMusicConnectionStatus = "未运行"
+            appleMusicTrackStatus = "--"
+            appleMusicPlaybackStatus = "未知"
+            appleMusicProgressStatus = "--:--"
+            appleMusicAvailableControls = "无"
+            return
+        }
+        guard appleMusicAutomationAccess == .allowed else {
+            appleMusicConnectionStatus = appleMusicAutomationAccess.displayName
+            appleMusicTrackStatus = "--"
+            appleMusicPlaybackStatus = "未知"
+            appleMusicProgressStatus = "--:--"
+            appleMusicAvailableControls = "无"
+            return
+        }
+
+        let snapshot = await appleMusicDiagnosticAdapter.snapshot(refresh: .metadata)
+        switch snapshot.availability {
+        case .ready:
+            appleMusicConnectionStatus = "连接正常"
+        case .notRunning:
+            appleMusicConnectionStatus = "未运行"
+        case let .degraded(reason):
+            appleMusicConnectionStatus = "读取失败：\(reason)"
+        case let .permissionRequired(permission):
+            appleMusicConnectionStatus = "需要权限：\(permission)"
+        case let .unavailable(reason):
+            appleMusicConnectionStatus = "不可用：\(reason)"
+        }
+
+        if let track = snapshot.track {
+            appleMusicTrackStatus = [track.title, track.artist]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " - ")
+        } else {
+            appleMusicTrackStatus = "无当前歌曲"
+        }
+        switch snapshot.playbackState {
+        case .playing:
+            appleMusicPlaybackStatus = "播放中"
+        case .paused:
+            appleMusicPlaybackStatus = "已暂停"
+        case .stopped:
+            appleMusicPlaybackStatus = "已停止"
+        case .unknown:
+            appleMusicPlaybackStatus = "未知"
+        }
+        if let timeline = snapshot.timeline {
+            appleMusicProgressStatus = "\(mediaTimeText(timeline.elapsedTime)) / \(mediaTimeText(timeline.duration))"
+        } else {
+            appleMusicProgressStatus = "--:--"
+        }
+        appleMusicAvailableControls = [
+            snapshot.controls.supports(.playPause) ? "播放暂停" : nil,
+            snapshot.controls.supports(.previousTrack) ? "上一首" : nil,
+            snapshot.controls.supports(.nextTrack) ? "下一首" : nil,
+            snapshot.controls.supports(.absoluteSeek) ? "进度跳转" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: "、")
+        if appleMusicAvailableControls.isEmpty {
+            appleMusicAvailableControls = "无"
+        }
     }
 
     func openAppleMusicAutomationSettings() {
@@ -886,6 +966,7 @@ final class IslandModel: ObservableObject {
         let result = await musicAdapter.seek(to: progress, interaction: interaction)
         guard requestID == musicSeekRequestID else { return true }
         let didSeek = result.status.availability == .qishuiControlSent
+            || result.status.availability == .appleMusicControlSent
         pendingMusicSeek = nil
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
         if didSeek {
@@ -2383,9 +2464,14 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("音乐控制", value: "汽水语义控件直控")
+                LabeledContent(
+                    "音乐控制",
+                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
+                        ? "Apple Event 定向"
+                        : "汽水语义控件定向"
+                )
 
-                Text("播放、暂停和切歌只触发汽水音乐窗口内经过结构校验的唯一语义控件；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
+                Text("控制只发送给当前选中的已适配音乐应用；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2396,7 +2482,7 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("默认主活动", value: "汽水音乐")
+                LabeledContent("默认主活动", value: "汽水优先自动切换")
 
                 Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
                     .font(.system(size: 12))
@@ -2444,6 +2530,7 @@ private struct GeneralSettingsPane: View {
 
 private struct MusicSettingsPane: View {
     @ObservedObject var model: IslandModel
+    @State private var isCheckingAppleMusic = false
 
     private var diagnosticText: String {
         [
@@ -2480,6 +2567,11 @@ private struct MusicSettingsPane: View {
                     "自动化权限",
                     value: model.appleMusicAutomationAccess.displayName
                 )
+                LabeledContent("连接状态", value: model.appleMusicConnectionStatus)
+                LabeledContent("当前歌曲", value: model.appleMusicTrackStatus)
+                LabeledContent("播放状态", value: model.appleMusicPlaybackStatus)
+                LabeledContent("播放进度", value: model.appleMusicProgressStatus)
+                LabeledContent("可用控制", value: model.appleMusicAvailableControls)
 
                 HStack {
                     Button("检查状态") {
@@ -2498,6 +2590,15 @@ private struct MusicSettingsPane: View {
                             model.requestAppleMusicAutomationAccess()
                         }
                     }
+
+                    Button("测试连接") {
+                        isCheckingAppleMusic = true
+                        Task {
+                            await model.refreshAppleMusicSnapshot()
+                            isCheckingAppleMusic = false
+                        }
+                    }
+                    .disabled(isCheckingAppleMusic)
                 }
             }
 
@@ -2506,11 +2607,16 @@ private struct MusicSettingsPane: View {
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
                 LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
-                LabeledContent("控制策略", value: "汽水唯一语义 AX")
+                LabeledContent(
+                    "控制策略",
+                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
+                        ? "Apple Event 定向"
+                        : "汽水唯一语义 AX"
+                )
             }
 
             Section {
-                Button("立即刷新汽水状态") {
+                Button("立即刷新当前音乐") {
                     model.showMusicSourceStatus()
                 }
 
