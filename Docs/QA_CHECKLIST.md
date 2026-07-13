@@ -4,7 +4,7 @@
 
 - `swift build` 能通过。
 - `Scripts/package-app.sh` 能生成并安装 `/Applications/顶屿.app`。
-- `Scripts/build-release.sh` 能生成 `TopIslet-v0.1.0-arm64.dmg` 和对应 `.sha256`；DMG 可只读挂载，顶层包含“顶屿.app”与指向 `/Applications` 的快捷入口。
+- `Scripts/build-release.sh` 能生成 `TopIslet-v0.1.1-arm64.dmg` 和对应 `.sha256`；DMG 可只读挂载，顶层包含“顶屿.app”与指向 `/Applications` 的快捷入口。
 - 安装包的 `Info.plist` 包含 `CFBundleIconFile=IslandAppIcon`，`Contents/Resources/IslandAppIcon.icns` 存在，并在 Finder、程序坞和“关于”窗口显示新图标。
 - `codesign --verify --deep --strict --verbose=2 "/Applications/顶屿.app"` 通过。
 - `file "/Applications/顶屿.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。
@@ -12,6 +12,7 @@
 - 从旧原型升级时，macOS 会按新 Bundle ID 识别顶屿；辅助功能、日历和提醒事项权限需重新授权。
 - 正常运行进程不包含 `--preview-mode` 或 `--preview-feature` 参数。
 - 三个汽水控制按钮只触发汽水 PID 内的唯一语义 AX 控件，不得启动 `/usr/bin/perl` 的 `send-client` 或 `/usr/bin/python3` 控制脚本。
+- 汽水重启后先确认 `AXManualAccessibility=0`；第一次控制应在不激活汽水的情况下自动置为 `1` 并成功，QuickTime / 抖音前台状态不变。
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
 
 ## 日历与提醒事项
@@ -34,7 +35,7 @@
 - 播放/暂停后按钮状态能回读，不长期停留在 pending。
 - 进度条只使用汽水专属 MediaRemote Adapter 的可信 `elapsedTime / duration`；AX 列表时间不得覆盖主进度。
 - 播放中连续读取 `--adapter-status` 时，`elapsedTime` 和 `progress` 应稳定递增，不应倒退或跳到旧歌进度。
-- 拖动后不显示调试文案；媒体焦点被视频占用时，进度拖动不得误控视频播放器。
+- 当前版本进度条只读显示，不提供点击或拖动跳转；在汽水提供可定向 seek 前，不得调用系统全局 seek。
 
 ## QuickPlayer/QuickTime 并存回归
 
@@ -59,7 +60,8 @@
 
 ## 汽水专属控制
 
-- 汽水音乐单独播放时，播放/暂停、上一首、下一首、进度拖动都命中汽水。
+- 汽水音乐单独播放时，播放/暂停、上一首、下一首都命中汽水；进度条保持只读显示。
+- 汽水重启且从未被辅助功能工具扫描时，第一次播放控制也必须成功，不要求用户先打开汽水窗口或设置页。
 - 抖音/QuickTime/浏览器视频播放时，播放/暂停、上一首、下一首仍应命中汽水语义控件；视频不能被暂停或切换。
 - 汽水音乐未运行时，控制按钮不得误控当前系统媒体。
 - 汽水窗口最小化、隐藏或 AX 树未初始化时，只能在唯一识别安全控件后执行；否则应安全失败并保持当前界面。
@@ -117,6 +119,5 @@
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --eventkit-status
-.build/debug/MacBookIsland --qishui-targeted-control playPause
 pgrep -af 'mediaremote-adapter.pl.*stream-client.*com.soda.music'
 ```

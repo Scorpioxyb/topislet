@@ -29,7 +29,8 @@
 - 2026-07-09 修复 QuickPlayer/QuickTime 并存场景：当视频播放器抢占 macOS 当前媒体会话时，`MediaRemoteAdapterStreamSource` 不再用非汽水来源的空状态覆盖汽水岛，而是短时保留最近一次可信汽水快照用于显示并冻结进度；同时控制命令在未确认媒体焦点回到汽水前会被拦截，避免误控视频播放器。
 - 2026-07-09 抖音/Chrome 视频页测试暴露底层性能问题：旧实现会在 UI tick 和实时事件回调中同步拉取 MediaRemote/AX，且启动自动打开的设置 `Form` 会跟随模型刷新持续重排，导致 App CPU 一度约 84%-97%，灵动岛点击像是失效。当前已改为常驻 stream 事件驱动，普通 tick 只做轻量状态读取和低频进度发布；启动不再自动打开设置窗口，设置/校准窗口关闭后释放 SwiftUI 内容；手动刷新/诊断才允许同步重探测。
 - 2026-07-10 定向控制突破：普通 App 二进制仍拿不到 MediaRemote clients，但系统解释器进程可以通过 Adapter 的同步 `findNowPlayingClient` 找到 `com.soda.music`，再调用 `MRMediaRemoteSendCommandToClient`。轻量桥已实测完成暂停→播放→暂停、下一首和上一首，前台 App 保持不变；App 主线程只等待后台桥返回，真实结果仍由汽水专属流确认。
-- 2026-07-13 抖音抢焦点实机回归发现：`send-client` 即使返回成功，仍可能暂停系统当前视频而非汽水。产品按钮已停止调用该私有控制入口，改为汽水唯一语义 AX 直控；MediaRemote Adapter 继续负责汽水专属状态流和诊断。
+- 2026-07-13 QuickTime 抢焦点实机回归发现：`send-client` 即使返回成功，仍可能暂停系统当前视频而非汽水。产品按钮已停止调用该私有控制入口，改为汽水唯一语义 AX 直控；MediaRemote Adapter 继续负责汽水专属状态流和诊断。
+- 2026-07-13 定位到汽水重启后按钮偶发无反应的根因：Electron/Chromium 的 `AXManualAccessibility` 默认为 `0`，此时只能扫描到不完整控件树；对汽水 PID 的 AXApplication 设置该属性为 `1` 后，无需激活汽水即可稳定发现底部三个语义控件。QuickTime 前台实测播放/暂停、下一首、上一首均只影响汽水。
 - 2026-07-12 定向控制迁移到现有 `/usr/bin/perl` + MediaRemoteAdapter：Adapter 新增 `send-client`，仅接受命令 2/4/5；该入口现仅用于诊断研究。运行链不再调用 `/usr/bin/python3`。
 - 2026-07-09 进度条修正：AX 窗口树会同时暴露当前播放、列表项、旧歌和其他区域的多个 `mm:ss / mm:ss` 文本，不能作为可信进度来源。当前主进度只认 MediaRemote Adapter 的 `elapsedTime/duration`；当媒体焦点被抢走但仍保留最近可信汽水快照时，按最近可信播放态本地推进进度。AX fallback 的 `progress=unavailable` 是刻意降级，避免显示假进度。
 
@@ -59,7 +60,7 @@ V1 不应把汽水音乐当作稳定公开 API。当前更可靠的产品策略�
 
 - 全局媒体键与聚焦兜底已从运行时移除；同时有多个播放器时也不得把控制交给系统当前媒体会话。
 - 播放/暂停、上一首、下一首只触发汽水 PID 内的唯一语义 AX 控件；控件无法唯一证明或辅助功能权限不可用时安全失败。
-- 进度跳转目前仍依赖当前媒体源；当媒体焦点不是汽水时必须阻断，直到找到可验证的定向 seek 方案。
+- 当前进度条只读，不发送任何系统全局 seek；找到可验证的汽水定向跳转接口前保持该边界。
 
 ## 已验证命令
 
@@ -72,7 +73,6 @@ swift run QishuiStateProbe --watch 20
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --mediaremote-watch 20
-.build/debug/MacBookIsland --qishui-targeted-control playPause
 npx -y @electron/asar extract "/Applications/汽水音乐.app/Contents/Resources/desktopLyrics.asar" /tmp/qishui-asar/desktopLyrics
 npx -y prettier --parser babel /tmp/qishui-asar/desktopLyrics/assets/desktopLyrics-BEcsjpdL.js
 ```

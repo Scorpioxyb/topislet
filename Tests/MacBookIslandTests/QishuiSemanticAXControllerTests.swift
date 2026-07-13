@@ -1,6 +1,26 @@
 import Testing
 @testable import MacBookIsland
 
+@Test("汽水 Chromium 手动辅助功能开启成功后允许扫描")
+func manualAccessibilitySuccessAllowsScanning() {
+    #expect(QishuiSemanticAXController.canProceedAfterManualAccessibility(
+        setResult: .success,
+        isEnabled: true
+    ))
+}
+
+@Test("属性已开启时容忍重复设置返回非成功")
+func existingManualAccessibilityAllowsScanning() {
+    #expect(QishuiSemanticAXController.canProceedAfterManualAccessibility(
+        setResult: .notImplemented,
+        isEnabled: true
+    ))
+    #expect(!QishuiSemanticAXController.canProceedAfterManualAccessibility(
+        setResult: .notImplemented,
+        isEnabled: false
+    ))
+}
+
 @Test("正常可见主窗口底部播放器栏满足安全门禁")
 func visibleMainBottomPlayerIsEligible() {
     let facts = QishuiSemanticAXController.CandidateFacts(

@@ -10,7 +10,7 @@
 
 仓库内的 `topislet-client-targeting.patch` 在该 commit 上增加按 Bundle ID 读取指定 MediaRemote client 的 `get-client`、`stream-client`，以及只允许播放/暂停、上一首、下一首的 `send-client` 能力。补丁不修改汽水音乐 App，也不包含汽水音乐的解包源码或账号数据。
 
-顶屿运行时通过系统 `/usr/bin/perl` 加载随 App 分发的 Adapter，用于汽水专属状态流与诊断；`send-client com.soda.music COMMAND` 仅保留为研究诊断入口，不用于产品按钮。产品控制使用汽水唯一语义 AX 控件，不再运行或分发 `/usr/bin/python3` 控制脚本。
+顶屿运行时通过系统 `/usr/bin/perl` 加载随 App 分发的 Adapter，用于汽水专属状态流与诊断；Adapter 脚本中的 `send-client com.soda.music COMMAND` 只保留给源码级研究，不再由顶屿二进制暴露或调用。产品控制使用汽水唯一语义 AX 控件，不再运行或分发 `/usr/bin/python3` 控制脚本。
 
 ## 当前发布二进制
 

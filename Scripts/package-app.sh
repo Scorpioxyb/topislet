@@ -14,17 +14,19 @@ move_to_trash_if_present() {
   /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
 }
 
-swift build --package-path "$ROOT"
+swift build --package-path "$ROOT" -debug-info-format none
 move_to_trash_if_present "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
 cp "$ROOT/.build/debug/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
 if [ -d "$ROOT/Vendor/MediaRemoteAdapter" ]; then
-  ditto "$ROOT/Vendor/MediaRemoteAdapter" "$APP/Contents/Resources/MediaRemoteAdapter"
+  ditto --norsrc "$ROOT/Vendor/MediaRemoteAdapter" "$APP/Contents/Resources/MediaRemoteAdapter"
 fi
 chmod +x "$APP/Contents/MacOS/MacBookIsland"
 xattr -cr "$APP"
+xattr -dr com.apple.FinderInfo "$APP" 2>/dev/null || true
+xattr -dr 'com.apple.fileprovider.fpfs#P' "$APP" 2>/dev/null || true
 codesign --force --deep --sign - \
   --identifier "$BUNDLE_ID" \
   --requirements "=designated => identifier \"$BUNDLE_ID\"" \
@@ -37,7 +39,7 @@ if [ ! -w "$INSTALL_DIR" ]; then
 fi
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME"
 move_to_trash_if_present "$INSTALLED_APP"
-ditto "$APP" "$INSTALLED_APP"
+ditto --norsrc "$APP" "$INSTALLED_APP"
 xattr -cr "$INSTALLED_APP"
 
 echo "Packaged: $APP"
