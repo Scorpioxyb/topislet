@@ -21,7 +21,9 @@ cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
 cp "$ROOT/.build/debug/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
 if [ -d "$ROOT/Vendor/MediaRemoteAdapter" ]; then
-  ditto --norsrc "$ROOT/Vendor/MediaRemoteAdapter" "$APP/Contents/Resources/MediaRemoteAdapter"
+  ditto --norsrc --noextattr --noqtn --noacl \
+    "$ROOT/Vendor/MediaRemoteAdapter" \
+    "$APP/Contents/Resources/MediaRemoteAdapter"
 fi
 chmod +x "$APP/Contents/MacOS/MacBookIsland"
 xattr -cr "$APP"
@@ -39,7 +41,7 @@ if [ ! -w "$INSTALL_DIR" ]; then
 fi
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME"
 move_to_trash_if_present "$INSTALLED_APP"
-ditto --norsrc "$APP" "$INSTALLED_APP"
+ditto --norsrc --noextattr --noqtn --noacl "$APP" "$INSTALLED_APP"
 xattr -cr "$INSTALLED_APP"
 
 echo "Packaged: $APP"

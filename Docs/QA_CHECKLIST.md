@@ -32,6 +32,8 @@
 - 汽水音乐播放时，`--adapter-status` 显示 `verifiedQishuiSource=true`，适配器子进程参数包含 `stream-client com.soda.music`。
 - 灵动岛显示真实歌名、歌手、封面。
 - 切歌后歌名、歌手、封面原子更新，不能出现新歌名配旧歌手或旧封面。
+- 自然切歌先出现空 payload 或临时 `contentItemIdentifier` 时，岛继续保持上一首完整画面；新曲完整标题、歌手、专辑和封面只能一次提交。
+- 300ms 内连续 A→B→C 时，A/B 的迟到 metadata 回包不得覆盖 C；带封面补取挂起时应在 0.9 秒左右终止，不得永久卡住旧曲。
 - 播放/暂停后按钮状态能回读，不长期停留在 pending。
 - 进度条只使用汽水专属 MediaRemote Adapter 的可信 `elapsedTime / duration`；AX 列表时间不得覆盖主进度。
 - 播放中连续读取 `--adapter-status` 时，`elapsedTime` 和 `progress` 应稳定递增，不应倒退或跳到旧歌进度。
