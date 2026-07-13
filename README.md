@@ -101,6 +101,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 ## 诊断
 
 ```bash
+.build/debug/MacBookIsland --music-adapters
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --qishui-status
 .build/debug/MacBookIsland --mediaremote-status
