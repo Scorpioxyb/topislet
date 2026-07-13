@@ -126,6 +126,7 @@ enum MusicAdapterRegistry {
         implementationStatus: .experimental,
         capabilities: [
             .metadata,
+            .artwork,
             .playbackState,
             .progress,
             .playPause,

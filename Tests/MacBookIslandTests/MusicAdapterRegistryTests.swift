@@ -32,8 +32,8 @@ func appleMusicIsRegisteredAsExperimental() throws {
 
     #expect(appleMusic.implementationStatus == .experimental)
     #expect(appleMusic.capabilities.contains(.metadata))
+    #expect(appleMusic.capabilities.contains(.artwork))
     #expect(appleMusic.capabilities.contains(.absoluteSeek))
-    #expect(!appleMusic.capabilities.contains(.artwork))
 }
 
 @Test("控制能力只能在绑定具体应用实例后声明可用")

@@ -46,6 +46,7 @@ struct AppleMusicObservation: Equatable, Sendable {
     let title: String?
     let artist: String?
     let album: String?
+    let artworkData: Data?
     let duration: TimeInterval?
     let elapsedTime: TimeInterval?
     let state: MusicPlaybackState
@@ -59,7 +60,10 @@ struct AppleMusicObservation: Equatable, Sendable {
         )
     }
 
-    static func decode(fields: [String]) -> AppleMusicObservation? {
+    static func decode(
+        fields: [String],
+        artworkData: Data? = nil
+    ) -> AppleMusicObservation? {
         guard fields.count == 7 else { return nil }
         let state = playbackState(from: fields[6])
         let title = fields[1].nilIfEmpty
@@ -68,8 +72,22 @@ struct AppleMusicObservation: Equatable, Sendable {
             title: title,
             artist: fields[2].nilIfEmpty,
             album: fields[3].nilIfEmpty,
+            artworkData: artworkData,
             duration: positiveFiniteDouble(fields[4]),
             elapsedTime: nonnegativeFiniteDouble(fields[5]),
+            state: state
+        )
+    }
+
+    func withArtworkData(_ artworkData: Data?) -> AppleMusicObservation {
+        AppleMusicObservation(
+            persistentIdentifier: persistentIdentifier,
+            title: title,
+            artist: artist,
+            album: album,
+            artworkData: artworkData,
+            duration: duration,
+            elapsedTime: elapsedTime,
             state: state
         )
     }
@@ -102,13 +120,101 @@ private struct AppleMusicBridgeFailure: Error, Sendable {
     let diagnostic: String
 }
 
+struct AppleMusicArtworkCache: Sendable {
+    private struct Entry: Sendable {
+        var data: Data?
+        var attemptedAt: Date
+    }
+
+    private var entries: [MusicTrackIdentity: Entry] = [:]
+    private var order: [MusicTrackIdentity] = []
+    private(set) var totalBytes = 0
+    let retryInterval: TimeInterval
+    let maximumEntryCount: Int
+    let maximumArtworkBytes: Int
+    let maximumTotalBytes: Int
+
+    init(
+        retryInterval: TimeInterval = 30,
+        maximumEntryCount: Int = 16,
+        maximumArtworkBytes: Int = 8 * 1024 * 1024,
+        maximumTotalBytes: Int = 24 * 1024 * 1024
+    ) {
+        self.retryInterval = retryInterval
+        self.maximumEntryCount = maximumEntryCount
+        self.maximumArtworkBytes = maximumArtworkBytes
+        self.maximumTotalBytes = maximumTotalBytes
+    }
+
+    func data(for identity: MusicTrackIdentity) -> Data? {
+        entries[identity]?.data
+    }
+
+    func shouldFetch(
+        for identity: MusicTrackIdentity,
+        at now: Date
+    ) -> Bool {
+        guard let entry = entries[identity] else { return true }
+        guard entry.data == nil else { return false }
+        return now.timeIntervalSince(entry.attemptedAt) >= retryInterval
+    }
+
+    mutating func recordAttempt(
+        for identity: MusicTrackIdentity,
+        at now: Date
+    ) {
+        let existingData = entries[identity]?.data
+        entries[identity] = Entry(data: existingData, attemptedAt: now)
+        touch(identity)
+        trimIfNeeded()
+    }
+
+    @discardableResult
+    mutating func store(
+        _ data: Data,
+        for identity: MusicTrackIdentity,
+        at now: Date
+    ) -> Bool {
+        guard !data.isEmpty,
+              data.count <= maximumArtworkBytes else { return false }
+        if let existingData = entries[identity]?.data {
+            totalBytes -= existingData.count
+        }
+        entries[identity] = Entry(data: data, attemptedAt: now)
+        totalBytes += data.count
+        touch(identity)
+        trimIfNeeded()
+        return entries[identity]?.data != nil
+    }
+
+    private mutating func touch(_ identity: MusicTrackIdentity) {
+        order.removeAll { $0 == identity }
+        order.append(identity)
+    }
+
+    private mutating func trimIfNeeded() {
+        while order.count > maximumEntryCount
+            || totalBytes > maximumTotalBytes {
+            guard let removedIdentity = order.first else { break }
+            order.removeFirst()
+            if let removedData = entries.removeValue(
+                forKey: removedIdentity
+            )?.data {
+                totalBytes -= removedData.count
+            }
+        }
+    }
+}
+
 private enum AppleMusicBridgeRunner {
     static func readObservation(
-        processIdentifier: pid_t
+        processIdentifier: pid_t,
+        includeArtwork: Bool
     ) -> Result<AppleMusicObservation, AppleMusicBridgeFailure> {
         var bridgeError: NSError?
         guard let snapshot = TopIsletAppleMusicCopySnapshot(
             processIdentifier,
+            includeArtwork,
             &bridgeError
         ) else {
             return .failure(failure(bridgeError))
@@ -122,7 +228,10 @@ private enum AppleMusicBridgeRunner {
             numberText(snapshot["elapsedTime"]),
             snapshot["state"] as? String ?? "unknown"
         ]
-        guard let observation = AppleMusicObservation.decode(fields: fields) else {
+        guard let observation = AppleMusicObservation.decode(
+            fields: fields,
+            artworkData: snapshot["artworkData"] as? Data
+        ) else {
             return .failure(AppleMusicBridgeFailure(
                 diagnostic: "Apple Music 返回了无法解析的播放快照。"
             ))
@@ -194,7 +303,9 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private var notificationToken: NSObjectProtocol?
     private var invalidationHandler: (@MainActor @Sendable () -> Void)?
     private var lastObservation: AppleMusicObservation?
+    private var lastInstance: MusicAppInstance?
     private var revision: UInt64 = 0
+    private var artworkCache = AppleMusicArtworkCache()
 
     func start(
         onInvalidation: @escaping @MainActor @Sendable () -> Void
@@ -220,10 +331,11 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         invalidationHandler = nil
     }
 
-    func snapshot(refresh _: MusicSnapshotRefresh) async -> MusicAppSnapshot {
+    func snapshot(refresh: MusicSnapshotRefresh) async -> MusicAppSnapshot {
         let checkedAt = Date()
         guard let app = runningApplication() else {
             lastObservation = nil
+            lastInstance = nil
             return unavailableSnapshot(
                 availability: .notRunning,
                 checkedAt: checkedAt,
@@ -236,6 +348,29 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             processIdentifier: app.processIdentifier,
             launchedAt: app.launchDate
         )
+        if case .cached = refresh {
+            guard lastInstance == instance,
+                  let lastObservation else {
+                return unavailableSnapshot(
+                    instance: instance,
+                    availability: .degraded(reason: "Apple Music 尚无缓存快照。"),
+                    checkedAt: checkedAt,
+                    diagnostic: "Apple Music 尚无缓存快照；本次未发送 Apple Event。"
+                )
+            }
+            let cachedObservation: AppleMusicObservation
+            if let identity = lastObservation.trackIdentity,
+               let artworkData = artworkCache.data(for: identity) {
+                cachedObservation = lastObservation.withArtworkData(artworkData)
+            } else {
+                cachedObservation = lastObservation
+            }
+            return readySnapshot(
+                observation: cachedObservation,
+                instance: instance,
+                checkedAt: checkedAt
+            )
+        }
         let access = Self.automationAccess(
             prompt: false,
             processIdentifier: app.processIdentifier
@@ -252,7 +387,8 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         let processIdentifier = app.processIdentifier
         let result = await Task.detached(priority: .userInitiated) {
             AppleMusicBridgeRunner.readObservation(
-                processIdentifier: processIdentifier
+                processIdentifier: processIdentifier,
+                includeArtwork: false
             )
         }.value
         switch result {
@@ -264,6 +400,34 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 diagnostic: error.diagnostic
             )
         case let .success(observation):
+            var resolvedObservation = observation
+            if let identity = observation.trackIdentity {
+                if let artworkData = artworkCache.data(for: identity) {
+                    resolvedObservation = observation.withArtworkData(artworkData)
+                } else if case .metadata = refresh,
+                          artworkCache.shouldFetch(for: identity, at: checkedAt) {
+                    artworkCache.recordAttempt(for: identity, at: checkedAt)
+                    let artworkResult = await Task.detached(priority: .utility) {
+                        AppleMusicBridgeRunner.readObservation(
+                            processIdentifier: processIdentifier,
+                            includeArtwork: true
+                        )
+                    }.value
+                    if case let .success(artworkObservation) = artworkResult,
+                       artworkObservation.trackIdentity == identity {
+                        if let artworkData = artworkObservation.artworkData {
+                            _ = artworkCache.store(
+                                artworkData,
+                                for: identity,
+                                at: checkedAt
+                            )
+                            resolvedObservation = observation.withArtworkData(
+                                artworkCache.data(for: identity)
+                            )
+                        }
+                    }
+                }
+            }
             guard runningApplication()?.processIdentifier == processIdentifier else {
                 return unavailableSnapshot(
                     availability: .notRunning,
@@ -271,12 +435,13 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                     diagnostic: "Apple Music 应用实例在读取过程中发生变化。"
                 )
             }
-            if observation != lastObservation {
+            if resolvedObservation != lastObservation {
                 revision &+= 1
-                lastObservation = observation
+                lastObservation = resolvedObservation
             }
+            lastInstance = instance
             return readySnapshot(
-                observation: observation,
+                observation: resolvedObservation,
                 instance: instance,
                 checkedAt: checkedAt
             )
@@ -408,7 +573,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 title: observation.title ?? "Apple Music",
                 artist: observation.artist,
                 album: observation.album,
-                artworkData: nil,
+                artworkData: observation.artworkData,
                 lyrics: []
             )
         }
@@ -456,7 +621,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 mechanisms: [.appleEvent]
             ),
             checkedAt: checkedAt,
-            diagnostic: "已通过定向 Apple Event 读取 Apple Music。"
+            diagnostic: "已通过定向 Apple Event 读取 Apple Music；封面 \(track?.artworkData.map { "\($0.count) bytes" } ?? "暂未提供")。"
         )
     }
 

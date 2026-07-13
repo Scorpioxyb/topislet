@@ -1,6 +1,7 @@
 #import "AppleMusicBridge.h"
 
 @import AppKit;
+@import ImageIO;
 @import ScriptingBridge;
 
 static NSString * const TopIsletAppleMusicErrorDomain = @"io.github.scorpioxyb.topislet.apple-music";
@@ -117,8 +118,83 @@ static NSString *TopIsletPlaybackState(OSType stateCode) {
     }
 }
 
+static NSData *TopIsletArtworkData(
+    SBObject *track,
+    TopIsletAppleMusicErrorDelegate *delegate
+) {
+    static const NSUInteger maximumArtworkBytes = 8 * 1024 * 1024;
+    if (delegate.lastError != nil) {
+        return nil;
+    }
+    SBElementArray *artworks = [track elementArrayWithCode:'cArt'];
+    if (delegate.lastError != nil || artworks.count == 0) {
+        delegate.lastError = nil;
+        return nil;
+    }
+
+    SBObject *artwork = [artworks objectAtIndex:0];
+    id rawValue = TopIsletPropertyValue(artwork, 'pRaw', delegate, NULL);
+    if (delegate.lastError != nil) {
+        delegate.lastError = nil;
+        return nil;
+    }
+    NSData *data = nil;
+    if ([rawValue isKindOfClass:[NSData class]]) {
+        data = rawValue;
+    } else if ([rawValue isKindOfClass:[NSAppleEventDescriptor class]]) {
+        data = [(NSAppleEventDescriptor *)rawValue data];
+    }
+    if (data.length == 0 || data.length > maximumArtworkBytes) {
+        return nil;
+    }
+    CGImageSourceRef imageSource = CGImageSourceCreateWithData(
+        (__bridge CFDataRef)data,
+        NULL
+    );
+    if (imageSource == NULL || CGImageSourceGetCount(imageSource) == 0) {
+        if (imageSource != NULL) {
+            CFRelease(imageSource);
+        }
+        return nil;
+    }
+    CFDictionaryRef properties = CGImageSourceCopyPropertiesAtIndex(
+        imageSource,
+        0,
+        NULL
+    );
+    CFRelease(imageSource);
+    if (properties == NULL) {
+        return nil;
+    }
+    NSNumber *pixelWidth = (__bridge NSNumber *)CFDictionaryGetValue(
+        properties,
+        kCGImagePropertyPixelWidth
+    );
+    NSNumber *pixelHeight = (__bridge NSNumber *)CFDictionaryGetValue(
+        properties,
+        kCGImagePropertyPixelHeight
+    );
+    double width = pixelWidth.doubleValue;
+    double height = pixelHeight.doubleValue;
+    CFRelease(properties);
+    if (!isfinite(width)
+        || !isfinite(height)
+        || width <= 0
+        || height <= 0
+        || width > 8192
+        || height > 8192) {
+        return nil;
+    }
+    NSImage *image = [[NSImage alloc] initWithData:data];
+    if (image == nil) {
+        return nil;
+    }
+    return data;
+}
+
 NSDictionary<NSString *, id> *TopIsletAppleMusicCopySnapshot(
     pid_t processIdentifier,
+    BOOL includeArtwork,
     NSError **error
 ) {
     TopIsletAppleMusicErrorDelegate *delegate = nil;
@@ -145,6 +221,7 @@ NSDictionary<NSString *, id> *TopIsletAppleMusicCopySnapshot(
             @"title": @"",
             @"artist": @"",
             @"album": @"",
+            @"artworkData": [NSNull null],
             @"duration": [NSNull null],
             @"elapsedTime": [NSNull null],
             @"state": state
@@ -173,6 +250,12 @@ NSDictionary<NSString *, id> *TopIsletAppleMusicCopySnapshot(
     NSNumber *elapsedTime = TopIsletNumber(
         TopIsletPropertyValue(application, 'pPos', delegate, error)
     );
+    if (delegate.lastError != nil) {
+        return nil;
+    }
+    NSData *artworkData = includeArtwork
+        ? TopIsletArtworkData(track, delegate)
+        : nil;
     NSString *finalIdentifier = TopIsletString(
         TopIsletPropertyValue(track, 'pPIS', delegate, error)
     );
@@ -198,6 +281,7 @@ NSDictionary<NSString *, id> *TopIsletAppleMusicCopySnapshot(
         @"title": title,
         @"artist": artist,
         @"album": album,
+        @"artworkData": artworkData ?: [NSNull null],
         @"duration": duration ?: [NSNull null],
         @"elapsedTime": elapsedTime ?: [NSNull null],
         @"state": state
@@ -231,6 +315,7 @@ BOOL TopIsletAppleMusicPerformAction(
 
     NSDictionary<NSString *, id> *snapshot = TopIsletAppleMusicCopySnapshot(
         processIdentifier,
+        NO,
         error
     );
     if (snapshot == nil) {

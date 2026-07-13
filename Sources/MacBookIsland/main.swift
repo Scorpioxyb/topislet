@@ -43,6 +43,7 @@ if CommandLine.arguments.contains("--apple-music-status") {
         print("appleMusicRunning=\(AppleMusicAppAdapter.isRunning)")
         print("availability=\(availability)")
         print("track=\(snapshot.track?.title ?? "nil")")
+        print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
         print("diagnostic=\(snapshot.diagnostic)")
         exit(0)
     }

@@ -20,6 +20,8 @@
 
 - Apple Music 未运行时顶屿不会自动启动它，汽水显示与控制不受影响。
 - 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、播放状态、进度与可用控制。
+- `--apple-music-status` 的 `artworkDataBytes` 大于 0，岛显示 Apple Music 当前歌曲的真实专辑封面；同曲重复刷新不得重复读取或闪烁封面。
+- Apple Music 快速切歌时，迟到的上一首封面不得覆盖当前歌曲；封面读取失败时仍保留正确歌名、播放状态、进度和控制能力。
 - 前台激活汽水时岛立即切到汽水，前台激活 Apple Music 时立即切到 Apple Music；即使当前无歌曲，也显示对应应用的空闲状态。
 - 离开两个音乐应用后按真实播放状态兜底；两者同时播放且都不在前台时汽水优先。
 - Apple Music 刚开始播放后立即点击控制，命令必须发给 Apple Music，汽水曲目、播放态和进度不变。

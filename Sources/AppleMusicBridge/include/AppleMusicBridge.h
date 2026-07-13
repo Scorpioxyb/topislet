@@ -3,7 +3,11 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable
-TopIsletAppleMusicCopySnapshot(pid_t processIdentifier, NSError **error)
+TopIsletAppleMusicCopySnapshot(
+    pid_t processIdentifier,
+    BOOL includeArtwork,
+    NSError **error
+)
 NS_SWIFT_NOTHROW;
 
 FOUNDATION_EXPORT BOOL TopIsletAppleMusicPerformAction(

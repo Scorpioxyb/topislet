@@ -21,6 +21,7 @@ let package = Package(
             name: "AppleMusicBridge",
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("ImageIO"),
                 .linkedFramework("ScriptingBridge")
             ]
         ),
