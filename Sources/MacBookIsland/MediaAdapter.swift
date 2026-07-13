@@ -202,9 +202,13 @@ final class MusicAdapterCoordinator {
     private var foregroundMusicSource: MusicSourceID?
     private var latestAppleMusicSnapshot: MusicAppSnapshot?
     private var appleMusicRefreshTask: Task<Void, Never>?
+    private var appleMusicRefreshQueued = false
     private var appleMusicRefreshGeneration: UInt64 = 0
-    private var lastAppleMusicRefreshAt: Date?
+    private var lastAppleMusicRefreshCompletedAt: Date?
+    private var lastAppleMusicControlAt: Date?
+    private var appleMusicConsecutiveRefreshFailures = 0
     private var appleMusicControlRequestID: UInt64 = 0
+    private var appleMusicControlGeneration: UInt64 = 0
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -225,8 +229,13 @@ final class MusicAdapterCoordinator {
     func startRealtimeObservation(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
         realtimeUpdateHandler = onUpdate
         startQishuiLifecycleObservation()
-        appleMusicAdapter.start { [weak self] in
-            self?.scheduleAppleMusicRefresh(force: true)
+        appleMusicAdapter.start { [weak self] invalidation in
+            switch invalidation {
+            case .sourceChanged:
+                self?.scheduleAppleMusicRefresh(force: true)
+            case .cachedDataChanged:
+                self?.publishCachedAppleMusicSnapshot()
+            }
         }
         scheduleAppleMusicRefresh(force: true)
         mediaRemoteAdapterStreamSource.start { [weak self] in
@@ -247,6 +256,10 @@ final class MusicAdapterCoordinator {
         appleMusicRefreshGeneration &+= 1
         appleMusicRefreshTask?.cancel()
         appleMusicRefreshTask = nil
+        appleMusicRefreshQueued = false
+        lastAppleMusicRefreshCompletedAt = nil
+        lastAppleMusicControlAt = nil
+        appleMusicConsecutiveRefreshFailures = 0
         appleMusicAdapter.stop()
         latestAppleMusicSnapshot = nil
         foregroundMusicSource = nil
@@ -431,10 +444,44 @@ final class MusicAdapterCoordinator {
             expectedTrack: track.identity,
             action: action
         )
+        appleMusicControlGeneration &+= 1
+        let controlGeneration = appleMusicControlGeneration
+        lastAppleMusicControlAt = Date()
+        let baselineSnapshot = snapshot
+        if controlKind == .playPause,
+           let optimisticSnapshot = appleMusicSnapshot(
+            togglingPlaybackIn: snapshot,
+            at: Date()
+           ) {
+            latestAppleMusicSnapshot = optimisticSnapshot
+            publishCurrentState()
+        }
         let result = await appleMusicAdapter.perform(request)
         let succeeded = result.disposition == .accepted
+        guard controlGeneration == appleMusicControlGeneration else {
+            return MusicControlOutcome(
+                status: appleMusicControlStatus(
+                    command: command,
+                    succeeded: succeeded,
+                    diagnostic: result.diagnostic
+                ),
+                didSendCommand: succeeded
+            )
+        }
         if succeeded {
             scheduleAppleMusicRefresh(force: true)
+        } else if controlKind == .playPause,
+                  let current = latestAppleMusicSnapshot,
+                  current.instance == baselineSnapshot.instance,
+                  current.track?.identity == baselineSnapshot.track?.identity,
+                  let restoredSnapshot = appleMusicSnapshot(
+                    current,
+                    settingPlaybackState: baselineSnapshot.playbackState,
+                    at: Date(),
+                    diagnostic: "Apple Music 控制失败，已恢复本地播放状态。"
+                  ) {
+            latestAppleMusicSnapshot = restoredSnapshot
+            publishCurrentState()
         }
         return MusicControlOutcome(
             status: appleMusicControlStatus(
@@ -902,8 +949,10 @@ final class MusicAdapterCoordinator {
                     self.appleMusicRefreshGeneration &+= 1
                     self.appleMusicRefreshTask?.cancel()
                     self.appleMusicRefreshTask = nil
+                    self.appleMusicRefreshQueued = false
                     self.latestAppleMusicSnapshot = nil
-                    self.lastAppleMusicRefreshAt = Date()
+                    self.lastAppleMusicRefreshCompletedAt = Date()
+                    self.appleMusicConsecutiveRefreshFailures = 0
                 }
                 self.publishCurrentState()
             }
@@ -926,7 +975,8 @@ final class MusicAdapterCoordinator {
                     self.qishuiAdapter.invalidateAXCache()
                     self.qishuiSemanticAXController.invalidateCache()
                 case .appleMusic:
-                    self.lastAppleMusicRefreshAt = nil
+                    self.lastAppleMusicRefreshCompletedAt = nil
+                    self.appleMusicConsecutiveRefreshFailures = 0
                 }
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 switch source {
@@ -1061,27 +1111,47 @@ final class MusicAdapterCoordinator {
     private func scheduleAppleMusicRefresh(force: Bool) {
         let now = Date()
         guard AppleMusicAppAdapter.isRunning else {
+            appleMusicRefreshGeneration &+= 1
+            appleMusicRefreshTask?.cancel()
+            appleMusicRefreshTask = nil
+            appleMusicRefreshQueued = false
+            appleMusicConsecutiveRefreshFailures = 0
             if latestAppleMusicSnapshot != nil {
                 latestAppleMusicSnapshot = nil
-                lastAppleMusicRefreshAt = now
+                lastAppleMusicRefreshCompletedAt = now
                 publishCurrentState()
             }
             return
         }
 
-        let interval: TimeInterval = musicSourceSelector.selection.source == .appleMusic
-            ? 1.5
-            : 3.0
+        let isSelected = musicSourceSelector.selection.source == .appleMusic
+        let isPlaying = latestAppleMusicSnapshot?.playbackState == .playing
+        let recentlyControlled = lastAppleMusicControlAt.map {
+            now.timeIntervalSince($0) < 2
+        } ?? false
+        let baseInterval: TimeInterval
+        if isSelected, isPlaying || recentlyControlled {
+            baseInterval = 0.75
+        } else if isSelected {
+            baseInterval = 1.5
+        } else {
+            baseInterval = 3.0
+        }
+        let backoffMultiplier = min(
+            pow(2, Double(appleMusicConsecutiveRefreshFailures)),
+            4
+        )
+        let interval = baseInterval * backoffMultiplier
         if !force,
-           let lastAppleMusicRefreshAt,
-           now.timeIntervalSince(lastAppleMusicRefreshAt) < interval {
+           let lastAppleMusicRefreshCompletedAt,
+           now.timeIntervalSince(lastAppleMusicRefreshCompletedAt) < interval {
             return
         }
         if appleMusicRefreshTask != nil {
-            guard force else { return }
-            appleMusicRefreshGeneration &+= 1
-            appleMusicRefreshTask?.cancel()
-            appleMusicRefreshTask = nil
+            if force {
+                appleMusicRefreshQueued = true
+            }
+            return
         }
 
         appleMusicRefreshGeneration &+= 1
@@ -1092,8 +1162,21 @@ final class MusicAdapterCoordinator {
             guard !Task.isCancelled,
                   generation == self.appleMusicRefreshGeneration else { return }
             self.applyAppleMusicSnapshotIfNewer(snapshot)
+            self.lastAppleMusicRefreshCompletedAt = Date()
+            if case .ready = snapshot.availability {
+                self.appleMusicConsecutiveRefreshFailures = 0
+            } else {
+                self.appleMusicConsecutiveRefreshFailures = min(
+                    self.appleMusicConsecutiveRefreshFailures + 1,
+                    3
+                )
+            }
             self.appleMusicRefreshTask = nil
             self.publishCurrentState()
+            if self.appleMusicRefreshQueued {
+                self.appleMusicRefreshQueued = false
+                self.scheduleAppleMusicRefresh(force: true)
+            }
         }
     }
 
@@ -1103,7 +1186,104 @@ final class MusicAdapterCoordinator {
             return
         }
         latestAppleMusicSnapshot = snapshot
-        lastAppleMusicRefreshAt = snapshot.checkedAt
+    }
+
+    private func publishCachedAppleMusicSnapshot() {
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = await self.appleMusicAdapter.snapshot(refresh: .cached)
+            guard !Task.isCancelled else { return }
+            self.applyCachedAppleMusicArtwork(snapshot)
+            self.publishCurrentState()
+        }
+    }
+
+    private func applyCachedAppleMusicArtwork(_ snapshot: MusicAppSnapshot) {
+        guard let artworkData = snapshot.track?.artworkData else { return }
+        guard let current = latestAppleMusicSnapshot,
+              current.instance == snapshot.instance,
+              let currentTrack = current.track,
+              currentTrack.identity == snapshot.track?.identity else {
+            applyAppleMusicSnapshotIfNewer(snapshot)
+            return
+        }
+        let updatedTrack = MusicTrackSnapshot(
+            identity: currentTrack.identity,
+            title: currentTrack.title,
+            artist: currentTrack.artist,
+            album: currentTrack.album,
+            artworkData: artworkData,
+            lyrics: currentTrack.lyrics
+        )
+        latestAppleMusicSnapshot = MusicAppSnapshot(
+            descriptor: current.descriptor,
+            instance: current.instance,
+            availability: current.availability,
+            track: updatedTrack,
+            playbackState: current.playbackState,
+            timeline: current.timeline,
+            controls: current.controls,
+            revision: max(current.revision, snapshot.revision),
+            provenance: current.provenance,
+            checkedAt: current.checkedAt,
+            diagnostic: snapshot.diagnostic
+        )
+    }
+
+    private func appleMusicSnapshot(
+        togglingPlaybackIn snapshot: MusicAppSnapshot,
+        at now: Date
+    ) -> MusicAppSnapshot? {
+        let state: MusicPlaybackState
+        switch snapshot.playbackState {
+        case .playing:
+            state = .paused
+        case .paused:
+            state = .playing
+        case .stopped, .unknown:
+            return nil
+        }
+        return appleMusicSnapshot(
+            snapshot,
+            settingPlaybackState: state,
+            at: now,
+            diagnostic: "已立即更新本地播放状态，等待 Apple Music 确认。"
+        )
+    }
+
+    private func appleMusicSnapshot(
+        _ snapshot: MusicAppSnapshot,
+        settingPlaybackState playbackState: MusicPlaybackState,
+        at now: Date,
+        diagnostic: String
+    ) -> MusicAppSnapshot? {
+        guard playbackState == .playing || playbackState == .paused else {
+            return nil
+        }
+        let timeline = snapshot.timeline.map { timeline in
+            let projectedElapsed = timeline.elapsedTime
+                + max(now.timeIntervalSince(timeline.observedAt), 0)
+                    * timeline.playbackRate
+            return MusicTimelineSnapshot(
+                elapsedTime: min(max(projectedElapsed, 0), timeline.duration),
+                duration: timeline.duration,
+                playbackRate: playbackState == .playing ? 1 : 0,
+                observedAt: now
+            )
+        }
+        return MusicAppSnapshot(
+            descriptor: snapshot.descriptor,
+            instance: snapshot.instance,
+            availability: snapshot.availability,
+            track: snapshot.track,
+            playbackState: playbackState,
+            timeline: timeline,
+            controls: snapshot.controls,
+            revision: snapshot.revision &+ 1,
+            provenance: snapshot.provenance,
+            checkedAt: now,
+            diagnostic: diagnostic
+        )
     }
 
     private func selectedMusicSource() -> MusicSourceID? {

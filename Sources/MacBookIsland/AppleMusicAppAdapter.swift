@@ -116,14 +116,52 @@ struct AppleMusicObservation: Equatable, Sendable {
     }
 }
 
+func appleMusicSnapshotByReplacingArtworkData(
+    _ snapshot: MusicAppSnapshot,
+    artworkData: Data,
+    identity: MusicTrackIdentity,
+    revision: UInt64
+) -> MusicAppSnapshot? {
+    guard let track = snapshot.track,
+          track.identity == identity else { return nil }
+    let updatedTrack = MusicTrackSnapshot(
+        identity: track.identity,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        artworkData: artworkData,
+        lyrics: track.lyrics
+    )
+    return MusicAppSnapshot(
+        descriptor: snapshot.descriptor,
+        instance: snapshot.instance,
+        availability: snapshot.availability,
+        track: updatedTrack,
+        playbackState: snapshot.playbackState,
+        timeline: snapshot.timeline,
+        controls: snapshot.controls,
+        revision: revision,
+        provenance: snapshot.provenance,
+        checkedAt: snapshot.checkedAt,
+        diagnostic: "Apple Music 播放状态保持原快照；封面 \(artworkData.count) bytes 已异步补齐。"
+    )
+}
+
 private struct AppleMusicBridgeFailure: Error, Sendable {
     let diagnostic: String
 }
 
 struct AppleMusicArtworkCache: Sendable {
+    enum FailureKind: Sendable {
+        case notFound
+        case transient
+    }
+
     private struct Entry: Sendable {
         var data: Data?
         var attemptedAt: Date
+        var retryAfter: Date
+        var transientFailureCount: Int
     }
 
     private var entries: [MusicTrackIdentity: Entry] = [:]
@@ -156,7 +194,7 @@ struct AppleMusicArtworkCache: Sendable {
     ) -> Bool {
         guard let entry = entries[identity] else { return true }
         guard entry.data == nil else { return false }
-        return now.timeIntervalSince(entry.attemptedAt) >= retryInterval
+        return now >= entry.retryAfter
     }
 
     mutating func recordAttempt(
@@ -164,7 +202,44 @@ struct AppleMusicArtworkCache: Sendable {
         at now: Date
     ) {
         let existingData = entries[identity]?.data
-        entries[identity] = Entry(data: existingData, attemptedAt: now)
+        entries[identity] = Entry(
+            data: existingData,
+            attemptedAt: now,
+            retryAfter: now.addingTimeInterval(retryInterval),
+            transientFailureCount: entries[identity]?.transientFailureCount ?? 0
+        )
+        touch(identity)
+        trimIfNeeded()
+    }
+
+    mutating func recordFailure(
+        _ failure: FailureKind,
+        for identity: MusicTrackIdentity,
+        at now: Date
+    ) {
+        if let existingData = entries[identity]?.data {
+            totalBytes -= existingData.count
+        }
+        let previousFailureCount = entries[identity]?.transientFailureCount ?? 0
+        let transientFailureCount: Int
+        let retryDelay: TimeInterval
+        switch failure {
+        case .notFound:
+            transientFailureCount = 0
+            retryDelay = max(retryInterval, 5 * 60)
+        case .transient:
+            transientFailureCount = min(previousFailureCount + 1, 5)
+            retryDelay = min(
+                retryInterval * pow(2, Double(transientFailureCount - 1)),
+                5 * 60
+            )
+        }
+        entries[identity] = Entry(
+            data: nil,
+            attemptedAt: now,
+            retryAfter: now.addingTimeInterval(retryDelay),
+            transientFailureCount: transientFailureCount
+        )
         touch(identity)
         trimIfNeeded()
     }
@@ -180,7 +255,12 @@ struct AppleMusicArtworkCache: Sendable {
         if let existingData = entries[identity]?.data {
             totalBytes -= existingData.count
         }
-        entries[identity] = Entry(data: data, attemptedAt: now)
+        entries[identity] = Entry(
+            data: data,
+            attemptedAt: now,
+            retryAfter: .distantFuture,
+            transientFailureCount: 0
+        )
         totalBytes += data.count
         touch(identity)
         trimIfNeeded()
@@ -296,19 +376,133 @@ private enum AppleMusicBridgeRunner {
     }
 }
 
+enum AppleMusicArtworkLoadResult: Sendable {
+    case success(Data)
+    case notFound
+    case transientFailure
+}
+
+typealias AppleMusicArtworkLoading = @Sendable (
+    pid_t,
+    AppleMusicObservation
+) async -> AppleMusicArtworkLoadResult
+
+private final class AppleMusicArtworkBridgeRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+private final class AppleMusicArtworkBridgeExecutor: @unchecked Sendable {
+    static let shared = AppleMusicArtworkBridgeExecutor()
+
+    private let queue = DispatchQueue(
+        label: "TopIslet.AppleMusicArtworkBridge"
+    )
+
+    func readObservation(
+        processIdentifier: pid_t,
+        request: AppleMusicArtworkBridgeRequest
+    ) async -> Result<AppleMusicObservation, AppleMusicBridgeFailure>? {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                guard !request.isCancelled else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let result = AppleMusicBridgeRunner.readObservation(
+                    processIdentifier: processIdentifier,
+                    includeArtwork: true
+                )
+                continuation.resume(
+                    returning: request.isCancelled ? nil : result
+                )
+            }
+        }
+    }
+}
+
+private enum AppleMusicArtworkLoader {
+    static func load(
+        processIdentifier: pid_t,
+        observation: AppleMusicObservation
+    ) async -> AppleMusicArtworkLoadResult {
+        let request = AppleMusicArtworkBridgeRequest()
+        let directResult = await withTaskCancellationHandler {
+            await AppleMusicArtworkBridgeExecutor.shared.readObservation(
+                processIdentifier: processIdentifier,
+                request: request
+            )
+        } onCancel: {
+            request.cancel()
+        }
+        guard !Task.isCancelled,
+              let directResult,
+              case let .success(directObservation) = directResult,
+              directObservation.trackIdentity == observation.trackIdentity else {
+            return .transientFailure
+        }
+        if let artworkData = directObservation.artworkData {
+            return .success(artworkData)
+        }
+        switch await AppleMusicCatalogArtworkResolver().artworkData(for: observation) {
+        case let .success(data):
+            return .success(data)
+        case .notFound:
+            return .notFound
+        case .transientFailure:
+            return .transientFailure
+        }
+    }
+}
+
 @MainActor
 final class AppleMusicAppAdapter: MusicAppAdapter {
     let descriptor = MusicAdapterRegistry.appleMusic.descriptor
 
     private var notificationToken: NSObjectProtocol?
-    private var invalidationHandler: (@MainActor @Sendable () -> Void)?
+    private var invalidationHandler: (@MainActor @Sendable (
+        MusicAdapterInvalidation
+    ) -> Void)?
     private var lastObservation: AppleMusicObservation?
     private var lastInstance: MusicAppInstance?
+    private var lastSnapshot: MusicAppSnapshot?
     private var revision: UInt64 = 0
     private var artworkCache = AppleMusicArtworkCache()
+    private let artworkLoader: AppleMusicArtworkLoading
+    private let controlQueue = DispatchQueue(
+        label: "TopIslet.AppleMusicControl"
+    )
+    private var artworkFetchTask: Task<Void, Never>?
+    private var artworkFetchIdentity: MusicTrackIdentity?
+    private var artworkFetchGeneration: UInt64 = 0
+
+    init(
+        artworkLoader: AppleMusicArtworkLoading? = nil
+    ) {
+        self.artworkLoader = artworkLoader ?? { processIdentifier, observation in
+            await AppleMusicArtworkLoader.load(
+                processIdentifier: processIdentifier,
+                observation: observation
+            )
+        }
+    }
 
     func start(
-        onInvalidation: @escaping @MainActor @Sendable () -> Void
+        onInvalidation: @escaping @MainActor @Sendable (
+            MusicAdapterInvalidation
+        ) -> Void
     ) {
         stop()
         invalidationHandler = onInvalidation
@@ -318,7 +512,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.invalidationHandler?()
+                self?.invalidationHandler?(.sourceChanged)
             }
         }
     }
@@ -328,14 +522,17 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             DistributedNotificationCenter.default().removeObserver(notificationToken)
         }
         notificationToken = nil
+        cancelArtworkFetch()
         invalidationHandler = nil
     }
 
     func snapshot(refresh: MusicSnapshotRefresh) async -> MusicAppSnapshot {
         let checkedAt = Date()
         guard let app = runningApplication() else {
+            cancelArtworkFetch()
             lastObservation = nil
             lastInstance = nil
+            lastSnapshot = nil
             return unavailableSnapshot(
                 availability: .notRunning,
                 checkedAt: checkedAt,
@@ -350,7 +547,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         )
         if case .cached = refresh {
             guard lastInstance == instance,
-                  let lastObservation else {
+                  let lastSnapshot else {
                 return unavailableSnapshot(
                     instance: instance,
                     availability: .degraded(reason: "Apple Music 尚无缓存快照。"),
@@ -358,18 +555,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                     diagnostic: "Apple Music 尚无缓存快照；本次未发送 Apple Event。"
                 )
             }
-            let cachedObservation: AppleMusicObservation
-            if let identity = lastObservation.trackIdentity,
-               let artworkData = artworkCache.data(for: identity) {
-                cachedObservation = lastObservation.withArtworkData(artworkData)
-            } else {
-                cachedObservation = lastObservation
-            }
-            return readySnapshot(
-                observation: cachedObservation,
-                instance: instance,
-                checkedAt: checkedAt
-            )
+            return lastSnapshot
         }
         let access = Self.automationAccess(
             prompt: false,
@@ -404,28 +590,6 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             if let identity = observation.trackIdentity {
                 if let artworkData = artworkCache.data(for: identity) {
                     resolvedObservation = observation.withArtworkData(artworkData)
-                } else if case .metadata = refresh,
-                          artworkCache.shouldFetch(for: identity, at: checkedAt) {
-                    artworkCache.recordAttempt(for: identity, at: checkedAt)
-                    let artworkResult = await Task.detached(priority: .utility) {
-                        AppleMusicBridgeRunner.readObservation(
-                            processIdentifier: processIdentifier,
-                            includeArtwork: true
-                        )
-                    }.value
-                    if case let .success(artworkObservation) = artworkResult,
-                       artworkObservation.trackIdentity == identity {
-                        if let artworkData = artworkObservation.artworkData {
-                            _ = artworkCache.store(
-                                artworkData,
-                                for: identity,
-                                at: checkedAt
-                            )
-                            resolvedObservation = observation.withArtworkData(
-                                artworkCache.data(for: identity)
-                            )
-                        }
-                    }
                 }
             }
             guard runningApplication()?.processIdentifier == processIdentifier else {
@@ -440,11 +604,21 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 lastObservation = resolvedObservation
             }
             lastInstance = instance
-            return readySnapshot(
+            if case .metadata = refresh {
+                scheduleArtworkFetch(
+                    for: observation,
+                    instance: instance,
+                    processIdentifier: processIdentifier,
+                    at: checkedAt
+                )
+            }
+            let snapshot = readySnapshot(
                 observation: resolvedObservation,
                 instance: instance,
                 checkedAt: checkedAt
             )
+            lastSnapshot = snapshot
+            return snapshot
         }
     }
 
@@ -472,13 +646,16 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
 
         let action = request.action
         let expectedTrack = request.expectedTrack
-        let result = await Task.detached(priority: .userInitiated) {
-            AppleMusicBridgeRunner.perform(
-                processIdentifier: processIdentifier,
-                action: action,
-                expectedTrack: expectedTrack
-            )
-        }.value
+        let controlQueue = controlQueue
+        let result = await withCheckedContinuation { continuation in
+            controlQueue.async {
+                continuation.resume(returning: AppleMusicBridgeRunner.perform(
+                    processIdentifier: processIdentifier,
+                    action: action,
+                    expectedTrack: expectedTrack
+                ))
+            }
+        }
         switch result {
         case let .failure(error):
             return MusicControlResult(
@@ -560,6 +737,109 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         NSRunningApplication
             .runningApplications(withBundleIdentifier: descriptor.bundleIdentifier)
             .first
+    }
+
+    private func scheduleArtworkFetch(
+        for observation: AppleMusicObservation,
+        instance: MusicAppInstance,
+        processIdentifier: pid_t,
+        at now: Date
+    ) {
+        guard let identity = observation.trackIdentity,
+              artworkCache.data(for: identity) == nil,
+              artworkCache.shouldFetch(for: identity, at: now) else {
+            return
+        }
+        if artworkFetchIdentity == identity,
+           artworkFetchTask != nil {
+            return
+        }
+
+        cancelArtworkFetch()
+        artworkCache.recordAttempt(for: identity, at: now)
+        artworkFetchGeneration &+= 1
+        let generation = artworkFetchGeneration
+        artworkFetchIdentity = identity
+        let artworkLoader = artworkLoader
+        artworkFetchTask = Task(priority: .utility) { [weak self] in
+            let result = await artworkLoader(processIdentifier, observation)
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.artworkFetchGeneration else {
+                return
+            }
+            self.finishArtworkFetch(
+                result,
+                identity: identity,
+                instance: instance,
+                generation: generation
+            )
+        }
+    }
+
+    private func finishArtworkFetch(
+        _ result: AppleMusicArtworkLoadResult,
+        identity: MusicTrackIdentity,
+        instance: MusicAppInstance,
+        generation: UInt64
+    ) {
+        guard generation == artworkFetchGeneration else { return }
+        artworkFetchTask = nil
+        artworkFetchIdentity = nil
+        guard lastInstance == instance,
+              runningApplication()?.processIdentifier == instance.processIdentifier,
+              lastObservation?.trackIdentity == identity else {
+            return
+        }
+        let completedAt = Date()
+        switch result {
+        case .notFound:
+            artworkCache.recordFailure(
+                .notFound,
+                for: identity,
+                at: completedAt
+            )
+            return
+        case .transientFailure:
+            artworkCache.recordFailure(
+                .transient,
+                for: identity,
+                at: completedAt
+            )
+            return
+        case let .success(data):
+            guard artworkCache.store(data, for: identity, at: completedAt) else {
+                artworkCache.recordFailure(
+                    .transient,
+                    for: identity,
+                    at: completedAt
+                )
+                return
+            }
+        }
+        guard let artworkData = artworkCache.data(for: identity),
+              let lastObservation,
+              lastObservation.artworkData != artworkData,
+              let lastSnapshot,
+              let updatedSnapshot = appleMusicSnapshotByReplacingArtworkData(
+                lastSnapshot,
+                artworkData: artworkData,
+                identity: identity,
+                revision: revision &+ 1
+              ) else {
+            return
+        }
+        self.lastObservation = lastObservation.withArtworkData(artworkData)
+        revision &+= 1
+        self.lastSnapshot = updatedSnapshot
+        invalidationHandler?(.cachedDataChanged)
+    }
+
+    private func cancelArtworkFetch() {
+        artworkFetchGeneration &+= 1
+        artworkFetchTask?.cancel()
+        artworkFetchTask = nil
+        artworkFetchIdentity = nil
     }
 
     private func readySnapshot(

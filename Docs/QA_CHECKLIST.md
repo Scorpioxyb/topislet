@@ -21,13 +21,17 @@
 - Apple Music 未运行时顶屿不会自动启动它，汽水显示与控制不受影响。
 - 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、播放状态、进度与可用控制。
 - `--apple-music-status` 的 `artworkDataBytes` 大于 0，岛显示 Apple Music 当前歌曲的真实专辑封面；同曲重复刷新不得重复读取或闪烁封面。
+- 播放 Apple Music 电台且脚本返回 `artworkCount=0` 时，`--apple-music-status` 仍应通过 Apple 公共目录得到真实封面；目录存在同名异歌手、专辑不符或多重结果时必须保持无封面，不能猜测。
+- `--apple-music-status` 的 `metadataLatencyMilliseconds` 在封面未缓存时也只统计轻量播放快照，封面网络请求不得阻塞该数值；本机基线约为 206ms。
 - Apple Music 快速切歌时，迟到的上一首封面不得覆盖当前歌曲；封面读取失败时仍保留正确歌名、播放状态、进度和控制能力。
+- Apple Music 封面异步出现前后，进度不得倒退、暂停状态不得恢复推进、控制 `verifiedAt` 不得被缓存封面伪造为刚刚验证。
 - 前台激活汽水时岛立即切到汽水，前台激活 Apple Music 时立即切到 Apple Music；即使当前无歌曲，也显示对应应用的空闲状态。
 - 离开两个音乐应用后按真实播放状态兜底；两者同时播放且都不在前台时汽水优先。
 - Apple Music 刚开始播放后立即点击控制，命令必须发给 Apple Music，汽水曲目、播放态和进度不变。
 - 汽水与 Apple Music 快速切换时，按钮和进度操作只能控制点击瞬间岛正在显示的应用；目标已退出或 PID 变化时必须拒绝操作，不能改投另一应用。
 - 控制或进度跳转尚未返回时切到另一音乐应用，迟到结果不得把岛切回旧来源，也不得覆盖新来源的状态标签。
 - Apple Music 播放 / 暂停、下一首和绝对进度跳转只影响 Music 进程；抖音、QuickTime 和汽水不得变化。
+- Apple Music 播放 / 暂停点击后按钮状态应在本地立即切换，不等待 Apple Event 回包；实际控制失败时仅回滚当前操作代次，连续快速点击保持发送顺序。
 - Apple Music 退出或进程 PID 变化后，旧快照和旧控制请求立即失效，不自动重启 Music。
 
 ## 日历与提醒事项

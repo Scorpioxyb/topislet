@@ -115,6 +115,104 @@ func appleMusicArtworkCacheEvictsOldEntries() {
     #expect(!didStoreOversized)
 }
 
+@Test("Apple Music 封面失败缓存区分无匹配与临时失败")
+func appleMusicArtworkCacheBacksOffFailures() {
+    let identity = MusicTrackIdentity(
+        providerIdentifier: "ABC123",
+        fallbackSignature: "Song"
+    )
+    let startedAt = Date(timeIntervalSince1970: 1_000)
+    var cache = AppleMusicArtworkCache(retryInterval: 10)
+
+    cache.recordFailure(.transient, for: identity, at: startedAt)
+    #expect(!cache.shouldFetch(
+        for: identity,
+        at: startedAt.addingTimeInterval(9)
+    ))
+    #expect(cache.shouldFetch(
+        for: identity,
+        at: startedAt.addingTimeInterval(10)
+    ))
+
+    cache.recordFailure(
+        .notFound,
+        for: identity,
+        at: startedAt.addingTimeInterval(10)
+    )
+    #expect(!cache.shouldFetch(
+        for: identity,
+        at: startedAt.addingTimeInterval(309)
+    ))
+    #expect(cache.shouldFetch(
+        for: identity,
+        at: startedAt.addingTimeInterval(310)
+    ))
+}
+
+@Test("Apple Music 异步封面不重锚时间轴或控制验证时间")
+func appleMusicArtworkOnlyUpdatePreservesAuthoritativeSnapshot() throws {
+    let descriptor = MusicAdapterRegistry.appleMusic.descriptor
+    let instance = MusicAppInstance(
+        app: descriptor,
+        processIdentifier: 42,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let identity = MusicTrackIdentity(
+        providerIdentifier: "ABC123",
+        fallbackSignature: "Song"
+    )
+    let checkedAt = Date(timeIntervalSince1970: 1_000)
+    let observedAt = Date(timeIntervalSince1970: 999)
+    let controls = MusicControlCapabilities(values: [
+        .playPause: .ready(
+            target: instance,
+            mechanism: .appleEvent,
+            verifiedAt: checkedAt
+        )
+    ])
+    let snapshot = MusicAppSnapshot(
+        descriptor: descriptor,
+        instance: instance,
+        availability: .ready,
+        track: MusicTrackSnapshot(
+            identity: identity,
+            title: "Song",
+            artist: "Artist",
+            album: "Album",
+            artworkData: nil,
+            lyrics: []
+        ),
+        playbackState: .playing,
+        timeline: MusicTimelineSnapshot(
+            elapsedTime: 42,
+            duration: 240,
+            playbackRate: 1,
+            observedAt: observedAt
+        ),
+        controls: controls,
+        revision: 7,
+        provenance: MusicSnapshotProvenance(
+            bundleIdentifier: descriptor.bundleIdentifier,
+            mechanisms: [.appleEvent]
+        ),
+        checkedAt: checkedAt,
+        diagnostic: "authoritative"
+    )
+    let artworkData = Data([0x01, 0x02, 0x03])
+    let updated = try #require(appleMusicSnapshotByReplacingArtworkData(
+        snapshot,
+        artworkData: artworkData,
+        identity: identity,
+        revision: 8
+    ))
+
+    #expect(updated.track?.artworkData == artworkData)
+    #expect(updated.timeline == snapshot.timeline)
+    #expect(updated.controls == snapshot.controls)
+    #expect(updated.checkedAt == snapshot.checkedAt)
+    #expect(updated.revision == 8)
+}
+
 @Test("Apple Music 停止状态不伪造歌曲和进度")
 func stoppedAppleMusicDoesNotCreateFakeTrack() throws {
     let observation = try #require(AppleMusicObservation.decode(fields: [

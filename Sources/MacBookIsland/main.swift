@@ -26,7 +26,22 @@ if CommandLine.arguments.contains("--music-adapters") {
 if CommandLine.arguments.contains("--apple-music-status") {
     let adapter = AppleMusicAppAdapter()
     Task { @MainActor in
-        let snapshot = await adapter.snapshot(refresh: .metadata)
+        let startedAt = Date()
+        var snapshot = await adapter.snapshot(refresh: .metadata)
+        let metadataLatencyMilliseconds = Int(
+            Date().timeIntervalSince(startedAt) * 1_000
+        )
+        if snapshot.track != nil,
+           snapshot.track?.artworkData == nil {
+            for _ in 0..<50 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                let cachedSnapshot = await adapter.snapshot(refresh: .cached)
+                if cachedSnapshot.track?.artworkData != nil {
+                    snapshot = cachedSnapshot
+                    break
+                }
+            }
+        }
         let availability: String
         switch snapshot.availability {
         case .ready:
@@ -44,6 +59,7 @@ if CommandLine.arguments.contains("--apple-music-status") {
         print("availability=\(availability)")
         print("track=\(snapshot.track?.title ?? "nil")")
         print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
+        print("metadataLatencyMilliseconds=\(metadataLatencyMilliseconds)")
         print("diagnostic=\(snapshot.diagnostic)")
         exit(0)
     }

@@ -19,12 +19,19 @@ enum MusicSnapshotRefresh: Sendable {
     case timeline
 }
 
+enum MusicAdapterInvalidation: Sendable {
+    case sourceChanged
+    case cachedDataChanged
+}
+
 @MainActor
 protocol MusicAppAdapter: AnyObject {
     var descriptor: MusicAppDescriptor { get }
 
     func start(
-        onInvalidation: @escaping @MainActor @Sendable () -> Void
+        onInvalidation: @escaping @MainActor @Sendable (
+            MusicAdapterInvalidation
+        ) -> Void
     )
     func stop()
     func snapshot(refresh: MusicSnapshotRefresh) async -> MusicAppSnapshot
