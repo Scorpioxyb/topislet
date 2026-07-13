@@ -8,6 +8,21 @@ import SwiftUI
 
 private let islandEventNotificationName = Notification.Name("io.github.scorpioxyb.topislet.event")
 
+if CommandLine.arguments.contains("--music-adapters") {
+    for registration in MusicAdapterRegistry.registrations {
+        let capabilities = MusicAdapterCapability.allCases
+            .filter(registration.capabilities.contains)
+            .map(\.rawValue)
+            .joined(separator: ",")
+        print("adapter=\(registration.descriptor.bundleIdentifier)")
+        print("name=\(registration.descriptor.displayName)")
+        print("status=\(registration.implementationStatus.rawValue)")
+        print("capabilities=\(capabilities)")
+        print("")
+    }
+    exit(0)
+}
+
 if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
     guard CommandLine.arguments.indices.contains(eventIndex + 2) else {
         print("usage: MacBookIsland --post-event TITLE BODY [SOURCE]")
@@ -2355,6 +2370,12 @@ private struct MusicSettingsPane: View {
 
     var body: some View {
         Form {
+            Section("音乐应用") {
+                ForEach(MusicAdapterRegistry.registrations) { registration in
+                    MusicAdapterSettingsRow(registration: registration)
+                }
+            }
+
             Section {
                 LabeledContent("当前歌曲", value: "\(model.music.track.title) - \(model.music.track.artist)")
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
@@ -2399,6 +2420,56 @@ private struct MusicSettingsPane: View {
         }
         .formStyle(.grouped)
         .padding(16)
+    }
+}
+
+private struct MusicAdapterSettingsRow: View {
+    let registration: MusicAdapterRegistration
+
+    private var statusColor: Color {
+        switch registration.implementationStatus {
+        case .active:
+            return .green
+        case .planned:
+            return .secondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let icon = MusicSourceIconCache.shared.icon(
+                    for: registration.descriptor.bundleIdentifier
+                ) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(registration.descriptor.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                Text(registration.capabilitySummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Text(registration.implementationStatus.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(statusColor)
+        }
+        .frame(minHeight: 34)
     }
 }
 
