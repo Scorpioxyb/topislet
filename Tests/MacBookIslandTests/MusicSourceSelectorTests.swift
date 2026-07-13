@@ -115,43 +115,6 @@ func cachedQishuiCannotStealSelection() {
     #expect(selection.source == .appleMusic)
 }
 
-@Test("控制前发现 Apple Music 正在播放时立即切换目标")
-func controlResolutionImmediatelyUsesFreshPlayingAppleMusic() {
-    let selector = MusicSourceSelector()
-    _ = selector.update(
-        qishui: candidate(.qishui, playback: .playing),
-        appleMusic: candidate(.appleMusic, playback: .paused)
-    )
-
-    let selection = selector.resolveForControl(
-        qishui: candidate(.qishui, playback: .paused),
-        appleMusic: candidate(.appleMusic, playback: .playing)
-    )
-
-    #expect(selection.source == .appleMusic)
-}
-
-@Test("控制前两者都播放时立即回到汽水目标")
-func controlResolutionImmediatelyRestoresQishuiPriority() {
-    let selector = MusicSourceSelector()
-    _ = selector.update(
-        qishui: candidate(
-            .qishui,
-            available: false,
-            hasTrack: false,
-            playback: .unknown
-        ),
-        appleMusic: candidate(.appleMusic, playback: .playing)
-    )
-
-    let selection = selector.resolveForControl(
-        qishui: candidate(.qishui, playback: .playing),
-        appleMusic: candidate(.appleMusic, playback: .playing)
-    )
-
-    #expect(selection.source == .qishui)
-}
-
 @Test("当前汽水仅有缓存播放态时会让位给真实 Apple Music")
 func cachedCurrentQishuiYieldsToFreshAppleMusic() {
     let selector = MusicSourceSelector()
@@ -175,4 +138,98 @@ func cachedCurrentQishuiYieldsToFreshAppleMusic() {
 
     #expect(pending.source == .qishui)
     #expect(committed.source == .appleMusic)
+}
+
+@Test("前台 Apple Music 立即覆盖正在播放的汽水")
+func foregroundAppleMusicWinsOverPlayingQishui() {
+    let selector = MusicSourceSelector()
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .paused)
+    )
+
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .paused),
+        foregroundSource: .appleMusic
+    )
+
+    #expect(selection.source == .appleMusic)
+}
+
+@Test("前台汽水立即覆盖正在播放的 Apple Music")
+func foregroundQishuiWinsOverPlayingAppleMusic() {
+    let selector = MusicSourceSelector()
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing)
+    )
+
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        foregroundSource: .qishui
+    )
+
+    #expect(selection.source == .qishui)
+}
+
+@Test("前台音乐应用无当前歌曲时仍显示该应用")
+func foregroundAvailableSourceDoesNotRequireTrack() {
+    let selector = MusicSourceSelector()
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(
+            .appleMusic,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        foregroundSource: .appleMusic
+    )
+
+    #expect(selection.source == .appleMusic)
+}
+
+@Test("前台来源不可用时回退到真实播放来源")
+func unavailableForegroundSourceFallsBackToPlayback() {
+    let selector = MusicSourceSelector()
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(
+            .appleMusic,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        foregroundSource: .appleMusic
+    )
+
+    #expect(selection.source == .qishui)
+}
+
+@Test("汽水控制绑定来自岛当前显示来源")
+func qishuiControlBindingUsesDisplayedSource() {
+    let binding = DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.soda.music"
+    )
+
+    #expect(binding?.source == .qishui)
+}
+
+@Test("Apple Music 控制绑定来自岛当前显示来源")
+func appleMusicControlBindingUsesDisplayedSource() {
+    let binding = DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.apple.Music"
+    )
+
+    #expect(binding?.source == .appleMusic)
+}
+
+@Test("未知显示来源必须拒绝控制")
+func unknownDisplayedSourceFailsClosed() {
+    let binding = DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.example.unsupported"
+    )
+
+    #expect(binding == nil)
 }

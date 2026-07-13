@@ -80,7 +80,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedControls: CachedControls?
 
-    func press(_ command: MusicControlCommand) -> QishuiSemanticAXControlResult {
+    func press(
+        _ command: MusicControlCommand,
+        processIdentifier expectedProcessIdentifier: pid_t? = nil
+    ) -> QishuiSemanticAXControlResult {
         lock.lock()
         defer { lock.unlock() }
         guard AXIsProcessTrusted() else {
@@ -91,13 +94,18 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             )
         }
 
-        guard let app = NSRunningApplication
+        let runningApplications = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first else {
+        let app = expectedProcessIdentifier.flatMap { processIdentifier in
+            runningApplications.first { $0.processIdentifier == processIdentifier }
+        } ?? (expectedProcessIdentifier == nil ? runningApplications.first : nil)
+        guard let app else {
             cachedControls = nil
             return QishuiSemanticAXControlResult(
                 didPress: false,
-                diagnostic: "未检测到汽水音乐进程。"
+                diagnostic: expectedProcessIdentifier == nil
+                    ? "未检测到汽水音乐进程。"
+                    : "岛当前显示的汽水音乐进程已失效，未发送\(command.label)。"
             )
         }
 
@@ -152,6 +160,20 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         cachedControls = nil
+    }
+
+    func prepareAccessibilityTree() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard AXIsProcessTrusted(),
+              let app = NSRunningApplication
+                .runningApplications(withBundleIdentifier: bundleIdentifier)
+                .first else {
+            return false
+        }
+        return enableManualAccessibility(
+            processIdentifier: app.processIdentifier
+        )
     }
 
     func diagnostic() -> String {

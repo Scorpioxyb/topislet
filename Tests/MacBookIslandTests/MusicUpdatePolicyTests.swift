@@ -6,7 +6,8 @@ private func musicState(
     title: String,
     progress: Double,
     elapsedTime: TimeInterval?,
-    duration: TimeInterval?
+    duration: TimeInterval?,
+    sourceBundleIdentifier: String = "com.soda.music"
 ) -> MusicState {
     MusicState(
         track: MusicTrack(
@@ -17,7 +18,7 @@ private func musicState(
             hasArtwork: false,
             artworkData: nil,
             artworkURL: nil,
-            sourceBundleIdentifier: "com.soda.music"
+            sourceBundleIdentifier: sourceBundleIdentifier
         ),
         isPlaying: elapsedTime != nil,
         progress: progress,
@@ -26,6 +27,29 @@ private func musicState(
         duration: duration,
         canSeek: false
     )
+}
+
+@Test("跨音乐应用切换不能被进度归零保护拦截")
+func sourceSwitchAlwaysAcceptsCandidate() {
+    let current = musicState(
+        title: "Apple Track",
+        progress: 0.5,
+        elapsedTime: 90,
+        duration: 180,
+        sourceBundleIdentifier: "com.apple.Music"
+    )
+    let candidate = musicState(
+        title: "Qishui Track",
+        progress: 0,
+        elapsedTime: nil,
+        duration: nil
+    )
+
+    #expect(!MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
+        current: current,
+        candidate: candidate,
+        sourceAvailability: .qishuiDetectedAXLimited
+    ))
 }
 
 @Test("普通 AX 瞬时归零仍保留可信时间轴")

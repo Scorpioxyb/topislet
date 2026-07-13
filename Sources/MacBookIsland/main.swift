@@ -334,6 +334,10 @@ enum MusicUpdatePolicy {
         if sourceAvailability == .qishuiNotRunning {
             return false
         }
+        guard current.track.sourceBundleIdentifier
+            == candidate.track.sourceBundleIdentifier else {
+            return false
+        }
         guard current.duration != nil,
               current.elapsedTime != nil,
               current.progress > 0.01 else {
@@ -753,13 +757,19 @@ final class IslandModel: ObservableObject {
     func playPause() {
         noteDirectControlInteraction()
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.playPause)
+            let outcome = await musicAdapter.performControl(
+                .playPause,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else { return }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
                 applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
@@ -774,6 +784,7 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
             .nextTrack,
             baselineSignature: previousSignature
@@ -784,10 +795,21 @@ final class IslandModel: ObservableObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.nextTrack)
+            let outcome = await musicAdapter.performControl(
+                .nextTrack,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else {
+                finishTrackControlFeedback(.nextTrack, generation: feedbackGeneration)
+                return
+            }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
-                musicAdapter.invalidateQishuiCache()
+                if displayedSourceBundleIdentifier
+                    == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+                    musicAdapter.invalidateQishuiCache()
+                }
                 startMusicControlRefreshBurst(
                     previousSignature: previousSignature,
                     requireTrackChange: true,
@@ -806,6 +828,7 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
             .previousTrack,
             baselineSignature: previousSignature
@@ -816,10 +839,21 @@ final class IslandModel: ObservableObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.previousTrack)
+            let outcome = await musicAdapter.performControl(
+                .previousTrack,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else {
+                finishTrackControlFeedback(.previousTrack, generation: feedbackGeneration)
+                return
+            }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
-                musicAdapter.invalidateQishuiCache()
+                if displayedSourceBundleIdentifier
+                    == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+                    musicAdapter.invalidateQishuiCache()
+                }
                 startMusicControlRefreshBurst(
                     previousSignature: previousSignature,
                     requireTrackChange: true,
@@ -963,8 +997,15 @@ final class IslandModel: ObservableObject {
         musicSeekRequestID += 1
         let requestID = musicSeekRequestID
         let previousSignature = musicSignature(music)
-        let result = await musicAdapter.seek(to: progress, interaction: interaction)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
+        let result = await musicAdapter.seek(
+            to: progress,
+            interaction: interaction,
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        )
         guard requestID == musicSeekRequestID else { return true }
+        guard music.track.sourceBundleIdentifier
+            == displayedSourceBundleIdentifier else { return true }
         let didSeek = result.status.availability == .qishuiControlSent
             || result.status.availability == .appleMusicControlSent
         pendingMusicSeek = nil
@@ -1631,6 +1672,7 @@ final class IslandModel: ObservableObject {
             || lhs.hasArtwork != rhs.hasArtwork
             || lhs.artworkData != rhs.artworkData
             || lhs.artworkURL != rhs.artworkURL
+            || lhs.sourceBundleIdentifier != rhs.sourceBundleIdentifier
     }
 
     private func shouldPublishMusicStatus(_ newStatus: MusicSourceStatus) -> Bool {
@@ -2482,7 +2524,7 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("默认主活动", value: "汽水优先自动切换")
+                LabeledContent("默认主活动", value: "前台音乐应用优先")
 
                 Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
                     .font(.system(size: 12))

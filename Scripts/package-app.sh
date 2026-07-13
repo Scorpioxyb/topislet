@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="顶屿.app"
-APP="$ROOT/.build/package/$APP_NAME"
+PACKAGE_APP="$ROOT/.build/package/$APP_NAME"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/topislet-package.XXXXXX")"
+APP="$WORK_DIR/$APP_NAME"
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$ROOT/Packaging/Info.plist")"
 
 move_to_trash_if_present() {
@@ -14,8 +16,14 @@ move_to_trash_if_present() {
   /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
 }
 
+cleanup() {
+  if [ -d "$WORK_DIR" ]; then
+    /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$WORK_DIR" || true
+  fi
+}
+trap cleanup EXIT
+
 swift build --package-path "$ROOT" -debug-info-format none
-move_to_trash_if_present "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
@@ -35,6 +43,11 @@ codesign --force --deep --sign - \
   --requirements "=designated => identifier \"$BUNDLE_ID\"" \
   "$APP" >/dev/null
 
+move_to_trash_if_present "$PACKAGE_APP"
+mkdir -p "$(dirname "$PACKAGE_APP")"
+ditto --norsrc --noextattr --noqtn --noacl "$APP" "$PACKAGE_APP"
+codesign --verify --deep --strict --verbose=2 "$PACKAGE_APP" >/dev/null
+
 INSTALL_DIR="/Applications"
 if [ ! -w "$INSTALL_DIR" ]; then
   INSTALL_DIR="$HOME/Applications"
@@ -45,5 +58,5 @@ move_to_trash_if_present "$INSTALLED_APP"
 ditto --norsrc --noextattr --noqtn --noacl "$APP" "$INSTALLED_APP"
 xattr -cr "$INSTALLED_APP"
 
-echo "Packaged: $APP"
+echo "Packaged: $PACKAGE_APP"
 echo "Installed: $INSTALLED_APP"

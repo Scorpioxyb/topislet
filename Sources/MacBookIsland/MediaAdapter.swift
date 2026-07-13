@@ -179,7 +179,6 @@ final class MusicAdapterCoordinator {
     private let nowPlayingBridge = NowPlayingAXBridge()
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
-    private let controlPlaybackEvidenceMaxAge: TimeInterval = 1.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastSourceRefreshAt: Date?
@@ -200,6 +199,7 @@ final class MusicAdapterCoordinator {
     private var playbackPositionRefreshInFlight = false
     private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
     private var qishuiLifecycleObservers: [NSObjectProtocol] = []
+    private var foregroundMusicSource: MusicSourceID?
     private var latestAppleMusicSnapshot: MusicAppSnapshot?
     private var appleMusicRefreshTask: Task<Void, Never>?
     private var appleMusicRefreshGeneration: UInt64 = 0
@@ -237,6 +237,7 @@ final class MusicAdapterCoordinator {
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
+        reconcileForegroundMusicSource()
         schedulePlaybackPositionRefresh()
     }
 
@@ -248,6 +249,7 @@ final class MusicAdapterCoordinator {
         appleMusicRefreshTask = nil
         appleMusicAdapter.stop()
         latestAppleMusicSnapshot = nil
+        foregroundMusicSource = nil
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
         resetPendingPlaybackOperation(clearTimelineFloor: true)
@@ -265,13 +267,20 @@ final class MusicAdapterCoordinator {
         MusicState(track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"), isPlaying: false, progress: 0, lyricIndex: 0)
     }
 
-    func performControl(_ command: MusicControlCommand) async -> MusicControlOutcome {
-        let route = await resolveMusicSourceForControl()
-        if route.source == .appleMusic {
-            return await performAppleMusicControl(command)
+    func performControl(
+        _ command: MusicControlCommand,
+        displayedSourceBundleIdentifier: String?
+    ) async -> MusicControlOutcome {
+        guard let binding = DisplayedMusicControlBinding(
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        ) else {
+            return MusicControlOutcome(
+                status: invalidDisplayedSourceStatus(command: command),
+                didSendCommand: false
+            )
         }
-        guard route.source == .qishui else {
-            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        if binding.source == .appleMusic {
+            return await performAppleMusicControl(command)
         }
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
@@ -293,6 +302,15 @@ final class MusicAdapterCoordinator {
             ) else {
                 return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
             }
+        }
+
+        let targetProcessIdentifier = latestQishuiSnapshot?.processIdentifier
+            ?? NSRunningApplication.runningApplications(
+                withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+            ).first?.processIdentifier
+        guard let targetProcessIdentifier else {
+            markQishuiNotRunning()
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
         _ = refreshSourceStatus()
@@ -318,7 +336,8 @@ final class MusicAdapterCoordinator {
         }
         let controlResult = await sendControl(
             command,
-            generation: controlAttemptGeneration
+            generation: controlAttemptGeneration,
+            processIdentifier: targetProcessIdentifier
         )
         guard controlAttemptGeneration == controlGeneration else {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
@@ -367,9 +386,7 @@ final class MusicAdapterCoordinator {
     private func performAppleMusicControl(
         _ command: MusicControlCommand
     ) async -> MusicControlOutcome {
-        let route = musicSourceSelector.selection
-        guard route.source == .appleMusic,
-              let snapshot = latestAppleMusicSnapshot,
+        guard let snapshot = latestAppleMusicSnapshot,
               let instance = snapshot.instance,
               let track = snapshot.track else {
             return MusicControlOutcome(
@@ -415,17 +432,6 @@ final class MusicAdapterCoordinator {
             action: action
         )
         let result = await appleMusicAdapter.perform(request)
-        guard musicSourceSelector.selection == route,
-              selectedMusicSource() == .appleMusic else {
-            return MusicControlOutcome(
-                status: appleMusicControlStatus(
-                    command: command,
-                    succeeded: false,
-                    diagnostic: "控制期间音乐来源已切换，已忽略旧结果。"
-                ),
-                didSendCommand: false
-            )
-        }
         let succeeded = result.disposition == .accepted
         if succeeded {
             scheduleAppleMusicRefresh(force: true)
@@ -437,6 +443,18 @@ final class MusicAdapterCoordinator {
                 diagnostic: result.diagnostic
             ),
             didSendCommand: succeeded
+        )
+    }
+
+    private func invalidDisplayedSourceStatus(
+        command: MusicControlCommand
+    ) -> MusicSourceStatus {
+        MusicSourceStatus(
+            sourceName: "顶屿",
+            availability: .systemNowPlayingUnavailable,
+            headline: "未执行\(command.label)",
+            detail: "岛当前显示的音乐来源不可识别；为避免控制其他应用，本次操作已取消。",
+            checkedAt: Date()
         )
     }
 
@@ -456,7 +474,8 @@ final class MusicAdapterCoordinator {
 
     private func sendControl(
         _ command: MusicControlCommand,
-        generation: Int
+        generation: Int,
+        processIdentifier: pid_t
     ) async -> ControlDispatchResult {
         guard generation == controlGeneration else {
             return ControlDispatchResult(
@@ -464,7 +483,10 @@ final class MusicAdapterCoordinator {
                 diagnostic: "旧控制操作已失效，未触发汽水语义控件。"
             )
         }
-        let semanticResult = await pressSemanticControl(command)
+        let semanticResult = await pressSemanticControl(
+            command,
+            processIdentifier: processIdentifier
+        )
         guard generation == controlGeneration else {
             return ControlDispatchResult(
                 didPress: false,
@@ -478,12 +500,16 @@ final class MusicAdapterCoordinator {
     }
 
     private func pressSemanticControl(
-        _ command: MusicControlCommand
+        _ command: MusicControlCommand,
+        processIdentifier: pid_t
     ) async -> QishuiSemanticAXControlResult {
         let semanticController = qishuiSemanticAXController
         return await withCheckedContinuation { continuation in
             qishuiControlQueue.async {
-                continuation.resume(returning: semanticController.press(command))
+                continuation.resume(returning: semanticController.press(
+                    command,
+                    processIdentifier: processIdentifier
+                ))
             }
         }
     }
@@ -521,6 +547,7 @@ final class MusicAdapterCoordinator {
     }
 
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
+        reconcileForegroundMusicSource()
         scheduleAppleMusicRefresh(force: false)
         if pendingPlaybackOperation != nil
             || shouldRefreshCachedPlaybackState()
@@ -562,10 +589,13 @@ final class MusicAdapterCoordinator {
 
     func seek(
         to progress: Double,
-        interaction: MusicSeekInteraction
+        interaction: MusicSeekInteraction,
+        displayedSourceBundleIdentifier: String?
     ) async -> (music: MusicState, status: MusicSourceStatus) {
-        let route = await resolveMusicSourceForControl()
-        if route.source == .appleMusic {
+        let binding = DisplayedMusicControlBinding(
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        )
+        if binding?.source == .appleMusic {
             return await seekAppleMusic(
                 to: progress,
                 interaction: interaction
@@ -587,10 +617,8 @@ final class MusicAdapterCoordinator {
         to progress: Double,
         interaction: MusicSeekInteraction
     ) async -> (music: MusicState, status: MusicSourceStatus) {
-        let route = musicSourceSelector.selection
         guard progress.isFinite,
               (0...1).contains(progress),
-              route.source == .appleMusic,
               let snapshot = latestAppleMusicSnapshot,
               let instance = snapshot.instance,
               let track = snapshot.track,
@@ -611,13 +639,14 @@ final class MusicAdapterCoordinator {
         }
 
         try? await Task.sleep(nanoseconds: interaction.coalescingDelayNanoseconds)
-        guard musicSourceSelector.selection == route,
-              selectedMusicSource() == .appleMusic else {
+        guard AppleMusicAppAdapter.isRunning,
+              latestAppleMusicSnapshot?.instance == instance,
+              latestAppleMusicSnapshot?.track?.identity == track.identity else {
             let status = MusicSourceStatus(
                 sourceName: "Apple Music",
                 availability: .appleMusicSynced,
                 headline: "已取消进度跳转",
-                detail: "拖动期间音乐来源发生变化，未发送控制。",
+                detail: "拖动期间 Apple Music 控制目标已变化，未发送控制。",
                 checkedAt: Date()
             )
             return (selectedMusicState(), status)
@@ -639,7 +668,7 @@ final class MusicAdapterCoordinator {
             checkedAt: Date()
         )
         guard succeeded,
-              musicSourceSelector.selection == route else {
+              AppleMusicAppAdapter.isRunning else {
             return (selectedMusicState(), status)
         }
 
@@ -770,6 +799,12 @@ final class MusicAdapterCoordinator {
         }
 
         let snapshot = qishuiAdapter.snapshot()
+        return applyQishuiDirectSnapshot(snapshot)
+    }
+
+    private func applyQishuiDirectSnapshot(
+        _ snapshot: QishuiDirectSnapshot
+    ) -> MusicSourceStatus {
         latestQishuiSnapshot = snapshot
         lastSourceRefreshAt = snapshot.checkedAt
 
@@ -812,6 +847,25 @@ final class MusicAdapterCoordinator {
         return cachedStatus
     }
 
+    private func refreshForegroundQishuiState() async {
+        _ = refreshSourceStatus()
+        if latestMediaRemoteSnapshot?.currentTrack != nil {
+            publishCurrentState()
+            return
+        }
+
+        let controller = qishuiSemanticAXController
+        let snapshot = await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                _ = controller.prepareAccessibilityTree()
+                continuation.resume(returning: QishuiAdapter().snapshot())
+            }
+        }
+        guard foregroundMusicSource == .qishui else { return }
+        _ = applyQishuiDirectSnapshot(snapshot)
+        publishCurrentState()
+    }
+
     private func startQishuiLifecycleObservation() {
         stopQishuiLifecycleObservation()
         let notificationCenter = NSWorkspace.shared.notificationCenter
@@ -820,16 +874,38 @@ final class MusicAdapterCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            let bundleIdentifier = (
+            let terminatedApplication = (
                 notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication
-            )?.bundleIdentifier
-            guard bundleIdentifier == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier else {
-                return
-            }
+            )
+            let bundleIdentifier = terminatedApplication?.bundleIdentifier
+            guard let source = Self.musicSourceID(for: bundleIdentifier) else { return }
             Task { @MainActor [weak self] in
-                self?.markQishuiNotRunning()
-                self?.publishCurrentState()
+                guard let self else { return }
+                if let bundleIdentifier,
+                   let terminatedProcessIdentifier = terminatedApplication?.processIdentifier,
+                   NSRunningApplication.runningApplications(
+                       withBundleIdentifier: bundleIdentifier
+                   ).contains(where: {
+                       !$0.isTerminated
+                           && $0.processIdentifier != terminatedProcessIdentifier
+                   }) {
+                    return
+                }
+                if self.foregroundMusicSource == source {
+                    self.foregroundMusicSource = nil
+                }
+                switch source {
+                case .qishui:
+                    self.markQishuiNotRunning()
+                case .appleMusic:
+                    self.appleMusicRefreshGeneration &+= 1
+                    self.appleMusicRefreshTask?.cancel()
+                    self.appleMusicRefreshTask = nil
+                    self.latestAppleMusicSnapshot = nil
+                    self.lastAppleMusicRefreshAt = Date()
+                }
+                self.publishCurrentState()
             }
         }
         let launchedObserver = notificationCenter.addObserver(
@@ -841,20 +917,60 @@ final class MusicAdapterCoordinator {
                 notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication
             )?.bundleIdentifier
-            guard bundleIdentifier == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier else {
-                return
-            }
+            guard let source = Self.musicSourceID(for: bundleIdentifier) else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.lastSourceRefreshAt = nil
-                self.qishuiAdapter.invalidateAXCache()
-                self.qishuiSemanticAXController.invalidateCache()
+                switch source {
+                case .qishui:
+                    self.lastSourceRefreshAt = nil
+                    self.qishuiAdapter.invalidateAXCache()
+                    self.qishuiSemanticAXController.invalidateCache()
+                case .appleMusic:
+                    self.lastAppleMusicRefreshAt = nil
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)
-                _ = self.refreshSourceStatus()
+                switch source {
+                case .qishui:
+                    await self.refreshForegroundQishuiState()
+                    return
+                case .appleMusic:
+                    self.scheduleAppleMusicRefresh(force: true)
+                }
                 self.publishCurrentState()
             }
         }
-        qishuiLifecycleObservers = [terminatedObserver, launchedObserver]
+        let activatedObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleIdentifier = (
+                notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication
+            )?.bundleIdentifier
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let source = Self.musicSourceID(for: bundleIdentifier)
+                guard source != self.foregroundMusicSource else { return }
+                self.foregroundMusicSource = source
+                self.publishCurrentState()
+                switch source {
+                case .qishui:
+                    await self.refreshForegroundQishuiState()
+                    return
+                case .appleMusic:
+                    self.scheduleAppleMusicRefresh(force: true)
+                case nil:
+                    self.schedulePlaybackPositionRefresh()
+                    self.scheduleAppleMusicRefresh(force: true)
+                }
+            }
+        }
+        qishuiLifecycleObservers = [
+            terminatedObserver,
+            launchedObserver,
+            activatedObserver
+        ]
     }
 
     private func stopQishuiLifecycleObservation() {
@@ -863,6 +979,12 @@ final class MusicAdapterCoordinator {
             notificationCenter.removeObserver(observer)
         }
         qishuiLifecycleObservers.removeAll()
+    }
+
+    nonisolated private static func musicSourceID(
+        for bundleIdentifier: String?
+    ) -> MusicSourceID? {
+        MusicSourceID(bundleIdentifier: bundleIdentifier)
     }
 
     private func markQishuiNotRunning(checkedAt: Date = Date()) {
@@ -975,91 +1097,6 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func resolveMusicSourceForControl() async -> MusicSourceSelection {
-        _ = refreshSourceStatus()
-        var qishuiBeforeRefresh = qishuiControlCandidate()
-        if qishuiBeforeRefresh.isSelectable,
-           !hasFreshQishuiPlaybackEvidence() {
-            _ = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-            _ = refreshSourceStatus()
-            qishuiBeforeRefresh = qishuiControlCandidate()
-        }
-        if qishuiBeforeRefresh.isSelectable,
-           qishuiBeforeRefresh.playback == .playing,
-           !qishuiBeforeRefresh.isCached {
-            return commitControlRoute(
-                qishui: qishuiBeforeRefresh,
-                appleMusic: appleMusicSourceCandidate()
-            )
-        }
-
-        if AppleMusicAppAdapter.isRunning {
-            appleMusicRefreshGeneration &+= 1
-            appleMusicRefreshTask?.cancel()
-            appleMusicRefreshTask = nil
-            let snapshot = await appleMusicAdapter.snapshot(refresh: .timeline)
-            appleMusicRefreshGeneration &+= 1
-            appleMusicRefreshTask?.cancel()
-            appleMusicRefreshTask = nil
-            applyAppleMusicSnapshotIfNewer(snapshot)
-        } else {
-            latestAppleMusicSnapshot = nil
-            lastAppleMusicRefreshAt = Date()
-        }
-
-        _ = refreshSourceStatus()
-        return commitControlRoute(
-            qishui: qishuiControlCandidate(),
-            appleMusic: appleMusicSourceCandidate()
-        )
-    }
-
-    private func qishuiControlCandidate() -> MusicSourceCandidate {
-        let candidate = qishuiSourceCandidate()
-        guard candidate.isSelectable,
-              !hasFreshQishuiPlaybackEvidence() else {
-            return candidate
-        }
-        return MusicSourceCandidate(
-            source: candidate.source,
-            isAvailable: candidate.isAvailable,
-            hasTrack: candidate.hasTrack,
-            playback: .unknown,
-            isCached: true
-        )
-    }
-
-    private func hasFreshQishuiPlaybackEvidence(at now: Date = Date()) -> Bool {
-        if mediaRemoteAdapterStreamSource.hasFreshVerifiedPlaybackEvidence(
-            at: now,
-            maxAge: controlPlaybackEvidenceMaxAge
-        ) {
-            return true
-        }
-        guard let snapshot = latestQishuiSnapshot,
-              let track = snapshot.currentTrack,
-              track.isPlaying != nil else {
-            return false
-        }
-        return now.timeIntervalSince(snapshot.checkedAt) >= 0
-            && now.timeIntervalSince(snapshot.checkedAt) <= controlPlaybackEvidenceMaxAge
-    }
-
-    private func commitControlRoute(
-        qishui: MusicSourceCandidate,
-        appleMusic: MusicSourceCandidate
-    ) -> MusicSourceSelection {
-        let previous = musicSourceSelector.selection
-        let route = musicSourceSelector.resolveForControl(
-            qishui: qishui,
-            appleMusic: appleMusic
-        )
-        if route != previous {
-            publishCurrentState()
-        }
-        return route
-    }
-
     private func applyAppleMusicSnapshotIfNewer(_ snapshot: MusicAppSnapshot) {
         if let current = latestAppleMusicSnapshot,
            current.checkedAt > snapshot.checkedAt {
@@ -1070,9 +1107,11 @@ final class MusicAdapterCoordinator {
     }
 
     private func selectedMusicSource() -> MusicSourceID? {
-        musicSourceSelector.update(
+        reconcileForegroundMusicSource()
+        return musicSourceSelector.update(
             qishui: qishuiSourceCandidate(),
-            appleMusic: appleMusicSourceCandidate()
+            appleMusic: appleMusicSourceCandidate(),
+            foregroundSource: foregroundMusicSource
         ).source
     }
 
@@ -1091,10 +1130,12 @@ final class MusicAdapterCoordinator {
         } else {
             playback = .unknown
         }
+        let isRunning = qishuiAdapter.isRunning()
         return MusicSourceCandidate(
             source: .qishui,
-            isAvailable: qishuiAdapter.isRunning()
-                && cachedStatus.availability != .qishuiNotRunning,
+            isAvailable: isRunning
+                && (foregroundMusicSource == .qishui
+                    || cachedStatus.availability != .qishuiNotRunning),
             hasTrack: hasTrack,
             playback: playback,
             isCached: cachedStatus.availability == .qishuiMediaRemoteCached
@@ -1105,7 +1146,7 @@ final class MusicAdapterCoordinator {
         guard let snapshot = latestAppleMusicSnapshot else {
             return MusicSourceCandidate(
                 source: .appleMusic,
-                isAvailable: false,
+                isAvailable: AppleMusicAppAdapter.isRunning,
                 hasTrack: false,
                 playback: .unknown,
                 isCached: false
@@ -1130,13 +1171,32 @@ final class MusicAdapterCoordinator {
         return MusicSourceCandidate(
             source: .appleMusic,
             isAvailable: AppleMusicAppAdapter.isRunning
-                && isFresh
-                && isReady
-                && snapshot.instance != nil,
+                && (foregroundMusicSource == .appleMusic
+                    || (isFresh && isReady && snapshot.instance != nil)),
             hasTrack: snapshot.track != nil,
             playback: playback,
             isCached: false
         )
+    }
+
+    private func reconcileForegroundMusicSource() {
+        let source = Self.musicSourceID(
+            for: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        )
+        guard source != foregroundMusicSource else { return }
+
+        foregroundMusicSource = source
+        switch source {
+        case .qishui:
+            Task { [weak self] in
+                await self?.refreshForegroundQishuiState()
+            }
+        case .appleMusic:
+            scheduleAppleMusicRefresh(force: true)
+        case nil:
+            schedulePlaybackPositionRefresh()
+            scheduleAppleMusicRefresh(force: true)
+        }
     }
 
     private func selectedMusicState() -> MusicState {
@@ -1184,7 +1244,7 @@ final class MusicAdapterCoordinator {
     private func appleMusicState() -> MusicState {
         guard let snapshot = latestAppleMusicSnapshot,
               let track = snapshot.track else {
-            return currentQishuiMusicState()
+            return appleMusicIdleState()
         }
         let elapsedTime: TimeInterval?
         let duration: TimeInterval?
@@ -1221,6 +1281,31 @@ final class MusicAdapterCoordinator {
             elapsedTime: elapsedTime,
             duration: duration,
             canSeek: snapshot.controls.supports(.absoluteSeek),
+            isPlaybackPending: false
+        )
+    }
+
+    private func appleMusicIdleState() -> MusicState {
+        MusicState(
+            track: MusicTrack(
+                title: "Apple Music",
+                artist: "等待播放",
+                palette: [
+                    Color(red: 0.96, green: 0.20, blue: 0.36),
+                    Color(red: 0.18, green: 0.06, blue: 0.10)
+                ],
+                lyrics: [],
+                hasArtwork: false,
+                artworkData: nil,
+                artworkURL: nil,
+                sourceBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+            ),
+            isPlaying: false,
+            progress: 0,
+            lyricIndex: 0,
+            elapsedTime: nil,
+            duration: nil,
+            canSeek: false,
             isPlaybackPending: false
         )
     }
