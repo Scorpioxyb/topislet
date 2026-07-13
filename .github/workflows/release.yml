@@ -8,7 +8,7 @@ on:
         required: true
         default: 0.1.1
       tag:
-        description: Git tag, for example v0.1.1-alpha.1
+        description: Git tag, for example v0.1.1-alpha.2
         required: true
 permissions:
   contents: read

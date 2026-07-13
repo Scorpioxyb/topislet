@@ -8,6 +8,8 @@ struct QishuiSemanticAXControlResult: Sendable {
 }
 
 final class QishuiSemanticAXController: @unchecked Sendable {
+    private static let manualAccessibilityAttribute = "AXManualAccessibility"
+
     struct CandidateFacts: Equatable {
         let windowIsNormal: Bool
         let windowIsMainOrFocused: Bool
@@ -100,6 +102,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
 
         let processIdentifier = app.processIdentifier
+        guard enableManualAccessibility(processIdentifier: processIdentifier) else {
+            cachedControls = nil
+            return QishuiSemanticAXControlResult(
+                didPress: false,
+                diagnostic: "无法初始化汽水音乐的辅助功能控件树，未发送\(command.label)。"
+            )
+        }
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
            Self.isEligibleCandidate(candidateFacts(for: cachedControls)) {
@@ -152,11 +161,15 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         guard let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { return "qishuiRunning=false" }
+        let manualAccessibilityEnabled = enableManualAccessibility(
+            processIdentifier: app.processIdentifier
+        )
 
         let discovery = discoverControls(processIdentifier: app.processIdentifier)
         var lines = [
             "accessibilityTrusted=true",
             "pid=\(app.processIdentifier)",
+            "manualAccessibilityEnabled=\(manualAccessibilityEnabled)",
             "scanned=\(discovery.scanned)",
             "candidateCount=\(discovery.matches.count)"
         ]
@@ -164,6 +177,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             lines.append("candidate[\(index)]=\(diagnosticDescription(for: match))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    static func canProceedAfterManualAccessibility(
+        setResult: AXError,
+        isEnabled: Bool
+    ) -> Bool {
+        setResult == .success || isEnabled
     }
 
     static func isEligibleCandidate(_ facts: CandidateFacts) -> Bool {
@@ -233,6 +253,24 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
 
         return (matches, visited.count)
+    }
+
+    private func enableManualAccessibility(processIdentifier: pid_t) -> Bool {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        let result = AXUIElementSetAttributeValue(
+            application,
+            Self.manualAccessibilityAttribute as CFString,
+            kCFBooleanTrue
+        )
+        let isEnabled = boolAttribute(
+            application,
+            Self.manualAccessibilityAttribute
+        )
+        return Self.canProceedAfterManualAccessibility(
+            setResult: result,
+            isEnabled: isEnabled
+        )
     }
 
     private func diagnosticDescription(for match: DiscoveredControls) -> String {

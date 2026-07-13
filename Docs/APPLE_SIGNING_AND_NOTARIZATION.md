@@ -46,11 +46,11 @@ bash Scripts/build-release.sh
 
 ```bash
 bash Scripts/notarize-release.sh \
-  .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
+  .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 
 REQUIRE_NOTARIZATION=1 \
 bash Scripts/verify-release-dmg.sh \
-  .build/release-artifacts/TopIslet-v0.1.0-arm64.dmg
+  .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 ```
 
 `notarize-release.sh` 在 staple 后重新生成 SHA-256，因为 staple 会修改 DMG。公证失败时应查看 `notarytool log` 的具体原因，不能使用关闭 Gatekeeper 或移除 quarantine 的方式绕过。

@@ -1,7 +1,7 @@
 # GitHub 发布检查清单
 
-目标版本：`v0.1.1-alpha.1`
-App 版本：`0.1.1 (3)`
+目标版本：`v0.1.1-alpha.2`
+App 版本：`0.1.1 (17)`
 目标平台：macOS 26.0+、带刘海的 Apple Silicon MacBook
 
 ## 当前结论
@@ -26,7 +26,7 @@ App 版本：`0.1.1 (3)`
 ## 已完成的仓库准备
 
 - [x] README 重构为面向用户的产品主页。
-- [x] 明确当前状态为 `v0.1.0-alpha`。
+- [x] 明确当前状态为 `v0.1.1-alpha`。
 - [x] 系统最低版本统一为 macOS 26.0，与 Vendor framework 一致。
 - [x] 增加 `PRIVACY.md`、`SECURITY.md`、`CONTRIBUTING.md`。
 - [x] 增加 `THIRD_PARTY_NOTICES.md` 并保留 BSD 3-Clause 正文。
@@ -43,7 +43,7 @@ App 版本：`0.1.1 (3)`
 
 ```bash
 VERSION="0.1.1" \
-BUILD_NUMBER="3" \
+BUILD_NUMBER="17" \
 bash Scripts/build-release.sh
 bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 ```
@@ -62,22 +62,23 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 ## 最终验证
 
 - [ ] 从干净 tag 构建，不使用工作区未提交文件。
-- [ ] 挂载 DMG 后，“顶屿.app”签名验证通过，且“Applications”快捷入口正确指向 `/Applications`。
+- [x] 挂载 DMG 后，“顶屿.app”签名验证通过，且“Applications”快捷入口正确指向 `/Applications`。
 - [ ] 正式签名版 `spctl -a -vv -t exec` 通过。
 - [ ] 公证版 `xcrun stapler validate` 通过。
-- [ ] App 主二进制为 arm64，最低系统版本为 26.0。
-- [ ] Vendor framework 最低系统版本为 26.0，包含 arm64。
+- [x] App 主二进制为 arm64，最低系统版本为 26.0。
+- [x] Vendor framework 最低系统版本为 26.0，包含 arm64。
 - [ ] Release 页附 SHA-256、已知限制、权限说明和第三方声明。
 - [ ] 从旧原型升级后，重新授予辅助功能、日历和提醒事项权限，并确认新 Bundle ID 下功能正常。
 
 ## P0 实机回归
 
-- [ ] 汽水单独播放：歌名、歌手、封面、播放态和进度同步。
+- [x] 汽水单独播放：歌名、歌手、封面、播放态和进度同步。
+- [x] 汽水重启后 `AXManualAccessibility` 从 `0` 自动初始化为 `1`，第一次控制无需激活汽水即可成功。
 - [ ] 连续切歌 10 次：元数据原子更新，无旧回包覆盖。
 - [ ] 播放 / 暂停快速点击：状态和时间不回退。
-- [ ] 进度点击和拖动：无归零、回弹或误控。
+- [x] 进度条保持只读，不发送系统全局 seek，不会误控视频。
 - [ ] 抖音播放并抢占媒体焦点后，汽水仍持续同步。
 - [ ] 抖音前台时三种控制只命中汽水，前台 0 切换、鼠标 0 位移、抖音 0 误控。
-- [ ] QuickTime / QuickPlayer 并存行为与抖音一致。
+- [x] QuickTime 前台时播放/暂停、下一首、上一首只命中汽水；QuickTime 播放开关与时间线零变化。
 - [ ] 展开、收回、连续点击和悬停动画无跳位或明显卡顿。
 - [ ] 日历和提醒事项授权、撤权、关闭开关及大日历库回归。

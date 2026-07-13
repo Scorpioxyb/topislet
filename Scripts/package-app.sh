@@ -14,7 +14,7 @@ move_to_trash_if_present() {
   /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
 }
 
-swift build --package-path "$ROOT"
+swift build --package-path "$ROOT" -debug-info-format none
 move_to_trash_if_present "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"

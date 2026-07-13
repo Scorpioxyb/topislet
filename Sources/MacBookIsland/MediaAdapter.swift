@@ -31,17 +31,6 @@ enum MusicControlCommand: Sendable, Equatable {
         }
     }
 
-    var targetedMediaRemoteCommandID: UInt32 {
-        switch self {
-        case .playPause:
-            return 2
-        case .nextTrack:
-            return 4
-        case .previousTrack:
-            return 5
-        }
-    }
-
 }
 
 enum MusicSeekInteraction {
@@ -167,7 +156,6 @@ private struct ControlDispatchResult {
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
     private let qishuiAXChangeMonitor = QishuiAXChangeMonitor()
-    private let qishuiTargetedMediaController = QishuiTargetedMediaController()
     private let qishuiSemanticAXController = QishuiSemanticAXController()
     private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
@@ -353,24 +341,9 @@ final class MusicAdapterCoordinator {
         guard generation == controlGeneration else {
             return ControlDispatchResult(
                 didPress: false,
-                diagnostic: "旧控制操作已失效，未向汽水发送命令。"
+                diagnostic: "旧控制操作已失效，未触发汽水语义控件。"
             )
         }
-
-        let targetedResult = await postTargetedControl(command)
-        guard generation == controlGeneration else {
-            return ControlDispatchResult(
-                didPress: false,
-                diagnostic: "旧控制操作已失效，忽略其执行结果。"
-            )
-        }
-        if targetedResult.didSend {
-            return ControlDispatchResult(
-                didPress: true,
-                diagnostic: targetedResult.diagnostic
-            )
-        }
-
         let semanticResult = await pressSemanticControl(command)
         guard generation == controlGeneration else {
             return ControlDispatchResult(
@@ -380,19 +353,8 @@ final class MusicAdapterCoordinator {
         }
         return ControlDispatchResult(
             didPress: semanticResult.didPress,
-            diagnostic: "\(targetedResult.diagnostic) \(semanticResult.diagnostic)"
+            diagnostic: semanticResult.diagnostic
         )
-    }
-
-    private func postTargetedControl(
-        _ command: MusicControlCommand
-    ) async -> QishuiTargetedControlResult {
-        let targetedController = qishuiTargetedMediaController
-        return await withCheckedContinuation { continuation in
-            qishuiControlQueue.async {
-                continuation.resume(returning: targetedController.post(command))
-            }
-        }
     }
 
     private func pressSemanticControl(

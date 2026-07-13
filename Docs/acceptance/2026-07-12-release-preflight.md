@@ -1,8 +1,8 @@
-# 顶屿 v0.1.0 发布预检记录
+# 顶屿 v0.1.1 发布预检记录
 
-- 日期：2026-07-12
+- 日期：2026-07-13
 - Bundle ID：`io.github.scorpioxyb.topislet`
-- 目标：`TopIslet-v0.1.0-arm64.dmg`
+- 目标：`TopIslet-v0.1.1-arm64.dmg`
 
 ## 已通过的自动检查
 
@@ -23,6 +23,7 @@
 
 ## 最终实机动态回归
 
+- build 17 安装包已完成动态闭环：汽水重启后自动初始化 `AXManualAccessibility`，三种控制在 QuickTime 前台时只影响汽水，QuickTime 播放开关和时间线零变化。
 - 汽水单独播放、连续切歌 10 次、播放/暂停、seek。
 - 抖音抢占媒体焦点后汽水专属流同步与语义 AX 直控。
 - QuickTime / QuickPlayer 并存。

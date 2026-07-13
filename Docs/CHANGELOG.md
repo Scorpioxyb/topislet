@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-### v0.1.1-alpha.1 音乐适配稳定化
+### v0.1.1-alpha.2 音乐适配稳定化
 
+- 修复汽水重启或长时间后台运行后播放按钮偶发无反应：控制前显式开启 Electron/Chromium 的 `AXManualAccessibility` 控件树，再执行唯一语义控件校验；该初始化不激活汽水、不切换前台 App，也不发送系统媒体命令。
 - 修复播放按钮点击无反应：移除会吞掉点击的额外原生透明命中层，三个媒体控制统一恢复为标准 SwiftUI 按钮；展开 Body 从第一帧启用命中，并由 HostingView 接受 `first mouse`。窗口仍不能成为 Main，且保留 `.nonactivatingPanel`，不会把抖音等前台应用切走。
-- 汽水音乐当前版本不再把底部控制暴露为可 `AXPress` 的按钮时，播放/暂停、上一首、下一首优先通过 `send-client com.soda.music` 直接发给汽水 MediaRemote client；只有定向通道不可用时才回退到汽水 PID 内的语义辅助功能控件，不使用系统全局媒体命令。
+- 播放/暂停、上一首、下一首只在顶屿能够唯一确认汽水音乐进程内的语义播放控件时执行；无法确认时安全失败，不再使用会受 QuickTime 等系统媒体焦点影响的 MediaRemote 控制通道。
 - 非激活的展开面板收到第一下 `mouseDown` 时先成为 Key，再把同一事件继续交给 SwiftUI 控件，避免抖音等其他 App 在前台时第一下点击只聚焦、不执行播放按钮。
 - 实机复现并移除系统全局进度跳转：汽水暂停、抖音播放时，旧版点击汽水进度条会把抖音从 `15:34` 跳到 `16:40`；新版在汽水没有 client-targeted seek 前只显示可信进度，不再发送全局 seek。
 - 产品播放状态不再采用普通系统 Now Playing 或控制中心诊断作为 fallback；歌曲、封面、播放态和进度只接受 `com.soda.music` 专属 client 流及汽水 PID 内 AX 数据。

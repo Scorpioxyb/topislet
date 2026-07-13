@@ -150,28 +150,6 @@ if let semanticControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-sem
     exit(result.didPress ? 0 : 2)
 }
 
-if let targetedControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-targeted-control") {
-    let rawCommand = CommandLine.arguments.indices.contains(targetedControlIndex + 1)
-        ? CommandLine.arguments[targetedControlIndex + 1]
-        : "playPause"
-    guard let controlCommand = command(named: rawCommand) else {
-        print("error=unsupported_control_command")
-        print("supported=playPause,next,previous")
-        exit(64)
-    }
-
-    let source = MediaRemoteAdapterStreamSource()
-    print("BEFORE")
-    printMediaRemoteSnapshot(source.refreshOnce())
-    let result = QishuiTargetedMediaController().post(controlCommand)
-    print("targetedQishuiControlSent=\(result.didSend)")
-    print("diagnostic=\(result.diagnostic)")
-    usleep(220_000)
-    print("AFTER")
-    printMediaRemoteSnapshot(source.refreshOnce())
-    exit(result.didSend ? 0 : 2)
-}
-
 if let watchIndex = CommandLine.arguments.firstIndex(of: "--mediaremote-watch") {
     let seconds = CommandLine.arguments.indices.contains(watchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[watchIndex + 1]) ?? 20)
