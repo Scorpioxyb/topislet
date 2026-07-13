@@ -24,15 +24,16 @@ func qishuiIsTheOnlyActiveMusicAdapter() throws {
     #expect(!qishui.capabilities.contains(.absoluteSeek))
 }
 
-@Test("Apple Music 只登记为计划接入")
-func appleMusicIsRegisteredAsPlanned() throws {
+@Test("Apple Music 登记为实验适配并声明定向能力")
+func appleMusicIsRegisteredAsExperimental() throws {
     let appleMusic = try #require(
         MusicAdapterRegistry.registration(forBundleIdentifier: "com.apple.Music")
     )
 
-    #expect(appleMusic.implementationStatus == .planned)
-    #expect(appleMusic.capabilities.isEmpty)
-    #expect(appleMusic.capabilitySummary == "尚未启用")
+    #expect(appleMusic.implementationStatus == .experimental)
+    #expect(appleMusic.capabilities.contains(.metadata))
+    #expect(appleMusic.capabilities.contains(.absoluteSeek))
+    #expect(!appleMusic.capabilities.contains(.artwork))
 }
 
 @Test("控制能力只能在绑定具体应用实例后声明可用")

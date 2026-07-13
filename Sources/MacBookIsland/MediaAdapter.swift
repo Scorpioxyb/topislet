@@ -181,6 +181,7 @@ final class MusicAdapterCoordinator {
     private var realtimeRefreshQueued = false
     private var playbackPositionRefreshInFlight = false
     private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
+    private var qishuiLifecycleObservers: [NSObjectProtocol] = []
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -200,6 +201,7 @@ final class MusicAdapterCoordinator {
 
     func startRealtimeObservation(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
         realtimeUpdateHandler = onUpdate
+        startQishuiLifecycleObservation()
         mediaRemoteAdapterStreamSource.start { [weak self] in
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
@@ -213,6 +215,7 @@ final class MusicAdapterCoordinator {
 
     func stopRealtimeObservation() {
         realtimeUpdateHandler = nil
+        stopQishuiLifecycleObservation()
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
         resetPendingPlaybackOperation(clearTimelineFloor: true)
@@ -233,19 +236,7 @@ final class MusicAdapterCoordinator {
     func performControl(_ command: MusicControlCommand) async -> MusicControlOutcome {
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
-            latestMediaRemoteSnapshot = nil
-            latestQishuiSnapshot = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: true)
-            previousQishuiProgress = nil
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水音乐",
-                availability: .qishuiNotRunning,
-                headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
-                checkedAt: Date()
-            )
+            markQishuiNotRunning()
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
@@ -501,20 +492,7 @@ final class MusicAdapterCoordinator {
     ) -> MusicSourceStatus {
         _ = promptForPermission
         guard qishuiAdapter.isRunning() else {
-            latestMediaRemoteSnapshot = nil
-            latestQishuiSnapshot = nil
-            lastSourceRefreshAt = Date()
-            resetPendingPlaybackOperation(clearTimelineFloor: true)
-            previousQishuiProgress = nil
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水音乐",
-                availability: .qishuiNotRunning,
-                headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
-                checkedAt: Date()
-            )
+            markQishuiNotRunning()
             return cachedStatus
         }
 
@@ -574,18 +552,7 @@ final class MusicAdapterCoordinator {
         lastSourceRefreshAt = snapshot.checkedAt
 
         guard snapshot.isRunning else {
-            latestMediaRemoteSnapshot = nil
-            resetPendingPlaybackOperation(clearTimelineFloor: true)
-            previousQishuiProgress = nil
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-            cachedStatus = MusicSourceStatus(
-                sourceName: "汽水音乐",
-                availability: .qishuiNotRunning,
-                headline: "未检测到汽水音乐",
-                detail: "当前不显示假播放数据；打开汽水音乐后，顶屿会自动检测运行状态。",
-                checkedAt: Date()
-            )
+            markQishuiNotRunning(checkedAt: snapshot.checkedAt)
             return cachedStatus
         }
 
@@ -621,6 +588,82 @@ final class MusicAdapterCoordinator {
             checkedAt: snapshot.checkedAt
         )
         return cachedStatus
+    }
+
+    private func startQishuiLifecycleObservation() {
+        stopQishuiLifecycleObservation()
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let terminatedObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleIdentifier = (
+                notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication
+            )?.bundleIdentifier
+            guard bundleIdentifier == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                self?.markQishuiNotRunning()
+                self?.publishCurrentState()
+            }
+        }
+        let launchedObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleIdentifier = (
+                notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication
+            )?.bundleIdentifier
+            guard bundleIdentifier == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.lastSourceRefreshAt = nil
+                self.qishuiAdapter.invalidateAXCache()
+                self.qishuiSemanticAXController.invalidateCache()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                _ = self.refreshSourceStatus()
+                self.publishCurrentState()
+            }
+        }
+        qishuiLifecycleObservers = [terminatedObserver, launchedObserver]
+    }
+
+    private func stopQishuiLifecycleObservation() {
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        for observer in qishuiLifecycleObservers {
+            notificationCenter.removeObserver(observer)
+        }
+        qishuiLifecycleObservers.removeAll()
+    }
+
+    private func markQishuiNotRunning(checkedAt: Date = Date()) {
+        controlGeneration += 1
+        latestMediaRemoteSnapshot = nil
+        latestQishuiSnapshot = nil
+        lastSourceRefreshAt = checkedAt
+        lastPlaybackPositionRefreshAt = nil
+        lastTrackControlStartedAt = nil
+        resetPendingPlaybackOperation(clearTimelineFloor: true)
+        previousQishuiProgress = nil
+        qishuiStationarySince = nil
+        inferredQishuiIsPlaying = nil
+        qishuiAdapter.invalidateAXCache()
+        qishuiSemanticAXController.invalidateCache()
+        mediaRemoteAdapterStreamSource.invalidateQishuiSession()
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水音乐",
+            availability: .qishuiNotRunning,
+            headline: "未检测到汽水音乐",
+            detail: "当前不显示播放数据；打开汽水音乐后，顶屿会自动恢复。",
+            checkedAt: checkedAt
+        )
     }
 
     private func refreshSourceStatusIfNeeded() -> MusicSourceStatus? {

@@ -66,9 +66,12 @@ chmod +x "$APP/Contents/MacOS/$EXECUTABLE_NAME"
 xattr -cr "$APP"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
+  codesign --force --deep --sign - \
+    --entitlements "$ROOT/Packaging/TopIslet.entitlements" \
+    --identifier "$BUNDLE_ID" "$APP"
 else
   codesign --force --deep --options runtime --timestamp \
+    --entitlements "$ROOT/Packaging/TopIslet.entitlements" \
     --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
 fi
 

@@ -13,12 +13,22 @@ let package = Package(
         .executable(name: "QishuiStateProbe", targets: ["QishuiStateProbe"])
     ],
     targets: [
-        .executableTarget(name: "MacBookIsland"),
+        .executableTarget(
+            name: "MacBookIsland",
+            dependencies: ["AppleMusicBridge"]
+        ),
+        .target(
+            name: "AppleMusicBridge",
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("ScriptingBridge")
+            ]
+        ),
         .executableTarget(name: "QishuiProbe"),
         .executableTarget(name: "QishuiStateProbe"),
         .testTarget(
             name: "MacBookIslandTests",
-            dependencies: ["MacBookIsland"]
+            dependencies: ["MacBookIsland", "AppleMusicBridge"]
         )
     ]
 )

@@ -30,6 +30,7 @@ xattr -cr "$APP"
 xattr -dr com.apple.FinderInfo "$APP" 2>/dev/null || true
 xattr -dr 'com.apple.fileprovider.fpfs#P' "$APP" 2>/dev/null || true
 codesign --force --deep --sign - \
+  --entitlements "$ROOT/Packaging/TopIslet.entitlements" \
   --identifier "$BUNDLE_ID" \
   --requirements "=designated => identifier \"$BUNDLE_ID\"" \
   "$APP" >/dev/null

@@ -2,6 +2,37 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("汽水会话失效后不能恢复上一首歌曲")
+@MainActor
+func invalidatedQishuiSessionCannotRestorePreviousTrack() throws {
+    let source = MediaRemoteAdapterStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 900)
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTimeNow":30}}"#.utf8)
+    let latePosition = Data(#"{"type":"data","diff":true,"payload":{"elapsedTimeNow":31,"playing":1}}"#.utf8)
+
+    let first = try #require(source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 90
+    ))
+    let previousGeneration = source.metadataRequestGenerationForTesting()
+    #expect(first.currentTrack?.title == "Song A")
+    #expect(source.hasVerifiedQishuiClientState())
+
+    source.invalidateQishuiSession()
+
+    #expect(source.snapshot() == nil)
+    #expect(!source.hasVerifiedQishuiClientState())
+    #expect(source.metadataRequestGenerationForTesting() > previousGeneration)
+
+    let afterLatePosition = source.ingestStreamEnvelopeForTesting(
+        latePosition,
+        receivedAt: startedAt.addingTimeInterval(1),
+        receivedUptime: 91
+    )
+    #expect(afterLatePosition?.currentTrack == nil)
+}
+
 @Test("元数据差分不能把缓存的 elapsedTimeNow 重新锚定为旧进度")
 @MainActor
 func metadataDiffDoesNotReanchorCachedElapsedTimeNow() throws {

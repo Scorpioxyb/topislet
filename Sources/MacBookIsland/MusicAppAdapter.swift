@@ -33,12 +33,15 @@ protocol MusicAppAdapter: AnyObject {
 
 enum MusicAdapterImplementationStatus: String, Equatable, Sendable {
     case active
+    case experimental
     case planned
 
     var displayName: String {
         switch self {
         case .active:
             return "已适配"
+        case .experimental:
+            return "实验适配"
         case .planned:
             return "计划接入"
         }
@@ -120,14 +123,26 @@ enum MusicAdapterRegistry {
             bundleIdentifier: "com.apple.Music",
             displayName: "Apple Music"
         ),
-        implementationStatus: .planned,
-        capabilities: []
+        implementationStatus: .experimental,
+        capabilities: [
+            .metadata,
+            .playbackState,
+            .progress,
+            .playPause,
+            .previousTrack,
+            .nextTrack,
+            .absoluteSeek
+        ]
     )
 
     static let registrations = [qishui, appleMusic]
 
     static var activeRegistrations: [MusicAdapterRegistration] {
         registrations.filter { $0.implementationStatus == .active }
+    }
+
+    static var experimentalRegistrations: [MusicAdapterRegistration] {
+        registrations.filter { $0.implementationStatus == .experimental }
     }
 
     static func registration(

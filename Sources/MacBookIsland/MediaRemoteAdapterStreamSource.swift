@@ -175,6 +175,26 @@ final class MediaRemoteAdapterStreamSource {
         adapterPaths() != nil
     }
 
+    func invalidateQishuiSession() {
+        outputBuffer.removeAll()
+        mergedPayload.removeAll()
+        lastPublishedPayload.removeAll()
+        clearDeferredTrackPublication()
+        latestSnapshot = nil
+        latestRawSnapshot = nil
+        lastVerifiedQishuiSnapshot = nil
+        playbackPositionAnchor = nil
+        latestSignature = nil
+        metadataRequestGeneration += 1
+        pendingArtworkRequestLookupKey = nil
+        lastArtworkRequestLookupKey = nil
+        lastArtworkRequestAt = nil
+        artworkCache.removeAll()
+        artworkCacheOrder.removeAll()
+        clearSeekTimelineAnchor()
+        sampleOrigin = .unknown
+    }
+
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
         guard let paths = adapterPaths(),
               let payload = Self.runGet(
@@ -302,18 +322,7 @@ final class MediaRemoteAdapterStreamSource {
             process?.terminate()
         }
         process = nil
-        outputBuffer.removeAll()
-        deferredTrackPublicationTask?.cancel()
-        deferredTrackPublicationTask = nil
-        deferredTrackPublicationStartedAt = nil
-        deferredTrackBaselinePayload = nil
-        deferredTrackReferencePayloads.removeAll()
-        deferredTrackCandidateIdentity = nil
-        deferredTimelinePayload = nil
-        deferredTrackPublicationGeneration += 1
-        metadataRequestGeneration += 1
-        playbackPositionAnchor = nil
-        clearSeekTimelineAnchor()
+        invalidateQishuiSession()
     }
 
     private func consume(_ data: Data, onChange: @escaping ChangeHandler) {
