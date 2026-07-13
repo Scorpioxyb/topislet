@@ -25,6 +25,7 @@
 - `--apple-music-status` 的 `metadataLatencyMilliseconds` 在封面未缓存时也只统计轻量播放快照，封面网络请求不得阻塞该数值；本机基线约为 206ms。
 - Apple Music 快速切歌时，迟到的上一首封面不得覆盖当前歌曲；封面读取失败时仍保留正确歌名、播放状态、进度和控制能力。
 - Apple Music 封面异步出现前后，进度不得倒退、暂停状态不得恢复推进、控制 `verifiedAt` 不得被缓存封面伪造为刚刚验证。
+- Apple Music 稳态播放 30 秒内不得持续高频发送 Apple Event；正常情况下依赖 `com.apple.Music.playerInfo`，播放 / 暂停 / 后台兜底间隔分别不短于 5 / 10 / 15 秒，且不得触发“无法处理此请求”商店警告。
 - 前台激活汽水时岛立即切到汽水，前台激活 Apple Music 时立即切到 Apple Music；即使当前无歌曲，也显示对应应用的空闲状态。
 - 离开两个音乐应用后按真实播放状态兜底；两者同时播放且都不在前台时汽水优先。
 - Apple Music 刚开始播放后立即点击控制，命令必须发给 Apple Music，汽水曲目、播放态和进度不变。

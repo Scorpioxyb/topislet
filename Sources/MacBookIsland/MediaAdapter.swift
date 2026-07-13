@@ -167,6 +167,29 @@ private struct ControlDispatchResult {
     let diagnostic: String
 }
 
+enum AppleMusicRefreshPolicy {
+    static func interval(
+        isSelected: Bool,
+        isPlaying: Bool,
+        recentlyControlled: Bool,
+        consecutiveFailures: Int
+    ) -> TimeInterval {
+        let baseInterval: TimeInterval
+        if isSelected, isPlaying || recentlyControlled {
+            baseInterval = 5
+        } else if isSelected {
+            baseInterval = 10
+        } else {
+            baseInterval = 15
+        }
+        let backoffMultiplier = min(
+            pow(2, Double(max(consecutiveFailures, 0))),
+            4
+        )
+        return baseInterval * backoffMultiplier
+    }
+}
+
 @MainActor
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
@@ -1129,19 +1152,12 @@ final class MusicAdapterCoordinator {
         let recentlyControlled = lastAppleMusicControlAt.map {
             now.timeIntervalSince($0) < 2
         } ?? false
-        let baseInterval: TimeInterval
-        if isSelected, isPlaying || recentlyControlled {
-            baseInterval = 0.75
-        } else if isSelected {
-            baseInterval = 1.5
-        } else {
-            baseInterval = 3.0
-        }
-        let backoffMultiplier = min(
-            pow(2, Double(appleMusicConsecutiveRefreshFailures)),
-            4
+        let interval = AppleMusicRefreshPolicy.interval(
+            isSelected: isSelected,
+            isPlaying: isPlaying,
+            recentlyControlled: recentlyControlled,
+            consecutiveFailures: appleMusicConsecutiveRefreshFailures
         )
-        let interval = baseInterval * backoffMultiplier
         if !force,
            let lastAppleMusicRefreshCompletedAt,
            now.timeIntervalSince(lastAppleMusicRefreshCompletedAt) < interval {

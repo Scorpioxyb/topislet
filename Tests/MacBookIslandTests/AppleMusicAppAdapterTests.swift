@@ -213,6 +213,44 @@ func appleMusicArtworkOnlyUpdatePreservesAuthoritativeSnapshot() throws {
     #expect(updated.revision == 8)
 }
 
+@Test("Apple Music 稳态轮询以通知为主并降低频率")
+func appleMusicRefreshPolicyUsesLowFrequencyFallback() {
+    #expect(AppleMusicRefreshPolicy.interval(
+        isSelected: true,
+        isPlaying: true,
+        recentlyControlled: false,
+        consecutiveFailures: 0
+    ) == 5)
+    #expect(AppleMusicRefreshPolicy.interval(
+        isSelected: true,
+        isPlaying: false,
+        recentlyControlled: false,
+        consecutiveFailures: 0
+    ) == 10)
+    #expect(AppleMusicRefreshPolicy.interval(
+        isSelected: false,
+        isPlaying: true,
+        recentlyControlled: false,
+        consecutiveFailures: 0
+    ) == 15)
+}
+
+@Test("Apple Music 轮询失败会指数退避")
+func appleMusicRefreshPolicyBacksOffFailures() {
+    #expect(AppleMusicRefreshPolicy.interval(
+        isSelected: true,
+        isPlaying: true,
+        recentlyControlled: false,
+        consecutiveFailures: 1
+    ) == 10)
+    #expect(AppleMusicRefreshPolicy.interval(
+        isSelected: true,
+        isPlaying: true,
+        recentlyControlled: false,
+        consecutiveFailures: 4
+    ) == 20)
+}
+
 @Test("Apple Music 停止状态不伪造歌曲和进度")
 func stoppedAppleMusicDoesNotCreateFakeTrack() throws {
     let observation = try #require(AppleMusicObservation.decode(fields: [

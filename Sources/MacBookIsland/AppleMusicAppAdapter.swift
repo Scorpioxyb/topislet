@@ -472,6 +472,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     let descriptor = MusicAdapterRegistry.appleMusic.descriptor
 
     private var notificationToken: NSObjectProtocol?
+    private var playerInfoDebounceTask: Task<Void, Never>?
     private var invalidationHandler: (@MainActor @Sendable (
         MusicAdapterInvalidation
     ) -> Void)?
@@ -512,7 +513,13 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.invalidationHandler?(.sourceChanged)
+                guard let self else { return }
+                self.playerInfoDebounceTask?.cancel()
+                self.playerInfoDebounceTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 60_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.invalidationHandler?(.sourceChanged)
+                }
             }
         }
     }
@@ -522,6 +529,8 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             DistributedNotificationCenter.default().removeObserver(notificationToken)
         }
         notificationToken = nil
+        playerInfoDebounceTask?.cancel()
+        playerInfoDebounceTask = nil
         cancelArtworkFetch()
         invalidationHandler = nil
     }
