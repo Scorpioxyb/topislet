@@ -190,6 +190,51 @@ enum AppleMusicRefreshPolicy {
     }
 }
 
+enum AppleMusicPlaybackSnapshotResolution: Equatable {
+    case reject
+    case acceptAndClear
+}
+
+struct AppleMusicPlaybackControlExpectation: Equatable {
+    static let staleSnapshotGraceInterval: TimeInterval = 1.2
+
+    let instance: MusicAppInstance
+    let trackIdentity: MusicTrackIdentity
+    let targetState: MusicPlaybackState
+    let issuedAt: Date
+
+    static func action(for targetState: MusicPlaybackState) -> MusicControlAction? {
+        switch targetState {
+        case .playing:
+            return .play
+        case .paused:
+            return .pause
+        case .stopped, .unknown:
+            return nil
+        }
+    }
+
+    func resolution(
+        for snapshot: MusicAppSnapshot,
+        at now: Date
+    ) -> AppleMusicPlaybackSnapshotResolution {
+        guard case .ready = snapshot.availability else {
+            return .acceptAndClear
+        }
+        guard snapshot.instance == instance,
+              snapshot.track?.identity == trackIdentity else {
+            return .acceptAndClear
+        }
+        guard snapshot.playbackState != targetState else {
+            return .acceptAndClear
+        }
+        if now.timeIntervalSince(issuedAt) < Self.staleSnapshotGraceInterval {
+            return .reject
+        }
+        return .acceptAndClear
+    }
+}
+
 @MainActor
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
@@ -234,6 +279,8 @@ final class MusicAdapterCoordinator {
     private var appleMusicConsecutiveRefreshFailures = 0
     private var appleMusicControlRequestID: UInt64 = 0
     private var appleMusicControlGeneration: UInt64 = 0
+    private var pendingAppleMusicPlaybackControl: AppleMusicPlaybackControlExpectation?
+    private var appleMusicPlaybackExpectationTask: Task<Void, Never>?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -481,17 +528,17 @@ final class MusicAdapterCoordinator {
             )
         }
         let controlKind: MusicControlKind
-        let action: MusicControlAction
+        let defaultAction: MusicControlAction
         switch command {
         case .playPause:
             controlKind = .playPause
-            action = .playPause
+            defaultAction = .playPause
         case .previousTrack:
             controlKind = .previousTrack
-            action = .previousTrack
+            defaultAction = .previousTrack
         case .nextTrack:
             controlKind = .nextTrack
-            action = .nextTrack
+            defaultAction = .nextTrack
         }
         guard case let .ready(target, mechanism, _) = snapshot.controls.values[controlKind],
               target == instance,
@@ -506,25 +553,43 @@ final class MusicAdapterCoordinator {
             )
         }
 
+        appleMusicControlGeneration &+= 1
+        let controlGeneration = appleMusicControlGeneration
+        let controlIssuedAt = Date()
+        lastAppleMusicControlAt = controlIssuedAt
+        clearAppleMusicPlaybackControlExpectation()
+        let resolvedAction: MusicControlAction
+        if controlKind == .playPause,
+           let optimisticSnapshot = appleMusicSnapshot(
+            togglingPlaybackIn: snapshot,
+            at: controlIssuedAt
+           ),
+           let targetedAction = AppleMusicPlaybackControlExpectation.action(
+            for: optimisticSnapshot.playbackState
+           ) {
+            resolvedAction = targetedAction
+            let expectation = AppleMusicPlaybackControlExpectation(
+                instance: instance,
+                trackIdentity: track.identity,
+                targetState: optimisticSnapshot.playbackState,
+                issuedAt: controlIssuedAt
+            )
+            beginAppleMusicPlaybackControlExpectation(
+                expectation,
+                generation: controlGeneration
+            )
+            latestAppleMusicSnapshot = optimisticSnapshot
+            publishCurrentState()
+        } else {
+            resolvedAction = defaultAction
+        }
         appleMusicControlRequestID &+= 1
         let request = MusicControlRequest(
             id: appleMusicControlRequestID,
             target: instance,
             expectedTrack: track.identity,
-            action: action
+            action: resolvedAction
         )
-        appleMusicControlGeneration &+= 1
-        let controlGeneration = appleMusicControlGeneration
-        lastAppleMusicControlAt = Date()
-        let baselineSnapshot = snapshot
-        if controlKind == .playPause,
-           let optimisticSnapshot = appleMusicSnapshot(
-            togglingPlaybackIn: snapshot,
-            at: Date()
-           ) {
-            latestAppleMusicSnapshot = optimisticSnapshot
-            publishCurrentState()
-        }
         let result = await appleMusicAdapter.perform(request)
         let succeeded = result.disposition == .accepted
         guard controlGeneration == appleMusicControlGeneration else {
@@ -541,18 +606,9 @@ final class MusicAdapterCoordinator {
             if controlKind != .previousTrack && controlKind != .nextTrack {
                 scheduleAppleMusicRefresh(force: true)
             }
-        } else if controlKind == .playPause,
-                  let current = latestAppleMusicSnapshot,
-                  current.instance == baselineSnapshot.instance,
-                  current.track?.identity == baselineSnapshot.track?.identity,
-                  let restoredSnapshot = appleMusicSnapshot(
-                    current,
-                    settingPlaybackState: baselineSnapshot.playbackState,
-                    at: Date(),
-                    diagnostic: "Apple Music 控制失败，已恢复本地播放状态。"
-                  ) {
-            latestAppleMusicSnapshot = restoredSnapshot
-            publishCurrentState()
+        } else if controlKind == .playPause {
+            clearAppleMusicPlaybackControlExpectation()
+            scheduleAppleMusicRefresh(force: true)
         }
         return MusicControlOutcome(
             status: appleMusicControlStatus(
@@ -1036,6 +1092,7 @@ final class MusicAdapterCoordinator {
                     self.appleMusicRefreshTask?.cancel()
                     self.appleMusicRefreshTask = nil
                     self.appleMusicRefreshQueued = false
+                    self.clearAppleMusicPlaybackControlExpectation()
                     self.latestAppleMusicSnapshot = nil
                     self.lastAppleMusicRefreshCompletedAt = Date()
                     self.appleMusicConsecutiveRefreshFailures = 0
@@ -1218,6 +1275,7 @@ final class MusicAdapterCoordinator {
         appleMusicRefreshQueued = false
         lastAppleMusicRefreshCompletedAt = nil
         lastAppleMusicControlAt = nil
+        clearAppleMusicPlaybackControlExpectation()
         appleMusicConsecutiveRefreshFailures = 0
         appleMusicAdapter.stop()
         latestAppleMusicSnapshot = nil
@@ -1231,6 +1289,7 @@ final class MusicAdapterCoordinator {
             appleMusicRefreshTask = nil
             appleMusicRefreshQueued = false
             appleMusicConsecutiveRefreshFailures = 0
+            clearAppleMusicPlaybackControlExpectation()
             if latestAppleMusicSnapshot != nil {
                 latestAppleMusicSnapshot = nil
                 lastAppleMusicRefreshCompletedAt = now
@@ -1293,7 +1352,42 @@ final class MusicAdapterCoordinator {
            current.checkedAt > snapshot.checkedAt {
             return
         }
+        if let expectation = pendingAppleMusicPlaybackControl {
+            switch expectation.resolution(for: snapshot, at: Date()) {
+            case .reject:
+                return
+            case .acceptAndClear:
+                clearAppleMusicPlaybackControlExpectation()
+            }
+        }
         latestAppleMusicSnapshot = snapshot
+    }
+
+    private func beginAppleMusicPlaybackControlExpectation(
+        _ expectation: AppleMusicPlaybackControlExpectation,
+        generation: UInt64
+    ) {
+        clearAppleMusicPlaybackControlExpectation()
+        pendingAppleMusicPlaybackControl = expectation
+        appleMusicPlaybackExpectationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(
+                AppleMusicPlaybackControlExpectation.staleSnapshotGraceInterval
+                    * 1_000_000_000
+            ))
+            guard !Task.isCancelled,
+                  let self,
+                  appleMusicControlGeneration == generation,
+                  pendingAppleMusicPlaybackControl == expectation else { return }
+            pendingAppleMusicPlaybackControl = nil
+            appleMusicPlaybackExpectationTask = nil
+            scheduleAppleMusicRefresh(force: true)
+        }
+    }
+
+    private func clearAppleMusicPlaybackControlExpectation() {
+        appleMusicPlaybackExpectationTask?.cancel()
+        appleMusicPlaybackExpectationTask = nil
+        pendingAppleMusicPlaybackControl = nil
     }
 
     private func publishCachedAppleMusicSnapshot() {

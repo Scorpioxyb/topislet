@@ -365,6 +365,12 @@ private enum AppleMusicBridgeRunner {
         case .playPause:
             actionName = "playPause"
             normalizedProgress = 0
+        case .play:
+            actionName = "play"
+            normalizedProgress = 0
+        case .pause:
+            actionName = "pause"
+            normalizedProgress = 0
         case .previousTrack:
             actionName = "previousTrack"
             normalizedProgress = 0

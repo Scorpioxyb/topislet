@@ -4015,23 +4015,23 @@ struct ControlButton: View {
                     .font(.system(size: prominent ? 13 : 12, weight: .bold))
                     .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
                     .scaleEffect(
-                        feedbackPulse && !reduceMotion
-                            ? (prominent ? 0.84 : 1.1)
-                            : 1
+                        feedbackPulse && !reduceMotion && !prominent ? 1.1 : 1
                     )
                     .id(icon)
                     .transition(iconTransition)
             }
             .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
             .scaleEffect(
-                feedbackPulse && prominent && !reduceMotion ? 0.94 : 1
+                feedbackPulse && prominent && !reduceMotion ? 0.96 : 1
             )
         }
         .buttonStyle(IslandControlButtonStyle())
         .animation(
             reduceMotion
                 ? .easeOut(duration: 0.08)
-                : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
+                : prominent
+                    ? .easeOut(duration: 0.1)
+                    : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
             value: icon
         )
         .onChange(of: feedbackToken) { _, token in
@@ -4046,7 +4046,7 @@ struct ControlButton: View {
     }
 
     private var iconTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
+        guard !reduceMotion, !prominent else { return .opacity }
         return .asymmetric(
             insertion: .opacity.combined(with: .scale(scale: 0.76)),
             removal: .opacity.combined(with: .scale(scale: 1.08))

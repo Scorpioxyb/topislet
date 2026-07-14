@@ -280,6 +280,132 @@ func appleMusicRefreshPolicyUsesLowFrequencyFallback() {
     ) == 15)
 }
 
+@Test("Apple Music 乐观播放状态拒绝同曲旧快照闪回")
+func appleMusicPlaybackControlRejectsConflictingSnapshotDuringGracePeriod() throws {
+    let issuedAt = Date(timeIntervalSince1970: 1_000)
+    let snapshot = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: issuedAt.addingTimeInterval(0.25)
+    )
+    let instance = try #require(snapshot.instance)
+    let track = try #require(snapshot.track)
+    let expectation = AppleMusicPlaybackControlExpectation(
+        instance: instance,
+        trackIdentity: track.identity,
+        targetState: .paused,
+        issuedAt: issuedAt
+    )
+
+    #expect(AppleMusicPlaybackControlExpectation.action(for: .playing) == .play)
+    #expect(AppleMusicPlaybackControlExpectation.action(for: .paused) == .pause)
+    #expect(AppleMusicPlaybackControlExpectation.action(for: .unknown) == nil)
+
+    #expect(expectation.resolution(
+        for: snapshot,
+        at: issuedAt.addingTimeInterval(0.3)
+    ) == .reject)
+}
+
+@Test("Apple Music 播放状态确认、超时或切歌会解除门控")
+func appleMusicPlaybackControlClearsExpectationOnAuthoritativeEvidence() throws {
+    let issuedAt = Date(timeIntervalSince1970: 1_000)
+    let playingSnapshot = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: issuedAt.addingTimeInterval(0.25)
+    )
+    let instance = try #require(playingSnapshot.instance)
+    let track = try #require(playingSnapshot.track)
+    let expectation = AppleMusicPlaybackControlExpectation(
+        instance: instance,
+        trackIdentity: track.identity,
+        targetState: .paused,
+        issuedAt: issuedAt
+    )
+    let confirmedSnapshot = appleMusicPlaybackSnapshot(
+        state: .paused,
+        checkedAt: issuedAt.addingTimeInterval(0.4)
+    )
+    let changedTrackSnapshot = appleMusicPlaybackSnapshot(
+        state: .playing,
+        providerIdentifier: "NEXT",
+        checkedAt: issuedAt.addingTimeInterval(0.4)
+    )
+    let unavailableSnapshot = MusicAppSnapshot(
+        descriptor: playingSnapshot.descriptor,
+        instance: playingSnapshot.instance,
+        availability: .permissionRequired(permission: "自动化 - Apple Music"),
+        track: nil,
+        playbackState: .unknown,
+        timeline: nil,
+        controls: .none,
+        revision: 2,
+        provenance: playingSnapshot.provenance,
+        checkedAt: issuedAt.addingTimeInterval(0.4),
+        diagnostic: "permission revoked"
+    )
+
+    #expect(expectation.resolution(
+        for: confirmedSnapshot,
+        at: issuedAt.addingTimeInterval(0.4)
+    ) == .acceptAndClear)
+    #expect(expectation.resolution(
+        for: playingSnapshot,
+        at: issuedAt.addingTimeInterval(1.3)
+    ) == .acceptAndClear)
+    #expect(expectation.resolution(
+        for: changedTrackSnapshot,
+        at: issuedAt.addingTimeInterval(0.4)
+    ) == .acceptAndClear)
+    #expect(expectation.resolution(
+        for: unavailableSnapshot,
+        at: issuedAt.addingTimeInterval(0.4)
+    ) == .acceptAndClear)
+}
+
+private func appleMusicPlaybackSnapshot(
+    state: MusicPlaybackState,
+    providerIdentifier: String = "TRACK",
+    checkedAt: Date
+) -> MusicAppSnapshot {
+    let descriptor = MusicAdapterRegistry.appleMusic.descriptor
+    let instance = MusicAppInstance(
+        app: descriptor,
+        processIdentifier: 42,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    return MusicAppSnapshot(
+        descriptor: descriptor,
+        instance: instance,
+        availability: .ready,
+        track: MusicTrackSnapshot(
+            identity: MusicTrackIdentity(
+                providerIdentifier: providerIdentifier,
+                fallbackSignature: providerIdentifier
+            ),
+            title: providerIdentifier,
+            artist: "Artist",
+            album: "Album",
+            artworkData: nil,
+            lyrics: []
+        ),
+        playbackState: state,
+        timeline: MusicTimelineSnapshot(
+            elapsedTime: 42,
+            duration: 240,
+            playbackRate: state == .playing ? 1 : 0,
+            observedAt: checkedAt
+        ),
+        controls: MusicControlCapabilities(values: [:]),
+        revision: 1,
+        provenance: MusicSnapshotProvenance(
+            bundleIdentifier: descriptor.bundleIdentifier,
+            mechanisms: [.appleEvent]
+        ),
+        checkedAt: checkedAt,
+        diagnostic: "test"
+    )
+}
+
 @Test("Apple Music 轮询失败会指数退避")
 func appleMusicRefreshPolicyBacksOffFailures() {
     #expect(AppleMusicRefreshPolicy.interval(

@@ -341,6 +341,10 @@ BOOL TopIsletAppleMusicPerformAction(
     delegate.lastError = nil;
     if ([action isEqualToString:@"playPause"]) {
         [application sendEvent:'hook' id:'PlPs' parameters:0];
+    } else if ([action isEqualToString:@"play"]) {
+        [application sendEvent:'hook' id:'Play' parameters:0];
+    } else if ([action isEqualToString:@"pause"]) {
+        [application sendEvent:'hook' id:'Paus' parameters:0];
     } else if ([action isEqualToString:@"previousTrack"]) {
         [application sendEvent:'hook' id:'Prev' parameters:0];
     } else if ([action isEqualToString:@"nextTrack"]) {
