@@ -227,6 +227,17 @@ func appleMusicArtworkOnlyUpdatePreservesAuthoritativeSnapshot() throws {
     #expect(updated.controls == snapshot.controls)
     #expect(updated.checkedAt == snapshot.checkedAt)
     #expect(updated.revision == 8)
+
+    let differentProviderIdentity = MusicTrackIdentity(
+        providerIdentifier: "DIFFERENT-ID",
+        fallbackSignature: identity.fallbackSignature
+    )
+    #expect(appleMusicSnapshotByReplacingArtworkData(
+        snapshot,
+        artworkData: artworkData,
+        identity: differentProviderIdentity,
+        revision: 8
+    ) == nil)
 }
 
 @Test("Apple Music 稳态轮询以通知为主并降低频率")

@@ -25,6 +25,8 @@
 - 已识别为无原生封面的电台连续切歌时，目录查询应从 `playerInfo` 通知开始并与权威快照并行；候选歌名、歌手或专辑与最终快照不一致时必须丢弃，不得提前显示错误封面。
 - `--apple-music-status` 的 `metadataLatencyMilliseconds` 与 `artworkLatencyMilliseconds` 应在原生封面歌曲上接近，本机基线约 265-300ms；电台目录网络请求不得阻塞前者。
 - 快速连续切歌时，旧快照完成不得清除后续 `playerInfo` 的封面请求；新封面数据发布后不得再额外淡入 160ms。
+- 原生封面预取必须同时校验 Apple Music PID、完整曲目 ID 和请求代次；同名同歌手但 persistent ID 不同的曲目不得共用预取结果。岛内切歌一次只能启动一个重型封面读取。
+- `playerInfo` 到达后原生封面预取应立即启动，UI 刷新仍可保持 60ms 合并；普通封面读取、原生预取和目录预取之间必须双向去重。目录 transient / notFound 后同曲通知不得绕过退避重复联网。
 - Apple Music 快速切歌时，迟到的上一首封面不得覆盖当前歌曲；封面读取失败时仍保留正确歌名、播放状态、进度和控制能力。
 - Apple Music 封面异步出现前后，进度不得倒退、暂停状态不得恢复推进、控制 `verifiedAt` 不得被缓存封面伪造为刚刚验证。
 - Apple Music 稳态播放 30 秒内不得持续高频发送 Apple Event；正常情况下依赖 `com.apple.Music.playerInfo`，播放 / 暂停 / 后台兜底间隔分别不短于 5 / 10 / 15 秒，且不得触发“无法处理此请求”商店警告。

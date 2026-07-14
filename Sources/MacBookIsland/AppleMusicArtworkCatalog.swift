@@ -82,7 +82,6 @@ struct AppleMusicCatalogArtworkResolver: Sendable {
         guard let title = observation.title,
               !title.isEmpty else { return .notFound }
 
-        var hadTransientFailure = false
         var searches: [String?] = []
         if let countryCode {
             searches.append(countryCode)
@@ -104,14 +103,16 @@ struct AppleMusicCatalogArtworkResolver: Sendable {
             case .notFound:
                 break
             case .transientFailure:
-                hadTransientFailure = true
+                // The regional and global searches use the same Apple endpoint.
+                // A timeout should not immediately trigger a second full timeout.
+                return .transientFailure
             }
             if artworkURL != nil {
                 break
             }
         }
         guard let artworkURL else {
-            return hadTransientFailure ? .transientFailure : .notFound
+            return .notFound
         }
 
         var request = URLRequest(url: artworkURL)

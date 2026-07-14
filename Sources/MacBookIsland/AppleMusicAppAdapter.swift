@@ -511,6 +511,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     let descriptor = MusicAdapterRegistry.appleMusic.descriptor
 
     private var notificationToken: NSObjectProtocol?
+    private var observationGeneration: UInt64 = 0
     private var playerInfoDebounceTask: Task<Void, Never>?
     private var invalidationHandler: (@MainActor @Sendable (
         MusicAdapterInvalidation
@@ -529,9 +530,18 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private var artworkFetchGeneration: UInt64 = 0
     private var preferArtworkOnNextMetadata = true
     private var shouldPrefetchCatalogFromPlayerInfo = false
+    private var nativeArtworkPrefetchTask: Task<Void, Never>?
+    private var nativeArtworkPrefetchRequest: AppleMusicArtworkBridgeRequest?
+    private var nativeArtworkPrefetchGeneration: UInt64 = 0
+    private var nativeArtworkPrefetchFallbackSignature: String?
     private var catalogPrefetchTask: Task<Void, Never>?
     private var catalogPrefetchGeneration: UInt64 = 0
     private var catalogPrefetchFallbackSignature: String?
+    private var catalogPrefetchFailure: (
+        fallbackSignature: String,
+        retryAfter: Date
+    )?
+    private var pendingNativeArtwork: (identity: MusicTrackIdentity, data: Data)?
     private var pendingCatalogArtwork: (fallbackSignature: String, data: Data)?
 
     init(
@@ -555,6 +565,8 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         ) -> Void
     ) {
         stop()
+        observationGeneration &+= 1
+        let generation = observationGeneration
         invalidationHandler = onInvalidation
         notificationToken = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.Music.playerInfo"),
@@ -565,16 +577,27 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 userInfo: notification.userInfo
             )
             Task { @MainActor in
-                guard let self else { return }
+                guard let self,
+                      generation == self.observationGeneration else { return }
+                if let candidate {
+                    if self.shouldPrefetchCatalogFromPlayerInfo {
+                        self.cancelNativeArtworkPrefetch(clearPending: true)
+                        self.preferArtworkOnNextMetadata = false
+                        self.scheduleCatalogPrefetch(for: candidate)
+                    } else {
+                        let didStartArtworkPrefetch = self
+                            .scheduleNativeArtworkPrefetch(for: candidate)
+                        self.preferArtworkOnNextMetadata = !didStartArtworkPrefetch
+                    }
+                } else {
+                    self.preferArtworkOnNextMetadata = true
+                }
                 self.playerInfoDebounceTask?.cancel()
                 self.playerInfoDebounceTask = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: 60_000_000)
-                    guard !Task.isCancelled, let self else { return }
-                    self.preferArtworkOnNextMetadata = true
-                    if self.shouldPrefetchCatalogFromPlayerInfo,
-                       let candidate {
-                        self.scheduleCatalogPrefetch(for: candidate)
-                    }
+                    guard !Task.isCancelled,
+                          let self,
+                          generation == self.observationGeneration else { return }
                     self.invalidationHandler?(.sourceChanged)
                 }
             }
@@ -582,6 +605,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     }
 
     func stop() {
+        observationGeneration &+= 1
         if let notificationToken {
             DistributedNotificationCenter.default().removeObserver(notificationToken)
         }
@@ -590,19 +614,18 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         playerInfoDebounceTask = nil
         preferArtworkOnNextMetadata = true
         shouldPrefetchCatalogFromPlayerInfo = false
+        catalogPrefetchFailure = nil
+        cancelNativeArtworkPrefetch(clearPending: true)
         cancelCatalogPrefetch(clearPending: true)
         cancelArtworkFetch()
         invalidationHandler = nil
-    }
-
-    func requestArtworkOnNextMetadata() {
-        preferArtworkOnNextMetadata = true
     }
 
     func snapshot(refresh: MusicSnapshotRefresh) async -> MusicAppSnapshot {
         let checkedAt = Date()
         guard let app = runningApplication() else {
             cancelArtworkFetch()
+            cancelNativeArtworkPrefetch(clearPending: true)
             cancelCatalogPrefetch(clearPending: true)
             lastObservation = nil
             lastInstance = nil
@@ -683,7 +706,19 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                         at: checkedAt
                     )
                     shouldPrefetchCatalogFromPlayerInfo = false
+                    cancelNativeArtworkPrefetch(clearPending: true)
                     cancelCatalogPrefetch(clearPending: true)
+                } else if let pendingNativeArtwork,
+                          pendingNativeArtwork.identity == identity {
+                    _ = artworkCache.store(
+                        pendingNativeArtwork.data,
+                        for: identity,
+                        at: checkedAt
+                    )
+                    resolvedObservation = observation.withArtworkData(
+                        pendingNativeArtwork.data
+                    )
+                    self.pendingNativeArtwork = nil
                 } else if let pendingCatalogArtwork,
                           pendingCatalogArtwork.fallbackSignature
                             == identity.fallbackSignature {
@@ -853,19 +888,151 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             .first
     }
 
-    private func scheduleCatalogPrefetch(
+    private func scheduleNativeArtworkPrefetch(
         for candidate: AppleMusicPlayerInfoCandidate
-    ) {
+    ) -> Bool {
         if let identity = lastObservation?.trackIdentity,
            identity.fallbackSignature == candidate.fallbackSignature,
            artworkCache.data(for: identity) != nil {
+            return true
+        }
+        if pendingNativeArtwork?.identity.fallbackSignature
+            == candidate.fallbackSignature {
+            return true
+        }
+        if nativeArtworkPrefetchFallbackSignature == candidate.fallbackSignature,
+           nativeArtworkPrefetchTask != nil {
+            return true
+        }
+        if artworkFetchIdentity?.fallbackSignature == candidate.fallbackSignature,
+           artworkFetchTask != nil {
+            return true
+        }
+        if catalogPrefetchFallbackSignature == candidate.fallbackSignature,
+           catalogPrefetchTask != nil {
+            return true
+        }
+        guard let app = runningApplication(),
+              Self.automationAccess(
+                prompt: false,
+                processIdentifier: app.processIdentifier
+              ) == .allowed else {
+            return false
+        }
+
+        cancelNativeArtworkPrefetch(clearPending: true)
+        cancelCatalogPrefetch(clearPending: true)
+        nativeArtworkPrefetchGeneration &+= 1
+        let generation = nativeArtworkPrefetchGeneration
+        let fallbackSignature = candidate.fallbackSignature
+        let processIdentifier = app.processIdentifier
+        let request = AppleMusicArtworkBridgeRequest()
+        nativeArtworkPrefetchRequest = request
+        nativeArtworkPrefetchFallbackSignature = fallbackSignature
+        nativeArtworkPrefetchTask = Task(priority: .userInitiated) { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await AppleMusicArtworkBridgeExecutor.shared.readObservation(
+                    processIdentifier: processIdentifier,
+                    request: request
+                )
+            } onCancel: {
+                request.cancel()
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.nativeArtworkPrefetchGeneration else {
+                return
+            }
+            self.finishNativeArtworkPrefetch(
+                result,
+                candidate: candidate,
+                processIdentifier: processIdentifier,
+                generation: generation
+            )
+        }
+        return true
+    }
+
+    private func finishNativeArtworkPrefetch(
+        _ result: Result<AppleMusicObservation, AppleMusicBridgeFailure>?,
+        candidate: AppleMusicPlayerInfoCandidate,
+        processIdentifier: pid_t,
+        generation: UInt64
+    ) {
+        guard generation == nativeArtworkPrefetchGeneration else { return }
+        nativeArtworkPrefetchTask = nil
+        nativeArtworkPrefetchRequest = nil
+        nativeArtworkPrefetchFallbackSignature = nil
+
+        guard runningApplication()?.processIdentifier == processIdentifier,
+              let result,
+              case let .success(observation) = result,
+              observation.trackIdentity?.fallbackSignature
+                == candidate.fallbackSignature else {
+            preferArtworkOnNextMetadata = true
+            invalidationHandler?(.sourceChanged)
             return
+        }
+        guard let identity = observation.trackIdentity,
+              let artworkData = observation.artworkData else {
+            shouldPrefetchCatalogFromPlayerInfo = true
+            scheduleCatalogPrefetch(for: candidate)
+            return
+        }
+        shouldPrefetchCatalogFromPlayerInfo = false
+        if !applyPrefetchedArtwork(
+            artworkData,
+            identity: identity,
+            at: Date()
+        ) {
+            pendingNativeArtwork = (
+                identity: identity,
+                data: artworkData
+            )
+        }
+    }
+
+    private func cancelNativeArtworkPrefetch(clearPending: Bool) {
+        nativeArtworkPrefetchGeneration &+= 1
+        nativeArtworkPrefetchRequest?.cancel()
+        nativeArtworkPrefetchTask?.cancel()
+        nativeArtworkPrefetchTask = nil
+        nativeArtworkPrefetchRequest = nil
+        nativeArtworkPrefetchFallbackSignature = nil
+        if clearPending {
+            pendingNativeArtwork = nil
+        }
+    }
+
+    private func scheduleCatalogPrefetch(
+        for candidate: AppleMusicPlayerInfoCandidate
+    ) {
+        let now = Date()
+        if let catalogPrefetchFailure,
+           catalogPrefetchFailure.fallbackSignature == candidate.fallbackSignature,
+           now < catalogPrefetchFailure.retryAfter {
+            return
+        }
+        if let identity = lastObservation?.trackIdentity,
+           identity.fallbackSignature == candidate.fallbackSignature {
+            if artworkCache.data(for: identity) != nil
+                || !artworkCache.shouldFetch(for: identity, at: now) {
+                return
+            }
         }
         if pendingCatalogArtwork?.fallbackSignature == candidate.fallbackSignature {
             return
         }
         if catalogPrefetchFallbackSignature == candidate.fallbackSignature,
            catalogPrefetchTask != nil {
+            return
+        }
+        if artworkFetchIdentity?.fallbackSignature == candidate.fallbackSignature,
+           artworkFetchTask != nil {
+            return
+        }
+        if nativeArtworkPrefetchFallbackSignature == candidate.fallbackSignature,
+           nativeArtworkPrefetchTask != nil {
             return
         }
         cancelCatalogPrefetch(clearPending: true)
@@ -898,6 +1065,24 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         guard generation == catalogPrefetchGeneration else { return }
         catalogPrefetchTask = nil
         catalogPrefetchFallbackSignature = nil
+        let completedAt = Date()
+
+        switch result {
+        case .notFound:
+            catalogPrefetchFailure = (
+                fallbackSignature: fallbackSignature,
+                retryAfter: completedAt.addingTimeInterval(5 * 60)
+            )
+        case .transientFailure:
+            catalogPrefetchFailure = (
+                fallbackSignature: fallbackSignature,
+                retryAfter: completedAt.addingTimeInterval(30)
+            )
+        case .success:
+            if catalogPrefetchFailure?.fallbackSignature == fallbackSignature {
+                catalogPrefetchFailure = nil
+            }
+        }
 
         guard let identity = lastObservation?.trackIdentity,
               identity.fallbackSignature == fallbackSignature else {
@@ -909,7 +1094,6 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             }
             return
         }
-        let completedAt = Date()
         switch result {
         case .notFound:
             artworkCache.recordFailure(
@@ -924,26 +1108,41 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 at: completedAt
             )
         case let .success(data):
-            guard let instance = lastInstance,
-                  runningApplication()?.processIdentifier
-                    == instance.processIdentifier,
-                  artworkCache.store(data, for: identity, at: completedAt),
-                  let lastObservation,
-                  let lastSnapshot,
-                  let updatedSnapshot = appleMusicSnapshotByReplacingArtworkData(
-                    lastSnapshot,
-                    artworkData: data,
-                    identity: identity,
-                    revision: revision &+ 1
-                  ) else {
+            guard applyPrefetchedArtwork(
+                data,
+                identity: identity,
+                at: completedAt
+            ) else {
                 return
             }
-            self.lastObservation = lastObservation.withArtworkData(data)
-            revision &+= 1
-            self.lastSnapshot = updatedSnapshot
             pendingCatalogArtwork = nil
-            invalidationHandler?(.cachedDataChanged)
         }
+    }
+
+    private func applyPrefetchedArtwork(
+        _ data: Data,
+        identity: MusicTrackIdentity,
+        at completedAt: Date
+    ) -> Bool {
+        guard lastObservation?.trackIdentity == identity,
+              let instance = lastInstance,
+              runningApplication()?.processIdentifier == instance.processIdentifier,
+              artworkCache.store(data, for: identity, at: completedAt),
+              let lastObservation,
+              let lastSnapshot,
+              let updatedSnapshot = appleMusicSnapshotByReplacingArtworkData(
+                lastSnapshot,
+                artworkData: data,
+                identity: identity,
+                revision: revision &+ 1
+              ) else {
+            return false
+        }
+        self.lastObservation = lastObservation.withArtworkData(data)
+        revision &+= 1
+        self.lastSnapshot = updatedSnapshot
+        invalidationHandler?(.cachedDataChanged)
+        return true
     }
 
     private func cancelCatalogPrefetch(clearPending: Bool) {
@@ -974,6 +1173,10 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         }
         if catalogPrefetchFallbackSignature == identity.fallbackSignature,
            catalogPrefetchTask != nil {
+            return
+        }
+        if nativeArtworkPrefetchFallbackSignature == identity.fallbackSignature,
+           nativeArtworkPrefetchTask != nil {
             return
         }
 
