@@ -120,3 +120,66 @@ func emptyStateDoesNotExpandOnHover() {
         hasPendingNotification: false
     ))
 }
+
+@Test("真实歌曲首次出现时自动切到紧凑音乐岛")
+func firstRealTrackPromotesCollapsedIslandOnce() {
+    #expect(MusicPresentationTransitionPolicy.shouldPromoteToCompact(
+        activeFeature: .music,
+        currentMode: .collapsed,
+        isArmed: true,
+        hadCurrentTrack: false,
+        hasCurrentTrack: true,
+        hasPendingNotification: false
+    ))
+    #expect(!MusicPresentationTransitionPolicy.shouldPromoteToCompact(
+        activeFeature: .music,
+        currentMode: .collapsed,
+        isArmed: true,
+        hadCurrentTrack: true,
+        hasCurrentTrack: true,
+        hasPendingNotification: false
+    ))
+    #expect(!MusicPresentationTransitionPolicy.shouldPromoteToCompact(
+        activeFeature: .timer,
+        currentMode: .collapsed,
+        isArmed: true,
+        hadCurrentTrack: false,
+        hasCurrentTrack: true,
+        hasPendingNotification: false
+    ))
+    #expect(!MusicPresentationTransitionPolicy.shouldPromoteToCompact(
+        activeFeature: .music,
+        currentMode: .expanded,
+        isArmed: true,
+        hadCurrentTrack: false,
+        hasCurrentTrack: true,
+        hasPendingNotification: false
+    ))
+    #expect(!MusicPresentationTransitionPolicy.shouldPromoteToCompact(
+        activeFeature: .music,
+        currentMode: .collapsed,
+        isArmed: false,
+        hadCurrentTrack: false,
+        hasCurrentTrack: true,
+        hasPendingNotification: false
+    ))
+
+    #expect(MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(.collapsed))
+    #expect(!MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(.compact))
+    #expect(!MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+        currentMode: .collapsed,
+        isUserExpanded: false
+    ))
+    #expect(MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+        currentMode: .compact,
+        isUserExpanded: false
+    ))
+    #expect(MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+        currentMode: .expanded,
+        isUserExpanded: false
+    ))
+    #expect(!MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+        currentMode: .expanded,
+        isUserExpanded: true
+    ))
+}

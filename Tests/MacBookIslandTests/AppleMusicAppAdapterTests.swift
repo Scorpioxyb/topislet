@@ -280,6 +280,42 @@ func appleMusicRefreshPolicyUsesLowFrequencyFallback() {
     ) == 15)
 }
 
+@Test("Apple Music 已验证快照在同一进程运行期间保持可用")
+func appleMusicReadySnapshotRemainsAvailableForRunningInstance() {
+    #expect(AppleMusicSourceAvailabilityPolicy.isAvailable(
+        isEnabled: true,
+        runningProcessIdentifier: 42,
+        snapshotProcessIdentifier: 42,
+        snapshotIsReady: true,
+        isForeground: false
+    ))
+    #expect(!AppleMusicSourceAvailabilityPolicy.isAvailable(
+        isEnabled: true,
+        runningProcessIdentifier: 43,
+        snapshotProcessIdentifier: 42,
+        snapshotIsReady: true,
+        isForeground: false
+    ))
+    #expect(!AppleMusicSourceAvailabilityPolicy.isAvailable(
+        isEnabled: true,
+        runningProcessIdentifier: nil,
+        snapshotProcessIdentifier: 42,
+        snapshotIsReady: true,
+        isForeground: false
+    ))
+    #expect(!AppleMusicSourceAvailabilityPolicy.snapshotMatchesRunningInstance(
+        runningProcessIdentifier: 43,
+        snapshotProcessIdentifier: 42
+    ))
+    #expect(AppleMusicSourceAvailabilityPolicy.isAvailable(
+        isEnabled: true,
+        runningProcessIdentifier: 43,
+        snapshotProcessIdentifier: 42,
+        snapshotIsReady: true,
+        isForeground: true
+    ))
+}
+
 @Test("Apple Music 乐观播放状态拒绝同曲旧快照闪回")
 func appleMusicPlaybackControlRejectsConflictingSnapshotDuringGracePeriod() throws {
     let issuedAt = Date(timeIntervalSince1970: 1_000)

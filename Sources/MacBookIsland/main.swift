@@ -55,7 +55,10 @@ if CommandLine.arguments.contains("--apple-music-status") {
         case let .unavailable(reason):
             availability = "unavailable:\(reason)"
         }
+        let snapshotProcessIdentifier = snapshot.instance?.processIdentifier.description ?? "nil"
         print("appleMusicRunning=\(AppleMusicAppAdapter.isRunning)")
+        print("appleMusicSnapshotPID=\(snapshotProcessIdentifier)")
+        print("appleMusicRunningPIDs=\(NSRunningApplication.runningApplications(withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier).map(\.processIdentifier))")
         print("availability=\(availability)")
         print("track=\(snapshot.track?.title ?? "nil")")
         print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
@@ -338,6 +341,36 @@ enum IslandHoverExpansionPolicy {
     }
 }
 
+enum MusicPresentationTransitionPolicy {
+    static func shouldPromoteToCompact(
+        activeFeature: IslandFeature,
+        currentMode: IslandMode,
+        isArmed: Bool,
+        hadCurrentTrack: Bool,
+        hasCurrentTrack: Bool,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        activeFeature == .music
+            && currentMode == .collapsed
+            && isArmed
+            && !hadCurrentTrack
+            && hasCurrentTrack
+            && !hasPendingNotification
+    }
+
+    static func shouldDisarmForUserRequest(_ targetMode: IslandMode) -> Bool {
+        targetMode == .collapsed
+    }
+
+    static func shouldArmAfterSourceExit(
+        currentMode: IslandMode,
+        isUserExpanded: Bool
+    ) -> Bool {
+        currentMode == .compact
+            || (currentMode == .expanded && !isUserExpanded)
+    }
+}
+
 struct MusicTrack: Equatable {
     let title: String
     let artist: String
@@ -587,6 +620,8 @@ final class IslandModel: ObservableObject {
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
     private var lastMusicProgressPublishAt: Date = .distantPast
+    private var autoCompactOnNextMusicTrack = true
+    private var isUserExpandedMusicPresentation = false
     private var musicSeekRequestID = 0
     private var pendingMusicSeek: PendingMusicSeek?
     private var isMusicScrubbing = false
@@ -746,6 +781,12 @@ final class IslandModel: ObservableObject {
         if activeFeature == .notification, feature != .notification {
             clearNotificationPresentation()
         }
+        if feature == .music {
+            isUserExpandedMusicPresentation = newMode == .expanded
+            if MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(newMode) {
+                autoCompactOnNextMusicTrack = false
+            }
+        }
         activeFeature = feature
         mode = newMode
     }
@@ -758,11 +799,21 @@ final class IslandModel: ObservableObject {
         requestIslandMode(mode == .expanded ? .compact : .expanded)
     }
 
-    func requestIslandMode(_ targetMode: IslandMode, bypassCooldown: Bool = false) {
+    func requestIslandMode(
+        _ targetMode: IslandMode,
+        bypassCooldown: Bool = false,
+        userInitiated: Bool = true
+    ) {
         let now = Date()
         if !bypassCooldown {
             guard now.timeIntervalSince(lastDirectControlAt) > directControlSuppressionWindow else { return }
             guard now.timeIntervalSince(lastIslandModeTapAt) > islandModeTapCooldown else { return }
+        }
+        if userInitiated, activeFeature == .music {
+            isUserExpandedMusicPresentation = targetMode == .expanded
+            if MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(targetMode) {
+                autoCompactOnNextMusicTrack = false
+            }
         }
         guard mode != targetMode else { return }
         lastIslandModeTapAt = now
@@ -1116,7 +1167,7 @@ final class IslandModel: ObservableObject {
 
     func forceRefreshNowPlaying() {
         activeFeature = .music
-        mode = .expanded
+        requestIslandMode(.expanded, bypassCooldown: true)
         let result = musicAdapter.forceRefreshNowPlaying()
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
     }
@@ -1610,6 +1661,17 @@ final class IslandModel: ObservableObject {
         }
 
         let reconciledMusic = reconcilePendingSeek(newMusic)
+        let becameAvailable = !music.hasCurrentTrack
+            && reconciledMusic.hasCurrentTrack
+        let shouldPromoteToCompact = MusicPresentationTransitionPolicy
+            .shouldPromoteToCompact(
+                activeFeature: activeFeature,
+                currentMode: mode,
+                isArmed: autoCompactOnNextMusicTrack,
+                hadCurrentTrack: music.hasCurrentTrack,
+                hasCurrentTrack: reconciledMusic.hasCurrentTrack,
+                hasPendingNotification: hasPendingNotification
+            )
         if MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
             current: music,
             candidate: reconciledMusic,
@@ -1631,6 +1693,13 @@ final class IslandModel: ObservableObject {
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
+            if becameAvailable {
+                autoCompactOnNextMusicTrack = false
+            }
+            if shouldPromoteToCompact {
+                isUserExpandedMusicPresentation = false
+                mode = .compact
+            }
             refreshMusicAccent(for: reconciledMusic.track)
             confirmTrackControlFeedbackIfNeeded(
                 with: reconciledMusic,
@@ -1656,7 +1725,14 @@ final class IslandModel: ObservableObject {
         pendingMusicSeek = nil
         musicSeekRequestID += 1
         isMusicScrubbing = false
-        if activeFeature == .music, !hasPendingNotification {
+        if activeFeature == .music,
+           !hasPendingNotification,
+           MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+            currentMode: mode,
+            isUserExpanded: isUserExpandedMusicPresentation
+           ) {
+            autoCompactOnNextMusicTrack = true
+            isUserExpandedMusicPresentation = false
             mode = .collapsed
         }
     }
@@ -1780,7 +1856,8 @@ final class IslandModel: ObservableObject {
             || newMusic.lyricIndex != music.lyricIndex
             || newMusic.duration != music.duration
             || newMusic.canSeek != music.canSeek
-            || newMusic.isPlaybackPending != music.isPlaybackPending {
+            || newMusic.isPlaybackPending != music.isPlaybackPending
+            || newMusic.hasCurrentTrack != music.hasCurrentTrack {
             lastMusicProgressPublishAt = Date()
             return true
         }
@@ -2202,7 +2279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 didExpandFromHover = true
                 hoverReturnMode = returnMode
                 hoverExpectedModeChange = .expanded
-                model.requestIslandMode(.expanded, bypassCooldown: true)
+                model.requestIslandMode(
+                    .expanded,
+                    bypassCooldown: true,
+                    userInitiated: false
+                )
                 hoverEnterTask = nil
             }
             return
@@ -2223,7 +2304,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let returnMode = hoverReturnMode ?? .compact
             hoverReturnMode = nil
             hoverExpectedModeChange = returnMode
-            model.requestIslandMode(returnMode, bypassCooldown: true)
+            model.requestIslandMode(
+                returnMode,
+                bypassCooldown: true,
+                userInitiated: false
+            )
             hoverExitTask = nil
         }
     }
@@ -2324,7 +2409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : nil
         guard !headerFrame.contains(clickPoint),
               bodyFrame?.contains(clickPoint) != true else { return }
-        model.mode = .compact
+        model.requestIslandMode(.compact, bypassCooldown: true)
     }
 
     private func updateScreenMetrics() {
@@ -2442,14 +2527,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self,
                       self.panelAnimationID == animationID,
                       self.model.mode == mode else { return }
-                self.finishAnimatedReposition(targetMode: mode, bodySize: bodySize)
+                self.finishAnimatedReposition(
+                    targetMode: mode,
+                    headerFrame: frame,
+                    bodyFrame: bodyFrame,
+                    bodySize: bodySize
+                )
             }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
+            guard let self,
+                  panelAnimationID == animationID,
+                  model.mode == mode else { return }
+            finishAnimatedReposition(
+                targetMode: mode,
+                headerFrame: frame,
+                bodyFrame: bodyFrame,
+                bodySize: bodySize
+            )
         }
     }
 
-    private func finishAnimatedReposition(targetMode: IslandMode, bodySize: NSSize) {
+    private func finishAnimatedReposition(
+        targetMode: IslandMode,
+        headerFrame: NSRect,
+        bodyFrame: NSRect,
+        bodySize: NSSize
+    ) {
+        panel?.setFrame(headerFrame, display: true)
         if targetMode != .expanded {
             expandedPanel?.orderOut(nil)
+        } else {
+            expandedPanel?.setFrame(bodyFrame, display: true)
         }
         panel?.contentView?.frame = NSRect(origin: .zero, size: panel?.frame.size ?? .zero)
         expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
@@ -2556,7 +2665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.mode == .collapsed,
            !CommandLine.arguments.contains("--preview-mode") {
-            model.mode = .compact
+            model.requestIslandMode(.compact, bypassCooldown: true)
         }
         repositionPanel(animated: true)
         if shouldShowSettings {
@@ -2566,7 +2675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showCalibration() {
         model.isVisible = true
-        model.mode = .expanded
+        model.requestIslandMode(.expanded, bypassCooldown: true)
         repositionPanel(animated: false)
 
         let window: NSWindow
@@ -2692,12 +2801,12 @@ private struct GeneralSettingsPane: View {
                 HStack {
                     Button("折叠") {
                         model.isVisible = true
-                        model.mode = .compact
+                        model.requestIslandMode(.compact, bypassCooldown: true)
                     }
 
                     Button("展开预览") {
                         model.isVisible = true
-                        model.mode = .expanded
+                        model.requestIslandMode(.expanded, bypassCooldown: true)
                     }
 
                     Button("隐藏") {

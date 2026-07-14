@@ -190,6 +190,33 @@ enum AppleMusicRefreshPolicy {
     }
 }
 
+enum AppleMusicSourceAvailabilityPolicy {
+    static func snapshotMatchesRunningInstance(
+        runningProcessIdentifier: pid_t?,
+        snapshotProcessIdentifier: pid_t?
+    ) -> Bool {
+        guard let runningProcessIdentifier else { return false }
+        return snapshotProcessIdentifier == runningProcessIdentifier
+    }
+
+    static func isAvailable(
+        isEnabled: Bool,
+        runningProcessIdentifier: pid_t?,
+        snapshotProcessIdentifier: pid_t?,
+        snapshotIsReady: Bool,
+        isForeground: Bool
+    ) -> Bool {
+        guard isEnabled, let runningProcessIdentifier else { return false }
+        if isForeground {
+            return true
+        }
+        return snapshotIsReady && snapshotMatchesRunningInstance(
+            runningProcessIdentifier: runningProcessIdentifier,
+            snapshotProcessIdentifier: snapshotProcessIdentifier
+        )
+    }
+}
+
 enum AppleMusicPlaybackSnapshotResolution: Equatable {
     case reject
     case acceptAndClear
@@ -1542,6 +1569,9 @@ final class MusicAdapterCoordinator {
     }
 
     private func appleMusicSourceCandidate() -> MusicSourceCandidate {
+        let runningProcessIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first?.processIdentifier
         guard appleMusicEnabled else {
             return MusicSourceCandidate(
                 source: .appleMusic,
@@ -1560,7 +1590,11 @@ final class MusicAdapterCoordinator {
                 isCached: false
             )
         }
-        let isFresh = Date().timeIntervalSince(snapshot.checkedAt) <= 8
+        let snapshotMatchesRunningInstance = AppleMusicSourceAvailabilityPolicy
+            .snapshotMatchesRunningInstance(
+                runningProcessIdentifier: runningProcessIdentifier,
+                snapshotProcessIdentifier: snapshot.instance?.processIdentifier
+            )
         let isReady: Bool
         if case .ready = snapshot.availability {
             isReady = true
@@ -1568,7 +1602,7 @@ final class MusicAdapterCoordinator {
             isReady = false
         }
         let playback: MusicSourcePlaybackLevel
-        switch snapshot.playbackState {
+        switch snapshotMatchesRunningInstance ? snapshot.playbackState : .unknown {
         case .playing:
             playback = .playing
         case .paused:
@@ -1578,10 +1612,14 @@ final class MusicAdapterCoordinator {
         }
         return MusicSourceCandidate(
             source: .appleMusic,
-            isAvailable: AppleMusicAppAdapter.isRunning
-                && (foregroundMusicSource == .appleMusic
-                    || (isFresh && isReady && snapshot.instance != nil)),
-            hasTrack: snapshot.track != nil,
+            isAvailable: AppleMusicSourceAvailabilityPolicy.isAvailable(
+                isEnabled: appleMusicEnabled,
+                runningProcessIdentifier: runningProcessIdentifier,
+                snapshotProcessIdentifier: snapshot.instance?.processIdentifier,
+                snapshotIsReady: isReady,
+                isForeground: foregroundMusicSource == .appleMusic
+            ),
+            hasTrack: snapshotMatchesRunningInstance && snapshot.track != nil,
             playback: playback,
             isCached: false
         )
@@ -1633,9 +1671,17 @@ final class MusicAdapterCoordinator {
     }
 
     private func musicStatus(for source: MusicSourceID?) -> MusicSourceStatus {
-        guard source == .appleMusic,
-              let snapshot = latestAppleMusicSnapshot else {
+        guard source == .appleMusic else {
             return cachedStatus
+        }
+        guard let snapshot = appleMusicSnapshotForRunningInstance() else {
+            return MusicSourceStatus(
+                sourceName: "Apple Music",
+                availability: .appleMusicSynced,
+                headline: "等待 Apple Music 同步",
+                detail: "已检测到 Apple Music，正在读取当前进程的歌曲状态。",
+                checkedAt: Date()
+            )
         }
         let trackText = snapshot.track.map { track in
             [track.title, track.artist]
@@ -1653,7 +1699,7 @@ final class MusicAdapterCoordinator {
     }
 
     private func appleMusicState() -> MusicState {
-        guard let snapshot = latestAppleMusicSnapshot,
+        guard let snapshot = appleMusicSnapshotForRunningInstance(),
               let track = snapshot.track else {
             return appleMusicIdleState()
         }
@@ -1721,6 +1767,20 @@ final class MusicAdapterCoordinator {
             isPlaybackPending: false,
             hasCurrentTrack: false
         )
+    }
+
+    private func appleMusicSnapshotForRunningInstance() -> MusicAppSnapshot? {
+        let runningProcessIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first?.processIdentifier
+        guard let snapshot = latestAppleMusicSnapshot,
+              AppleMusicSourceAvailabilityPolicy.snapshotMatchesRunningInstance(
+                runningProcessIdentifier: runningProcessIdentifier,
+                snapshotProcessIdentifier: snapshot.instance?.processIdentifier
+              ) else {
+            return nil
+        }
+        return snapshot
     }
 
     private func applyNowPlayingSnapshot(_ snapshot: NowPlayingAXSnapshot) {
