@@ -527,13 +527,14 @@ final class IslandModel: ObservableObject {
         detail: "当前不显示假歌曲；主线正在直接读取汽水音乐本地状态，系统播放信息仅保留为手动诊断。",
         checkedAt: Date()
     )
+    @Published private(set) var qishuiIsRunning = false
+    @Published private(set) var accessibilityTrusted = false
     @Published private(set) var appleMusicAutomationAccess: AppleMusicAutomationAccess = .unavailable(status: -1)
     @Published private(set) var appleMusicIsRunning = false
+    @Published private(set) var appleMusicSnapshotAvailability: MusicAppAvailability?
     @Published private(set) var appleMusicConnectionStatus = "尚未检查"
-    @Published private(set) var appleMusicTrackStatus = "--"
-    @Published private(set) var appleMusicPlaybackStatus = "未知"
-    @Published private(set) var appleMusicProgressStatus = "--:--"
     @Published private(set) var appleMusicAvailableControls = "无"
+    @Published private(set) var appleMusicResponseLatencyMilliseconds: Int?
     @Published var timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
     @Published var notification = IslandNotification(
         title: "",
@@ -545,7 +546,6 @@ final class IslandModel: ObservableObject {
     @Published var isVisible = true
 
     private let musicAdapter = MusicAdapterCoordinator()
-    private let appleMusicDiagnosticAdapter = AppleMusicAppAdapter()
     private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
@@ -557,7 +557,10 @@ final class IslandModel: ObservableObject {
     private var pendingTrackControlGeneration: UInt64?
     private var pendingTrackControlChainCount = 0
     private var layoutCancellable: AnyCancellable?
+    private var appleMusicSettingsCancellable: AnyCancellable?
     private var eventKitSettingsCancellable: AnyCancellable?
+    private var appleMusicObservedProcessIdentifier: pid_t?
+    private var appleMusicSettingsRequestGeneration: UInt64 = 0
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
@@ -643,9 +646,10 @@ final class IslandModel: ObservableObject {
 
     init() {
         isVisible = appSettings.showIslandOnLaunch
+        musicAdapter.setAppleMusicEnabled(appSettings.appleMusicEnabled)
         music = musicAdapter.initialState
         pendingTrackControl = nil
-        refreshAppleMusicStatus()
+        refreshMusicIntegrationStatus()
         if let previewModeIndex = CommandLine.arguments.firstIndex(of: "--preview-mode"),
            CommandLine.arguments.indices.contains(previewModeIndex + 1),
            let previewMode = IslandMode(rawValue: CommandLine.arguments[previewModeIndex + 1]) {
@@ -684,6 +688,20 @@ final class IslandModel: ObservableObject {
                 remindersEnabled: remindersEnabled
             )
         }
+        appleMusicSettingsCancellable = appSettings.$appleMusicEnabled
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                self.musicAdapter.setAppleMusicEnabled(enabled)
+                self.refreshMusicIntegrationStatus()
+                guard enabled,
+                      self.appleMusicIsRunning,
+                      self.appleMusicAutomationAccess == .allowed else { return }
+                Task { [weak self] in
+                    await self?.refreshAppleMusicSnapshot()
+                }
+            }
         layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -902,15 +920,59 @@ final class IslandModel: ObservableObject {
         )
     }
 
+    func refreshMusicIntegrationStatus() {
+        qishuiIsRunning = !NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+        ).isEmpty
+        accessibilityTrusted = AXIsProcessTrusted()
+        refreshAppleMusicStatus()
+    }
+
     func refreshAppleMusicStatus() {
-        appleMusicIsRunning = AppleMusicAppAdapter.isRunning
-        appleMusicAutomationAccess = appleMusicIsRunning
+        guard appSettings.appleMusicEnabled else {
+            appleMusicIsRunning = false
+            appleMusicAutomationAccess = .targetNotRunning
+            appleMusicObservedProcessIdentifier = nil
+            resetAppleMusicConnection(status: "已关闭")
+            return
+        }
+
+        let runningApplication = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first
+        let processIdentifier = runningApplication?.processIdentifier
+        if processIdentifier != appleMusicObservedProcessIdentifier {
+            appleMusicObservedProcessIdentifier = processIdentifier
+            resetAppleMusicConnection(status: processIdentifier == nil ? "未运行" : "等待同步")
+        }
+        appleMusicIsRunning = runningApplication != nil
+        let previousAutomationAccess = appleMusicAutomationAccess
+        let currentAutomationAccess: AppleMusicAutomationAccess = appleMusicIsRunning
             ? AppleMusicAppAdapter.automationAccess(prompt: false)
             : .targetNotRunning
+        appleMusicAutomationAccess = currentAutomationAccess
+        if appleMusicIsRunning,
+           previousAutomationAccess == .allowed,
+           currentAutomationAccess != .allowed {
+            musicAdapter.invalidateAppleMusicAccess()
+        }
+
+        guard appleMusicIsRunning else {
+            resetAppleMusicConnection(status: "未运行")
+            return
+        }
+        guard appleMusicAutomationAccess == .allowed else {
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
+            return
+        }
+        if appleMusicSnapshotAvailability == nil {
+            appleMusicConnectionStatus = "已授权，等待同步"
+        }
     }
 
     func requestAppleMusicAutomationAccess() {
-        guard AppleMusicAppAdapter.isRunning else {
+        guard appSettings.appleMusicEnabled,
+              AppleMusicAppAdapter.isRunning else {
             refreshAppleMusicStatus()
             return
         }
@@ -920,29 +982,59 @@ final class IslandModel: ObservableObject {
             Task { [weak self] in
                 await self?.refreshAppleMusicSnapshot()
             }
+        } else {
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
         }
     }
 
     func refreshAppleMusicSnapshot() async {
         refreshAppleMusicStatus()
+        guard appSettings.appleMusicEnabled else {
+            resetAppleMusicConnection(status: "已关闭")
+            return
+        }
         guard appleMusicIsRunning else {
-            appleMusicConnectionStatus = "未运行"
-            appleMusicTrackStatus = "--"
-            appleMusicPlaybackStatus = "未知"
-            appleMusicProgressStatus = "--:--"
-            appleMusicAvailableControls = "无"
+            resetAppleMusicConnection(status: "未运行")
             return
         }
         guard appleMusicAutomationAccess == .allowed else {
-            appleMusicConnectionStatus = appleMusicAutomationAccess.displayName
-            appleMusicTrackStatus = "--"
-            appleMusicPlaybackStatus = "未知"
-            appleMusicProgressStatus = "--:--"
-            appleMusicAvailableControls = "无"
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
             return
         }
 
-        let snapshot = await appleMusicDiagnosticAdapter.snapshot(refresh: .metadata)
+        appleMusicSettingsRequestGeneration &+= 1
+        let requestGeneration = appleMusicSettingsRequestGeneration
+        let expectedProcessIdentifier = appleMusicObservedProcessIdentifier
+        let requestStartedAt = Date()
+        guard let snapshot = await musicAdapter.appleMusicSnapshotForSettings() else {
+            refreshAppleMusicStatus()
+            if appSettings.appleMusicEnabled,
+               appleMusicIsRunning,
+               appleMusicAutomationAccess == .allowed {
+                appleMusicConnectionStatus = "连接超时"
+            }
+            return
+        }
+        let currentApplication = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first
+        let currentAccess = currentApplication.map { _ in
+            AppleMusicAppAdapter.automationAccess(prompt: false)
+        } ?? .targetNotRunning
+        guard requestGeneration == appleMusicSettingsRequestGeneration,
+              appSettings.appleMusicEnabled,
+              currentApplication?.processIdentifier == expectedProcessIdentifier,
+              snapshot.instance?.processIdentifier == expectedProcessIdentifier,
+              currentAccess == .allowed else {
+            refreshAppleMusicStatus()
+            return
+        }
+        appleMusicResponseLatencyMilliseconds = max(
+            0,
+            Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+        )
+        appleMusicSnapshotAvailability = snapshot.availability
+        appleMusicObservedProcessIdentifier = snapshot.instance?.processIdentifier
         switch snapshot.availability {
         case .ready:
             appleMusicConnectionStatus = "连接正常"
@@ -956,29 +1048,6 @@ final class IslandModel: ObservableObject {
             appleMusicConnectionStatus = "不可用：\(reason)"
         }
 
-        if let track = snapshot.track {
-            appleMusicTrackStatus = [track.title, track.artist]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: " - ")
-        } else {
-            appleMusicTrackStatus = "无当前歌曲"
-        }
-        switch snapshot.playbackState {
-        case .playing:
-            appleMusicPlaybackStatus = "播放中"
-        case .paused:
-            appleMusicPlaybackStatus = "已暂停"
-        case .stopped:
-            appleMusicPlaybackStatus = "已停止"
-        case .unknown:
-            appleMusicPlaybackStatus = "未知"
-        }
-        if let timeline = snapshot.timeline {
-            appleMusicProgressStatus = "\(mediaTimeText(timeline.elapsedTime)) / \(mediaTimeText(timeline.duration))"
-        } else {
-            appleMusicProgressStatus = "--:--"
-        }
         appleMusicAvailableControls = [
             snapshot.controls.supports(.playPause) ? "播放暂停" : nil,
             snapshot.controls.supports(.previousTrack) ? "上一首" : nil,
@@ -990,6 +1059,21 @@ final class IslandModel: ObservableObject {
         if appleMusicAvailableControls.isEmpty {
             appleMusicAvailableControls = "无"
         }
+    }
+
+    private func resetAppleMusicConnection(status: String) {
+        appleMusicSettingsRequestGeneration &+= 1
+        appleMusicSnapshotAvailability = nil
+        appleMusicConnectionStatus = status
+        appleMusicAvailableControls = "无"
+        appleMusicResponseLatencyMilliseconds = nil
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func openAppleMusicAutomationSettings() {
@@ -1796,6 +1880,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        model.refreshMusicIntegrationStatus()
         Task {
             await model.refreshEventKitNow()
         }
@@ -2484,7 +2569,7 @@ struct IslandSettingsView: View {
                     Label("常规", systemImage: "switch.2")
                 }
 
-            MusicSettingsPane(model: model)
+            MusicSettingsPane(model: model, settings: model.appSettings)
                 .tabItem {
                     Label("音乐", systemImage: "music.note")
                 }
@@ -2590,7 +2675,27 @@ private struct GeneralSettingsPane: View {
 
 private struct MusicSettingsPane: View {
     @ObservedObject var model: IslandModel
+    @ObservedObject var settings: AppSettings
     @State private var isCheckingAppleMusic = false
+
+    private var appleMusicLatencyText: String {
+        guard let milliseconds = model.appleMusicResponseLatencyMilliseconds else {
+            return "--"
+        }
+        return "\(milliseconds) ms"
+    }
+
+    private var artworkStatusText: String {
+        if model.music.track.artworkData != nil || model.music.track.artworkURL != nil {
+            return "已获取"
+        }
+        switch model.musicSourceStatus.availability {
+        case .qishuiNotRunning, .preview:
+            return "无当前封面"
+        default:
+            return "等待获取"
+        }
+    }
 
     private var diagnosticText: String {
         [
@@ -2614,78 +2719,109 @@ private struct MusicSettingsPane: View {
         Form {
             Section("音乐应用") {
                 ForEach(MusicAdapterRegistry.registrations) { registration in
-                    MusicAdapterSettingsRow(registration: registration)
+                    MusicAdapterSettingsRow(registration: registration, model: model)
                 }
             }
 
-            Section("Apple Music 实验适配") {
+            Section("汽水音乐控制") {
+                LabeledContent("应用状态", value: model.qishuiIsRunning ? "运行中" : "未运行")
                 LabeledContent(
-                    "运行状态",
-                    value: model.appleMusicIsRunning ? "运行中" : "未运行"
+                    "辅助功能",
+                    value: model.accessibilityTrusted ? "已授权" : "控制待授权"
                 )
-                LabeledContent(
-                    "自动化权限",
-                    value: model.appleMusicAutomationAccess.displayName
-                )
-                LabeledContent("连接状态", value: model.appleMusicConnectionStatus)
-                LabeledContent("当前歌曲", value: model.appleMusicTrackStatus)
-                LabeledContent("播放状态", value: model.appleMusicPlaybackStatus)
-                LabeledContent("播放进度", value: model.appleMusicProgressStatus)
-                LabeledContent("可用控制", value: model.appleMusicAvailableControls)
-
-                HStack {
-                    Button("检查状态") {
-                        model.refreshAppleMusicStatus()
+                if !model.accessibilityTrusted {
+                    Button {
+                        model.openAccessibilitySettings()
+                    } label: {
+                        Label("打开辅助功能设置", systemImage: "gear")
                     }
-
-                    switch model.appleMusicAutomationAccess {
-                    case .allowed, .targetNotRunning, .unavailable:
-                        EmptyView()
-                    case .denied:
-                        Button("打开自动化设置") {
-                            model.openAppleMusicAutomationSettings()
-                        }
-                    case .consentRequired:
-                        Button("请求授权") {
-                            model.requestAppleMusicAutomationAccess()
-                        }
-                    }
-
-                    Button("测试连接") {
-                        isCheckingAppleMusic = true
-                        Task {
-                            await model.refreshAppleMusicSnapshot()
-                            isCheckingAppleMusic = false
-                        }
-                    }
-                    .disabled(isCheckingAppleMusic)
                 }
             }
 
-            Section {
+            Section("Apple Music Alpha 支持") {
+                Toggle("启用 Apple Music 适配", isOn: $settings.appleMusicEnabled)
+
+                if settings.appleMusicEnabled {
+                    LabeledContent(
+                        "运行状态",
+                        value: model.appleMusicIsRunning ? "运行中" : "未运行"
+                    )
+                    LabeledContent(
+                        "自动化权限",
+                        value: model.appleMusicAutomationAccess.displayName
+                    )
+                    LabeledContent("连接状态", value: model.appleMusicConnectionStatus)
+                    LabeledContent("响应耗时", value: appleMusicLatencyText)
+                    LabeledContent("可用控制", value: model.appleMusicAvailableControls)
+
+                    HStack {
+                        switch model.appleMusicAutomationAccess {
+                        case .denied:
+                            Button {
+                                model.openAppleMusicAutomationSettings()
+                            } label: {
+                                Label("打开自动化设置", systemImage: "gear")
+                            }
+                        case .consentRequired:
+                            Button {
+                                model.requestAppleMusicAutomationAccess()
+                            } label: {
+                                Label("请求授权", systemImage: "lock.open")
+                            }
+                        case .allowed, .targetNotRunning, .unavailable:
+                            EmptyView()
+                        }
+
+                        Button {
+                            isCheckingAppleMusic = true
+                            Task {
+                                await model.refreshAppleMusicSnapshot()
+                                isCheckingAppleMusic = false
+                            }
+                        } label: {
+                            Label("刷新连接", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(
+                            isCheckingAppleMusic
+                                || !model.appleMusicIsRunning
+                                || model.appleMusicAutomationAccess != .allowed
+                        )
+                    }
+
+                    if !model.appleMusicIsRunning {
+                        Text("请先打开 Apple Music；顶屿不会主动启动它。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("电台未提供封面时，仅向 Apple 公共搜索发送当前歌名与歌手。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Section("当前活动") {
                 LabeledContent("当前歌曲", value: "\(model.music.track.title) - \(model.music.track.artist)")
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
+                LabeledContent("同步状态", value: model.musicSourceStatus.compactLabel)
+                LabeledContent("最近更新", value: musicStatusAgeText(model.musicSourceStatus.checkedAt))
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
-                LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
+                LabeledContent("封面状态", value: artworkStatusText)
                 LabeledContent(
                     "控制策略",
                     value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
                         ? "Apple Event 定向"
                         : "汽水唯一语义 AX"
                 )
-            }
-
-            Section {
-                Button("立即刷新当前音乐") {
+                Button {
                     model.showMusicSourceStatus()
-                }
-
-                Button("重新读取当前播放") {
-                    model.forceRefreshNowPlaying()
+                } label: {
+                    Label("刷新当前活动", systemImage: "arrow.clockwise")
                 }
             }
 
-            if model.appSettings.showMusicDiagnostics {
+            if settings.showMusicDiagnostics {
                 Section {
                     LabeledContent("最近检查", value: model.musicSourceStatus.checkedAt.formatted(date: .omitted, time: .standard))
                     LabeledContent("UI Progress", value: String(format: "%.4f", model.music.progress))
@@ -2711,23 +2847,76 @@ private struct MusicSettingsPane: View {
         }
         .formStyle(.grouped)
         .padding(16)
-        .onAppear {
-            model.refreshAppleMusicStatus()
+        .task {
+            model.refreshMusicIntegrationStatus()
+            guard settings.appleMusicEnabled,
+                  model.appleMusicIsRunning,
+                  model.appleMusicAutomationAccess == .allowed else { return }
+            isCheckingAppleMusic = true
+            await model.refreshAppleMusicSnapshot()
+            isCheckingAppleMusic = false
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didLaunchApplicationNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didTerminateApplicationNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
         }
     }
 }
 
 private struct MusicAdapterSettingsRow: View {
     let registration: MusicAdapterRegistration
+    @ObservedObject var model: IslandModel
 
-    private var statusColor: Color {
+    private var supportColor: Color {
         switch registration.implementationStatus {
         case .active:
             return .green
-        case .experimental:
+        case .alpha:
             return .orange
         case .planned:
             return .secondary
+        }
+    }
+
+    private var runtime: MusicAdapterRuntimePresentation {
+        if registration.descriptor.bundleIdentifier
+            == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+            return MusicAdapterRuntimePresenter.qishui(
+                isRunning: model.qishuiIsRunning,
+                accessibilityTrusted: model.accessibilityTrusted
+            )
+        }
+        return MusicAdapterRuntimePresenter.appleMusic(
+            isEnabled: model.appSettings.appleMusicEnabled,
+            isRunning: model.appleMusicIsRunning,
+            automationAccess: model.appleMusicAutomationAccess,
+            snapshotAvailability: model.appleMusicSnapshotAvailability
+        )
+    }
+
+    private var runtimeColor: Color {
+        switch runtime.level {
+        case .connected:
+            return .green
+        case .limited:
+            return .blue
+        case .actionRequired:
+            return .orange
+        case .inactive:
+            return .secondary
+        case .error:
+            return .red
         }
     }
 
@@ -2756,17 +2945,42 @@ private struct MusicAdapterSettingsRow: View {
                 Text(registration.capabilitySummary)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(runtime.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
             Spacer(minLength: 12)
 
-            Text(registration.implementationStatus.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(statusColor)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(registration.implementationStatus.displayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(supportColor)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(runtimeColor)
+                        .frame(width: 6, height: 6)
+                    Text(runtime.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(runtimeColor)
+                }
+            }
         }
-        .frame(minHeight: 34)
+        .frame(minHeight: 52)
     }
+}
+
+private func musicStatusAgeText(_ date: Date) -> String {
+    let age = max(Date().timeIntervalSince(date), 0)
+    if age < 1 {
+        return "刚刚"
+    }
+    if age < 60 {
+        return "\(Int(age)) 秒前"
+    }
+    return date.formatted(date: .omitted, time: .standard)
 }
 
 private struct EventKitSettingsPane: View {

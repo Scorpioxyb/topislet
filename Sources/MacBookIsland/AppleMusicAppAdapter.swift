@@ -506,6 +506,38 @@ private enum AppleMusicArtworkLoader {
     }
 }
 
+final class AppleMusicControlLifecycleGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var isActive = false
+
+    func activate() {
+        lock.lock()
+        generation &+= 1
+        isActive = true
+        lock.unlock()
+    }
+
+    func deactivate() {
+        lock.lock()
+        generation &+= 1
+        isActive = false
+        lock.unlock()
+    }
+
+    func token() -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return isActive ? generation : nil
+    }
+
+    func isValid(_ token: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isActive && generation == token
+    }
+}
+
 @MainActor
 final class AppleMusicAppAdapter: MusicAppAdapter {
     let descriptor = MusicAdapterRegistry.appleMusic.descriptor
@@ -525,6 +557,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private let controlQueue = DispatchQueue(
         label: "TopIslet.AppleMusicControl"
     )
+    private let controlLifecycleGate = AppleMusicControlLifecycleGate()
     private var artworkFetchTask: Task<Void, Never>?
     private var artworkFetchIdentity: MusicTrackIdentity?
     private var artworkFetchGeneration: UInt64 = 0
@@ -567,6 +600,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         stop()
         observationGeneration &+= 1
         let generation = observationGeneration
+        controlLifecycleGate.activate()
         invalidationHandler = onInvalidation
         notificationToken = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.Music.playerInfo"),
@@ -606,6 +640,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
 
     func stop() {
         observationGeneration &+= 1
+        controlLifecycleGate.deactivate()
         if let notificationToken {
             DistributedNotificationCenter.default().removeObserver(notificationToken)
         }
@@ -618,11 +653,15 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         cancelNativeArtworkPrefetch(clearPending: true)
         cancelCatalogPrefetch(clearPending: true)
         cancelArtworkFetch()
+        lastObservation = nil
+        lastInstance = nil
+        lastSnapshot = nil
         invalidationHandler = nil
     }
 
     func snapshot(refresh: MusicSnapshotRefresh) async -> MusicAppSnapshot {
         let checkedAt = Date()
+        let lifecycleGeneration = observationGeneration
         guard let app = runningApplication() else {
             cancelArtworkFetch()
             cancelNativeArtworkPrefetch(clearPending: true)
@@ -685,6 +724,13 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 includeArtwork: includeArtwork
             )
         }.value
+        guard lifecycleGeneration == observationGeneration else {
+            return unavailableSnapshot(
+                availability: .unavailable(reason: "Apple Music 适配生命周期已变化。"),
+                checkedAt: checkedAt,
+                diagnostic: "Apple Music 读取期间适配已停止或重启，已丢弃迟到结果。"
+            )
+        }
         switch result {
         case let .failure(error):
             if includeArtwork {
@@ -772,7 +818,8 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     }
 
     func perform(_ request: MusicControlRequest) async -> MusicControlResult {
-        guard request.target.app.bundleIdentifier == descriptor.bundleIdentifier,
+        guard let lifecycleToken = controlLifecycleGate.token(),
+              request.target.app.bundleIdentifier == descriptor.bundleIdentifier,
               let app = runningApplication(),
               app.processIdentifier == request.target.processIdentifier else {
             return MusicControlResult(
@@ -796,8 +843,16 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         let action = request.action
         let expectedTrack = request.expectedTrack
         let controlQueue = controlQueue
-        let result = await withCheckedContinuation { continuation in
+        let controlLifecycleGate = controlLifecycleGate
+        let result: Result<Void, AppleMusicBridgeFailure> = await withCheckedContinuation {
+            continuation in
             controlQueue.async {
+                guard controlLifecycleGate.isValid(lifecycleToken) else {
+                    continuation.resume(returning: .failure(AppleMusicBridgeFailure(
+                        diagnostic: "Apple Music 适配已关闭，未发送排队中的控制。"
+                    )))
+                    return
+                }
                 continuation.resume(returning: AppleMusicBridgeRunner.perform(
                     processIdentifier: processIdentifier,
                     action: action,

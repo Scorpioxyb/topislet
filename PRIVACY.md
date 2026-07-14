@@ -10,7 +10,7 @@
 
 - 通过本机 MediaRemote Adapter 读取汽水音乐报告的歌名、歌手、专辑、封面、播放状态和进度。
 - 封面可能来自 MediaRemote 返回的本地数据，也可能按汽水提供的封面 URL 由系统网络组件加载。
-- Apple Music 实验适配通过 macOS Apple Event 按当前 Music 进程读取歌曲、播放状态和进度；不会使用系统全局当前媒体作为控制目标。
+- Apple Music Alpha 支持通过 macOS Apple Event 按当前 Music 进程读取歌曲、播放状态和进度；不会使用系统全局当前媒体作为控制目标。
 - Apple Music 电台曲目未提供内嵌封面时，顶屿会将当前歌名与歌手通过 HTTPS 发送给 Apple 的公开 `itunes.apple.com/search` 接口，并仅从 `*.mzstatic.com` 下载唯一精确匹配的封面。专辑、播放状态、进度、曲目 ID 和控制信息不会随该查询发送；查询不经过本项目自有服务器。
 - 项目不会抓取汽水账号 token，不进行网络中间人代理或修改汽水 App。
 
@@ -22,7 +22,8 @@
 
 ### Apple Music 自动化
 
-- 只有用户启用 Apple Music 适配并允许“自动化 - Apple Music”后，顶屿才会读取或控制 Apple Music。
+- Apple Music 适配默认开启，可在“设置 → 音乐”中关闭；关闭后顶屿会停止对应观察、读取、封面查询和控制。
+- 只有用户允许“自动化 - Apple Music”后，顶屿才会读取或控制 Apple Music。
 - 控制请求绑定当前 Apple Music 的 Bundle ID、进程 ID 和曲目身份；不会回退到系统全局媒体键，也不会自动启动 Apple Music。
 
 ### 日历与提醒事项

@@ -4,6 +4,24 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("Apple Music 控制生命周期会拒绝关闭前排队的命令")
+func appleMusicControlLifecycleInvalidatesQueuedCommands() throws {
+    let gate = AppleMusicControlLifecycleGate()
+    #expect(gate.token() == nil)
+
+    gate.activate()
+    let firstToken = try #require(gate.token())
+    #expect(gate.isValid(firstToken))
+
+    gate.deactivate()
+    #expect(!gate.isValid(firstToken))
+
+    gate.activate()
+    let secondToken = try #require(gate.token())
+    #expect(secondToken != firstToken)
+    #expect(gate.isValid(secondToken))
+}
+
 @Test("Apple Music 列表字段解码为原子快照")
 func appleMusicObservationDecodesAtomicFields() throws {
     let artworkData = Data([0xFF, 0xD8, 0xFF, 0xE0])

@@ -40,17 +40,148 @@ protocol MusicAppAdapter: AnyObject {
 
 enum MusicAdapterImplementationStatus: String, Equatable, Sendable {
     case active
-    case experimental
+    case alpha
     case planned
 
     var displayName: String {
         switch self {
         case .active:
-            return "已适配"
-        case .experimental:
-            return "实验适配"
+            return "主适配"
+        case .alpha:
+            return "Alpha 支持"
         case .planned:
             return "计划接入"
+        }
+    }
+}
+
+enum MusicAdapterRuntimeLevel: Equatable, Sendable {
+    case connected
+    case limited
+    case actionRequired
+    case inactive
+    case error
+}
+
+struct MusicAdapterRuntimePresentation: Equatable, Sendable {
+    let level: MusicAdapterRuntimeLevel
+    let title: String
+    let detail: String
+}
+
+enum MusicAdapterRuntimePresenter {
+    static func qishui(
+        isRunning: Bool,
+        accessibilityTrusted: Bool
+    ) -> MusicAdapterRuntimePresentation {
+        guard isRunning else {
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开汽水音乐后自动连接"
+            )
+        }
+        guard accessibilityTrusted else {
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "控制待授权",
+                detail: "状态可同步，播放控制需要辅助功能"
+            )
+        }
+        return MusicAdapterRuntimePresentation(
+            level: .connected,
+            title: "已连接",
+            detail: "状态同步与定向控制可用"
+        )
+    }
+
+    static func appleMusic(
+        isEnabled: Bool,
+        isRunning: Bool,
+        automationAccess: AppleMusicAutomationAccess,
+        snapshotAvailability: MusicAppAvailability?
+    ) -> MusicAdapterRuntimePresentation {
+        guard isEnabled else {
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "已关闭",
+                detail: "可在音乐设置中重新启用"
+            )
+        }
+        guard isRunning else {
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开 Apple Music 后自动连接"
+            )
+        }
+
+        switch automationAccess {
+        case .consentRequired:
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "待授权",
+                detail: "需要自动化权限才能读取和控制"
+            )
+        case .denied:
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "权限已关闭",
+                detail: "请在系统设置中允许自动化访问"
+            )
+        case let .unavailable(status):
+            return MusicAdapterRuntimePresentation(
+                level: .error,
+                title: "权限检查失败",
+                detail: "系统状态码 \(status)"
+            )
+        case .targetNotRunning:
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开 Apple Music 后自动连接"
+            )
+        case .allowed:
+            break
+        }
+
+        switch snapshotAvailability {
+        case .ready:
+            return MusicAdapterRuntimePresentation(
+                level: .connected,
+                title: "已连接",
+                detail: "歌曲、封面、进度与定向控制可用"
+            )
+        case .notRunning:
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开 Apple Music 后自动连接"
+            )
+        case let .degraded(reason):
+            return MusicAdapterRuntimePresentation(
+                level: .error,
+                title: "连接异常",
+                detail: reason
+            )
+        case let .permissionRequired(permission):
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "需要权限",
+                detail: permission
+            )
+        case let .unavailable(reason):
+            return MusicAdapterRuntimePresentation(
+                level: .error,
+                title: "当前不可用",
+                detail: reason
+            )
+        case nil:
+            return MusicAdapterRuntimePresentation(
+                level: .limited,
+                title: "已授权",
+                detail: "等待首次播放状态"
+            )
         }
     }
 }
@@ -130,7 +261,7 @@ enum MusicAdapterRegistry {
             bundleIdentifier: "com.apple.Music",
             displayName: "Apple Music"
         ),
-        implementationStatus: .experimental,
+        implementationStatus: .alpha,
         capabilities: [
             .metadata,
             .artwork,
@@ -149,8 +280,8 @@ enum MusicAdapterRegistry {
         registrations.filter { $0.implementationStatus == .active }
     }
 
-    static var experimentalRegistrations: [MusicAdapterRegistration] {
-        registrations.filter { $0.implementationStatus == .experimental }
+    static var alphaRegistrations: [MusicAdapterRegistration] {
+        registrations.filter { $0.implementationStatus == .alpha }
     }
 
     static func registration(

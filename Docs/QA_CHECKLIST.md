@@ -16,10 +16,12 @@
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
 - 安装包包含 `NSAppleEventsUsageDescription` 和 `com.apple.security.automation.apple-events` entitlement。
 
-## Apple Music 实验适配
+## Apple Music Alpha 支持
 
 - Apple Music 未运行时顶屿不会自动启动它，汽水显示与控制不受影响。
-- 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、播放状态、进度与可用控制。
+- 设置关闭 Apple Music 适配后，Music 不再参与来源选择、观察、轮询、封面查询或控制；重新开启后自动恢复。
+- Music 退出、PID 变化或自动化权限撤销后，设置页不得保留上一进程的“连接正常”、歌曲、进度或控制状态。
+- 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、响应耗时与可用控制，实时歌曲和进度只在“当前活动”显示。
 - `--apple-music-status` 的 `artworkDataBytes` 大于 0，岛显示 Apple Music 当前歌曲的真实专辑封面；同曲重复刷新不得重复读取或闪烁封面。
 - 播放 Apple Music 电台且脚本返回 `artworkCount=0` 时，`--apple-music-status` 仍应通过 Apple 公共目录得到真实封面；目录存在同名异歌手、专辑不符或多重结果时必须保持无封面，不能猜测。
 - 已识别为无原生封面的电台连续切歌时，目录查询应从 `playerInfo` 通知开始并与权威快照并行；候选歌名、歌手或专辑与最终快照不一致时必须丢弃，不得提前显示错误封面。
