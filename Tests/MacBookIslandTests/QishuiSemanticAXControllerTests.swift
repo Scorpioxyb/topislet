@@ -21,6 +21,35 @@ func existingManualAccessibilityAllowsScanning() {
     ))
 }
 
+@Test("汽水 AX 冷启动小树允许两次有界重试")
+func sparseAXDiscoveryUsesBoundedRetries() {
+    #expect(QishuiSemanticAXController.shouldRetrySparseDiscovery(
+        scannedNodeCount: 2,
+        candidateCount: 0,
+        attempt: 0
+    ))
+    #expect(QishuiSemanticAXController.shouldRetrySparseDiscovery(
+        scannedNodeCount: 8,
+        candidateCount: 0,
+        attempt: 1
+    ))
+    #expect(!QishuiSemanticAXController.shouldRetrySparseDiscovery(
+        scannedNodeCount: 2,
+        candidateCount: 0,
+        attempt: 2
+    ))
+    #expect(!QishuiSemanticAXController.shouldRetrySparseDiscovery(
+        scannedNodeCount: 9,
+        candidateCount: 0,
+        attempt: 0
+    ))
+    #expect(!QishuiSemanticAXController.shouldRetrySparseDiscovery(
+        scannedNodeCount: 2,
+        candidateCount: 1,
+        attempt: 0
+    ))
+}
+
 @Test("正常可见主窗口底部播放器栏满足安全门禁")
 func visibleMainBottomPlayerIsEligible() {
     let facts = QishuiSemanticAXController.CandidateFacts(

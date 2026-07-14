@@ -21,6 +21,8 @@ private final class MediaRemoteProcessOutputBuffer: @unchecked Sendable {
 
 private struct MediaRemoteTrackTimelineIdentity {
     let bundleIdentifier: String?
+    let processIdentifier: pid_t?
+    let contentItemIdentifier: String?
     let title: String
     let artist: String?
     let album: String?
@@ -37,6 +39,19 @@ private struct MediaRemoteSeekTimelineAnchor {
     let confirmationDeadline: Date
     var didObserveTarget: Bool
     var coherentSince: Date?
+}
+
+private enum MediaRemoteStreamPayloadMerge: Equatable {
+    case replacement
+    case confirmedSameTrack
+    case ambiguousPlaybackPatch
+    case ignoredProcess
+}
+
+private enum MediaRemotePayloadTrackRelationship {
+    case different
+    case confirmedSameTrack
+    case ambiguousPlaybackPatch
 }
 
 struct MediaRemoteStreamLifecycle {
@@ -81,6 +96,7 @@ final class MediaRemoteAdapterStreamSource {
     private var latestRawSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastVerifiedQishuiSnapshot: MediaRemoteNowPlayingSnapshot?
     private var playbackPositionAnchor: PlaybackControlTimeline.AuthoritativeAnchor?
+    private var playbackPositionTrackIdentity: MediaRemoteTrackTimelineIdentity?
     private var latestSignature: String?
     private var artworkCache: [String: Data] = [:]
     private var artworkCacheOrder: [String] = []
@@ -94,9 +110,25 @@ final class MediaRemoteAdapterStreamSource {
     private var sampleOrigin: MediaRemoteSampleOrigin = .unknown
     private var lastPlaybackEvidenceAt: Date?
     private var lastPlaybackEvidenceTrackIdentity: String?
+    private var retiredSourceProcessIdentifiers: [pid_t: Date] = [:]
+    private let retiredSourceProcessIdentifierTTL: TimeInterval = 30
+    private var qishuiSessionGeneration: UInt64 = 0
     private var streamLifecycle = MediaRemoteStreamLifecycle()
     private var restartTask: Task<Void, Never>?
     private var changeHandler: ChangeHandler?
+    private let runningQishuiProcessIdentifiersProvider: () -> Set<pid_t>
+
+    init(
+        runningQishuiProcessIdentifiersProvider: @escaping () -> Set<pid_t> = {
+            Set(
+                NSRunningApplication.runningApplications(
+                    withBundleIdentifier: "com.soda.music"
+                ).filter { !$0.isTerminated }.map(\.processIdentifier)
+            )
+        }
+    ) {
+        self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider
+    }
 
     func start(onChange: @escaping ChangeHandler) {
         guard process == nil else { return }
@@ -231,7 +263,16 @@ final class MediaRemoteAdapterStreamSource {
         adapterPaths() != nil
     }
 
-    func invalidateQishuiSession() {
+    func invalidateQishuiSession(
+        at now: Date = Date(),
+        retireProcessIdentifier: Bool = true
+    ) {
+        qishuiSessionGeneration &+= 1
+        if retireProcessIdentifier,
+           let processIdentifier = pidValue(mergedPayload["processIdentifier"])
+               ?? latestRawSnapshot?.currentTrack?.sourceProcessIdentifier {
+            retireSourceProcessIdentifier(processIdentifier, at: now)
+        }
         outputBuffer.removeAll()
         mergedPayload.removeAll()
         lastPublishedPayload.removeAll()
@@ -240,6 +281,7 @@ final class MediaRemoteAdapterStreamSource {
         latestRawSnapshot = nil
         lastVerifiedQishuiSnapshot = nil
         playbackPositionAnchor = nil
+        playbackPositionTrackIdentity = nil
         latestSignature = nil
         metadataRequestGeneration += 1
         pendingArtworkRequestLookupKey = nil
@@ -255,12 +297,13 @@ final class MediaRemoteAdapterStreamSource {
 
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
         guard let paths = adapterPaths(),
-              let payload = Self.runGet(
+              let rawPayload = Self.runGet(
                 script: paths.script,
                 framework: paths.framework,
                 bundleIdentifier: qishuiBundleIdentifier,
                 includeArtwork: true
-              ) else {
+              ),
+              let payload = payloadResolvingProcessIdentifier(rawPayload) else {
             let snapshot = MediaRemoteNowPlayingSnapshot(
                 isAvailable: false,
                 isVerifiedQishuiSource: false,
@@ -277,16 +320,18 @@ final class MediaRemoteAdapterStreamSource {
         }
 
         advanceSample(origin: .synchronousRead)
-        recordPlaybackEvidenceIfPresent(
-            payload,
-            identityPayload: payload,
-            receivedAt: Date()
-        )
         let rawSnapshot = snapshot(
             from: payload,
             existingArtwork: nil,
             timelinePayload: payload
         )
+        if rawSnapshot.isVerifiedQishuiSource {
+            recordPlaybackEvidenceIfPresent(
+                payload,
+                identityPayload: payload,
+                receivedAt: rawSnapshot.checkedAt
+            )
+        }
         return remember(snapshot: rawSnapshot)
     }
 
@@ -307,6 +352,8 @@ final class MediaRemoteAdapterStreamSource {
     func refreshPlaybackPositionAsync() async -> MediaRemoteNowPlayingSnapshot? {
         guard let paths = adapterPaths() else { return nil }
         let requestSampleID = sampleID
+        let requestSessionGeneration = qishuiSessionGeneration
+        let expectedProcessIdentifier = pidValue(mergedPayload["processIdentifier"])
         let data = await Task.detached(priority: .utility) {
             Self.runGetData(
                 script: paths.script,
@@ -318,15 +365,46 @@ final class MediaRemoteAdapterStreamSource {
         guard let data,
               let object = try? JSONSerialization.jsonObject(with: data),
               let payload = object as? [String: Any] else { return nil }
-        return applyPlaybackPositionPayload(payload, requestSampleID: requestSampleID)
+        return applyPlaybackPositionPayload(
+            payload,
+            requestSampleID: requestSampleID,
+            requestSessionGeneration: requestSessionGeneration,
+            expectedProcessIdentifier: expectedProcessIdentifier
+        )
     }
 
     private func applyPlaybackPositionPayload(
-        _ payload: [String: Any],
+        _ rawPayload: [String: Any],
         requestSampleID: UInt64? = nil,
+        requestSessionGeneration: UInt64? = nil,
+        expectedProcessIdentifier: pid_t? = nil,
         receivedAt: Date = Date(),
         receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) -> MediaRemoteNowPlayingSnapshot? {
+        if let requestSessionGeneration,
+           requestSessionGeneration != qishuiSessionGeneration {
+            return latestSnapshot
+        }
+        guard let payload = payloadResolvingProcessIdentifier(rawPayload) else {
+            return latestSnapshot
+        }
+        let responseProcessIdentifier = pidValue(payload["processIdentifier"])
+        if let expectedProcessIdentifier,
+           responseProcessIdentifier != expectedProcessIdentifier {
+            return latestSnapshot
+        }
+        guard payloadProcessIdentityIsConsistent(payload) else {
+            return latestSnapshot
+        }
+        if let responseProcessIdentifier,
+           isRetiredSourceProcessIdentifier(responseProcessIdentifier, at: receivedAt) {
+            return latestSnapshot
+        }
+        if let currentProcessIdentifier = pidValue(mergedPayload["processIdentifier"]),
+           let responseProcessIdentifier,
+           currentProcessIdentifier != responseProcessIdentifier {
+            return latestSnapshot
+        }
         if let requestSampleID,
            !PlaybackControlTimeline.shouldAcceptAsyncSample(
                 requestSampleID: requestSampleID,
@@ -393,7 +471,7 @@ final class MediaRemoteAdapterStreamSource {
         if let activeProcess {
             Self.terminateStreamProcess(activeProcess)
         }
-        invalidateQishuiSession()
+        invalidateQishuiSession(retireProcessIdentifier: false)
     }
 
     nonisolated static func terminateStreamProcess(
@@ -436,12 +514,19 @@ final class MediaRemoteAdapterStreamSource {
         if holdTransientEmptyPayloadIfNeeded(payload) {
             return
         }
-        mergeObservedStreamPayload(payload, isDiff: envelope.isDiff, observedAt: receivedAt)
-        recordPlaybackEvidenceIfPresent(
+        let merge = mergeObservedStreamPayload(
             payload,
-            identityPayload: mergedPayload,
-            receivedAt: receivedAt
+            isDiff: envelope.isDiff,
+            observedAt: receivedAt
         )
+        guard merge != .ignoredProcess else { return }
+        if merge != .ambiguousPlaybackPatch {
+            recordPlaybackEvidenceIfPresent(
+                payload,
+                identityPayload: mergedPayload,
+                receivedAt: receivedAt
+            )
+        }
 
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
@@ -509,11 +594,49 @@ final class MediaRemoteAdapterStreamSource {
         return (payload, boolValue(envelope["diff"]) ?? false)
     }
 
-    private func mergeStreamPayload(_ payload: [String: Any], isDiff: Bool) {
-        guard isDiff else {
-            mergedPayload = payload
-            return
+    private func mergeStreamPayload(
+        _ payload: [String: Any],
+        isDiff: Bool
+    ) -> MediaRemoteStreamPayloadMerge {
+        if isDiff {
+            mergePayloadFields(payload)
+            return .confirmedSameTrack
         }
+
+        switch payloadTrackRelationship(mergedPayload, payload) {
+        case .different:
+            mergedPayload = payload
+            return .replacement
+        case .confirmedSameTrack:
+            mergePayloadFields(payload)
+            return .confirmedSameTrack
+        case .ambiguousPlaybackPatch:
+            mergePayloadFields(payload.filter {
+                Self.ambiguousPlaybackPatchKeys.contains($0.key)
+            })
+            return .ambiguousPlaybackPatch
+        }
+    }
+
+    private static let ambiguousPlaybackPatchKeys: Set<String> = [
+        "playing",
+        "playbackRate",
+        "elapsedTime",
+        "elapsedTimeNow",
+        "timestamp"
+    ]
+
+    private static let ambiguousPlaybackPayloadKeys = ambiguousPlaybackPatchKeys.union([
+        "bundleIdentifier",
+        "processIdentifier",
+        "contentItemIdentifier",
+        "title",
+        "artist",
+        "album",
+        "duration"
+    ])
+
+    private func mergePayloadFields(_ payload: [String: Any]) {
         for (key, value) in payload {
             if value is NSNull {
                 mergedPayload.removeValue(forKey: key)
@@ -523,14 +646,100 @@ final class MediaRemoteAdapterStreamSource {
         }
     }
 
+    private func payloadTrackRelationship(
+        _ current: [String: Any],
+        _ update: [String: Any]
+    ) -> MediaRemotePayloadTrackRelationship {
+        guard let currentTitle = stringValue(current["title"])?.adapterTrimmedNonEmpty,
+              let updateTitle = stringValue(update["title"])?.adapterTrimmedNonEmpty,
+              currentTitle == updateTitle else {
+            return .different
+        }
+
+        if let currentBundle = stringValue(current["bundleIdentifier"])?.adapterTrimmedNonEmpty,
+           let updateBundle = stringValue(update["bundleIdentifier"])?.adapterTrimmedNonEmpty,
+           currentBundle != updateBundle {
+            return .different
+        }
+        if let currentProcessIdentifier = pidValue(current["processIdentifier"]),
+           let updateProcessIdentifier = pidValue(update["processIdentifier"]),
+           currentProcessIdentifier != updateProcessIdentifier {
+            return .different
+        }
+
+        let currentIdentifier = stringValue(current["contentItemIdentifier"])?.adapterTrimmedNonEmpty
+        let updateIdentifier = stringValue(update["contentItemIdentifier"])?.adapterTrimmedNonEmpty
+        if let currentIdentifier,
+           let updateIdentifier,
+           currentIdentifier == updateIdentifier {
+            return .confirmedSameTrack
+        }
+
+        var matchingStableFieldCount = 0
+        for key in ["artist", "album"] {
+            guard let currentValue = stringValue(current[key])?.adapterTrimmedNonEmpty,
+                  let updateValue = stringValue(update[key])?.adapterTrimmedNonEmpty else {
+                continue
+            }
+            guard currentValue.caseInsensitiveCompare(updateValue) == .orderedSame else {
+                return .different
+            }
+            matchingStableFieldCount += 1
+        }
+        if let currentDuration = doubleValue(current["duration"]),
+           let updateDuration = doubleValue(update["duration"]) {
+            guard abs(currentDuration - updateDuration) <= 0.75 else {
+                return .different
+            }
+            matchingStableFieldCount += 1
+        }
+        if matchingStableFieldCount >= 2 {
+            return .confirmedSameTrack
+        }
+        if isAmbiguousPlaybackPayload(update) {
+            return .ambiguousPlaybackPatch
+        }
+        return .different
+    }
+
+    private func isAmbiguousPlaybackPayload(_ payload: [String: Any]) -> Bool {
+        let hasPlaybackValue = payload.keys.contains {
+            Self.ambiguousPlaybackPatchKeys.contains($0)
+        }
+        return hasPlaybackValue && payload.keys.allSatisfy {
+            Self.ambiguousPlaybackPayloadKeys.contains($0)
+        }
+    }
+
     private func mergeObservedStreamPayload(
-        _ payload: [String: Any],
+        _ rawPayload: [String: Any],
         isDiff: Bool,
         observedAt: Date = Date()
-    ) {
+    ) -> MediaRemoteStreamPayloadMerge {
+        guard let payload = payloadResolvingProcessIdentifier(rawPayload) else {
+            return .ignoredProcess
+        }
+        guard payloadProcessIdentityIsConsistent(payload) else {
+            return .ignoredProcess
+        }
+        if let processIdentifier = pidValue(payload["processIdentifier"]),
+           isRetiredSourceProcessIdentifier(processIdentifier, at: observedAt) {
+            return .ignoredProcess
+        }
         let previousPayload = mergedPayload
         let previousIdentity = payloadTrackIdentity(mergedPayload)
-        mergeStreamPayload(payload, isDiff: isDiff)
+        let previousProcessIdentifier = pidValue(mergedPayload["processIdentifier"])
+        let merge = mergeStreamPayload(payload, isDiff: isDiff)
+        let nextProcessIdentifier = pidValue(mergedPayload["processIdentifier"])
+        if let previousProcessIdentifier,
+           let nextProcessIdentifier,
+           previousProcessIdentifier != nextProcessIdentifier {
+            qishuiSessionGeneration &+= 1
+            retireSourceProcessIdentifier(previousProcessIdentifier, at: observedAt)
+            playbackPositionAnchor = nil
+            playbackPositionTrackIdentity = nil
+            clearSeekTimelineAnchor()
+        }
         let nextIdentity = payloadTrackIdentity(mergedPayload)
         if let nextIdentity, nextIdentity != previousIdentity {
             metadataRequestGeneration += 1
@@ -540,6 +749,93 @@ final class MediaRemoteAdapterStreamSource {
                 deferredTrackPublicationStartedAt = observedAt
             }
         }
+        return merge
+    }
+
+    private func retireSourceProcessIdentifier(
+        _ processIdentifier: pid_t,
+        at now: Date
+    ) {
+        retiredSourceProcessIdentifiers = retiredSourceProcessIdentifiers.filter {
+            now.timeIntervalSince($0.value) <= retiredSourceProcessIdentifierTTL
+        }
+        retiredSourceProcessIdentifiers[processIdentifier] = now
+    }
+
+    private func isRetiredSourceProcessIdentifier(
+        _ processIdentifier: pid_t,
+        at now: Date
+    ) -> Bool {
+        guard let retiredAt = retiredSourceProcessIdentifiers[processIdentifier] else {
+            return false
+        }
+        if now.timeIntervalSince(retiredAt) <= retiredSourceProcessIdentifierTTL {
+            return true
+        }
+        retiredSourceProcessIdentifiers.removeValue(forKey: processIdentifier)
+        return false
+    }
+
+    static func processIdentityIsConsistent(
+        bundleIdentifier: String?,
+        processIdentifier: pid_t?,
+        runningQishuiProcessIdentifiers: Set<pid_t>
+    ) -> Bool {
+        guard !runningQishuiProcessIdentifiers.isEmpty else { return false }
+        if let bundleIdentifier, let processIdentifier {
+            return bundleIdentifier == "com.soda.music"
+                && runningQishuiProcessIdentifiers.contains(processIdentifier)
+        }
+        if let processIdentifier {
+            return runningQishuiProcessIdentifiers.contains(processIdentifier)
+        }
+        guard runningQishuiProcessIdentifiers.count == 1 else { return false }
+        return bundleIdentifier == nil || bundleIdentifier == "com.soda.music"
+    }
+
+    private func payloadResolvingProcessIdentifier(
+        _ rawPayload: [String: Any]
+    ) -> [String: Any]? {
+        let runningProcessIdentifiers = runningQishuiProcessIdentifiersProvider()
+        var payload = rawPayload
+        if pidValue(payload["processIdentifier"]) == nil {
+            let bundleIdentifier = stringValue(payload["bundleIdentifier"])
+            let processIdentifier: pid_t?
+            if bundleIdentifier == qishuiBundleIdentifier {
+                processIdentifier = runningProcessIdentifiers.count == 1
+                    ? runningProcessIdentifiers.first
+                    : nil
+            } else if bundleIdentifier == nil,
+                      let currentProcessIdentifier = pidValue(mergedPayload["processIdentifier"]),
+                      runningProcessIdentifiers.contains(currentProcessIdentifier) {
+                processIdentifier = currentProcessIdentifier
+            } else if bundleIdentifier == nil,
+                      runningProcessIdentifiers.count == 1 {
+                processIdentifier = runningProcessIdentifiers.first
+            } else {
+                processIdentifier = nil
+            }
+            guard let processIdentifier else { return nil }
+            payload["processIdentifier"] = processIdentifier
+        }
+        guard Self.processIdentityIsConsistent(
+            bundleIdentifier: stringValue(payload["bundleIdentifier"]),
+            processIdentifier: pidValue(payload["processIdentifier"]),
+            runningQishuiProcessIdentifiers: runningProcessIdentifiers
+        ) else {
+            return nil
+        }
+        return payload
+    }
+
+    private func payloadProcessIdentityIsConsistent(
+        _ payload: [String: Any]
+    ) -> Bool {
+        return Self.processIdentityIsConsistent(
+            bundleIdentifier: stringValue(payload["bundleIdentifier"]),
+            processIdentifier: pidValue(payload["processIdentifier"]),
+            runningQishuiProcessIdentifiers: runningQishuiProcessIdentifiersProvider()
+        )
     }
 
     private func appendDeferredTrackReference(_ payload: [String: Any]) {
@@ -577,16 +873,21 @@ final class MediaRemoteAdapterStreamSource {
         if holdTransientEmptyPayloadIfNeeded(envelope.payload, startedAt: receivedAt) {
             return latestSnapshot
         }
-        mergeObservedStreamPayload(
+        let merge = mergeObservedStreamPayload(
             envelope.payload,
             isDiff: envelope.isDiff,
             observedAt: receivedAt
         )
-        recordPlaybackEvidenceIfPresent(
-            envelope.payload,
-            identityPayload: mergedPayload,
-            receivedAt: receivedAt
-        )
+        if merge == .ignoredProcess {
+            return latestSnapshot
+        }
+        if merge != .ambiguousPlaybackPatch {
+            recordPlaybackEvidenceIfPresent(
+                envelope.payload,
+                identityPayload: mergedPayload,
+                receivedAt: receivedAt
+            )
+        }
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
             : shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload)
@@ -721,7 +1022,11 @@ final class MediaRemoteAdapterStreamSource {
                       generation == self.deferredTrackPublicationGeneration else { return }
                 if let data,
                    let object = try? JSONSerialization.jsonObject(with: data),
-                   let payload = object as? [String: Any],
+                   let rawPayload = object as? [String: Any],
+                   let payload = self.payloadResolvingProcessIdentifier(rawPayload),
+                   pidValue(payload["processIdentifier"]).map({
+                       !self.isRetiredSourceProcessIdentifier($0, at: Date())
+                   }) ?? true,
                    self.payloadTrackIdentity(payload) == targetIdentity {
                     self.mergedPayload = payload
                     self.recordPlaybackEvidenceIfPresent(
@@ -824,7 +1129,7 @@ final class MediaRemoteAdapterStreamSource {
             return nil
         }
 
-        guard NSRunningApplication.runningApplications(withBundleIdentifier: qishuiBundleIdentifier).isEmpty == false else {
+        guard !runningQishuiProcessIdentifiersProvider().isEmpty else {
             lastVerifiedQishuiSnapshot = nil
             return nil
         }
@@ -899,7 +1204,8 @@ final class MediaRemoteAdapterStreamSource {
 
         let bundleID = stringValue(payload["bundleIdentifier"])
         let pid = pidValue(payload["processIdentifier"])
-        let verified = bundleID == qishuiBundleIdentifier || isQishuiPID(pid)
+        let verified = payloadProcessIdentityIsConsistent(payload)
+            && (bundleID == qishuiBundleIdentifier || isQishuiPID(pid))
         guard verified else {
             let source = bundleID ?? pid.map { "pid \($0)" } ?? "unknown"
             return MediaRemoteNowPlayingSnapshot(
@@ -934,6 +1240,8 @@ final class MediaRemoteAdapterStreamSource {
             ?? doubleValue(payload["playbackRate"]).map { $0 > 0.01 }
         let timelineIdentity = trackTimelineIdentity(
             bundleIdentifier: bundleID,
+            processIdentifier: pid,
+            contentItemIdentifier: stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty,
             title: title,
             artist: artist,
             album: album,
@@ -1048,6 +1356,9 @@ final class MediaRemoteAdapterStreamSource {
         lastArtworkRequestAt = now
         artworkFetchInFlight = true
         let requestGeneration = metadataRequestGeneration
+        let requestSessionGeneration = qishuiSessionGeneration
+        let expectedProcessIdentifier = track.sourceProcessIdentifier
+            ?? pidValue(mergedPayload["processIdentifier"])
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let payload = Self.runGet(
@@ -1067,14 +1378,21 @@ final class MediaRemoteAdapterStreamSource {
                     )
                     return
                 }
-                guard let payload else {
+                let receivedAt = Date()
+                guard let payload,
+                      let payload = self.validatedMetadataPayload(
+                        payload,
+                        requestSessionGeneration: requestSessionGeneration,
+                        expectedProcessIdentifier: expectedProcessIdentifier,
+                        receivedAt: receivedAt
+                      ) else {
                     self.requestPendingFreshMetadataIfNeeded(onChange: onChange, completedLookupKey: nil)
                     return
                 }
                 let nextSnapshot = self.metadataSnapshot(
                     from: payload,
                     existingArtwork: nil,
-                    receivedAt: Date(),
+                    receivedAt: receivedAt,
                     receivedUptime: ProcessInfo.processInfo.systemUptime
                 )
                 guard let nextTrack = nextSnapshot.currentTrack else {
@@ -1123,7 +1441,7 @@ final class MediaRemoteAdapterStreamSource {
     }
 
     func applyMetadataPayloadForTesting(
-        _ payload: [String: Any],
+        _ rawPayload: [String: Any],
         receivedAt: Date,
         receivedUptime: TimeInterval,
         requestGeneration: Int? = nil
@@ -1132,6 +1450,14 @@ final class MediaRemoteAdapterStreamSource {
             return latestSnapshot
         }
         if deferredTrackPublicationStartedAt != nil {
+            return latestSnapshot
+        }
+        guard let payload = validatedMetadataPayload(
+            rawPayload,
+            requestSessionGeneration: qishuiSessionGeneration,
+            expectedProcessIdentifier: pidValue(mergedPayload["processIdentifier"]),
+            receivedAt: receivedAt
+        ) else {
             return latestSnapshot
         }
         mergeMetadata(from: payload)
@@ -1159,6 +1485,32 @@ final class MediaRemoteAdapterStreamSource {
                 mergedPayload[key] = value
             }
         }
+    }
+
+    private func validatedMetadataPayload(
+        _ rawPayload: [String: Any],
+        requestSessionGeneration: UInt64,
+        expectedProcessIdentifier: pid_t?,
+        receivedAt: Date
+    ) -> [String: Any]? {
+        guard requestSessionGeneration == qishuiSessionGeneration,
+              let payload = payloadResolvingProcessIdentifier(rawPayload) else {
+            return nil
+        }
+        let responseProcessIdentifier = pidValue(payload["processIdentifier"])
+        if let expectedProcessIdentifier,
+           responseProcessIdentifier != expectedProcessIdentifier {
+            return nil
+        }
+        if let responseProcessIdentifier,
+           isRetiredSourceProcessIdentifier(responseProcessIdentifier, at: receivedAt) {
+            return nil
+        }
+        if let currentProcessIdentifier = pidValue(mergedPayload["processIdentifier"]),
+           responseProcessIdentifier != currentProcessIdentifier {
+            return nil
+        }
+        return payload
     }
 
     private func requestPendingFreshMetadataIfNeeded(onChange: ChangeHandler?, completedLookupKey: String?) {
@@ -1287,14 +1639,26 @@ final class MediaRemoteAdapterStreamSource {
                 receivedAt: receivedAt,
                 receivedUptime: receivedUptime
             ) {
-                playbackPositionAnchor = PlaybackControlTimeline.accepting(
+                let acceptedAnchor = PlaybackControlTimeline.accepting(
                     candidate,
                     over: playbackPositionAnchor
                 )
+                playbackPositionAnchor = acceptedAnchor
+                if acceptedAnchor.trackIdentity == candidate.trackIdentity {
+                    playbackPositionTrackIdentity = trackIdentity
+                }
             }
         }
         let rawElapsed = playbackPositionAnchor.flatMap { anchor -> TimeInterval? in
-            guard anchor.trackIdentity == identity else { return nil }
+            let structuredIdentityMatches = playbackPositionTrackIdentity.map {
+                timelineIdentity($0, matches: trackIdentity)
+            } ?? false
+            guard anchor.trackIdentity == identity || structuredIdentityMatches else {
+                return nil
+            }
+            if structuredIdentityMatches {
+                playbackPositionTrackIdentity = trackIdentity
+            }
             return PlaybackControlTimeline.elapsed(from: anchor, nowUptime: receivedUptime)
         } ?? doubleValue(payload["elapsedTimeNow"])
             ?? currentElapsedTime(from: payload)
@@ -1356,6 +1720,7 @@ final class MediaRemoteAdapterStreamSource {
     ) -> String {
         payloadPlaybackTimelineIdentity(payload) ?? [
             fallback.bundleIdentifier ?? "",
+            fallback.processIdentifier.map(String.init) ?? "",
             fallback.title,
             fallback.artist ?? "",
             fallback.album ?? "",
@@ -1364,19 +1729,7 @@ final class MediaRemoteAdapterStreamSource {
     }
 
     private func payloadPlaybackTimelineIdentity(_ payload: [String: Any]) -> String? {
-        if let contentIdentifier = stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty {
-            return contentIdentifier
-        }
-        guard let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty else {
-            return nil
-        }
-        return [
-            stringValue(payload["bundleIdentifier"]) ?? "",
-            title,
-            stringValue(payload["artist"]) ?? "",
-            stringValue(payload["album"]) ?? "",
-            doubleValue(payload["duration"]).map { String(format: "%.3f", $0) } ?? ""
-        ].joined(separator: "\u{1f}")
+        payloadTrackIdentity(payload)
     }
 
     private func currentElapsedTime(from payload: [String: Any]) -> Double? {
@@ -1477,6 +1830,8 @@ final class MediaRemoteAdapterStreamSource {
     private func trackTimelineIdentity(_ track: MediaRemoteNowPlayingTrack) -> MediaRemoteTrackTimelineIdentity {
         trackTimelineIdentity(
             bundleIdentifier: track.sourceBundleIdentifier,
+            processIdentifier: track.sourceProcessIdentifier,
+            contentItemIdentifier: nil,
             title: track.title,
             artist: track.artist,
             album: track.album,
@@ -1486,6 +1841,8 @@ final class MediaRemoteAdapterStreamSource {
 
     private func trackTimelineIdentity(
         bundleIdentifier: String?,
+        processIdentifier: pid_t?,
+        contentItemIdentifier: String?,
         title: String,
         artist: String,
         album: String?,
@@ -1493,6 +1850,8 @@ final class MediaRemoteAdapterStreamSource {
     ) -> MediaRemoteTrackTimelineIdentity {
         MediaRemoteTrackTimelineIdentity(
             bundleIdentifier: bundleIdentifier,
+            processIdentifier: processIdentifier,
+            contentItemIdentifier: contentItemIdentifier,
             title: title,
             artist: artist == "汽水音乐" ? nil : artist,
             album: album,
@@ -1510,22 +1869,64 @@ final class MediaRemoteAdapterStreamSource {
            currentBundle != updateBundle {
             return false
         }
+        if let currentProcessIdentifier = current.processIdentifier,
+           let updateProcessIdentifier = update.processIdentifier,
+           currentProcessIdentifier != updateProcessIdentifier {
+            return false
+        }
+
+        var matchingStableFieldCount = 0
         if let currentDuration = current.duration,
            let updateDuration = update.duration,
            abs(currentDuration - updateDuration) > 0.75 {
             return false
+        } else if current.duration != nil, update.duration != nil {
+            matchingStableFieldCount += 1
         }
         if let currentArtist = current.artist,
            let updateArtist = update.artist,
            currentArtist.caseInsensitiveCompare(updateArtist) != .orderedSame {
             return false
+        } else if current.artist != nil, update.artist != nil {
+            matchingStableFieldCount += 1
         }
         if let currentAlbum = current.album,
            let updateAlbum = update.album,
            currentAlbum.caseInsensitiveCompare(updateAlbum) != .orderedSame {
             return false
+        } else if current.album != nil, update.album != nil {
+            matchingStableFieldCount += 1
         }
-        return true
+        let contentItemIdentifierMatches = current.contentItemIdentifier.map {
+            $0 == update.contentItemIdentifier
+        } ?? false
+        return matchingStableFieldCount >= 2 || contentItemIdentifierMatches
+    }
+
+    func timelineIdentitiesMatchForTesting(
+        _ currentPayload: [String: Any],
+        _ updatePayload: [String: Any]
+    ) -> Bool {
+        func identity(from payload: [String: Any]) -> MediaRemoteTrackTimelineIdentity? {
+            guard let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty else {
+                return nil
+            }
+            return MediaRemoteTrackTimelineIdentity(
+                bundleIdentifier: stringValue(payload["bundleIdentifier"]),
+                processIdentifier: pidValue(payload["processIdentifier"]),
+                contentItemIdentifier: stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty,
+                title: title,
+                artist: stringValue(payload["artist"])?.adapterTrimmedNonEmpty,
+                album: stringValue(payload["album"])?.adapterTrimmedNonEmpty,
+                duration: doubleValue(payload["duration"])
+            )
+        }
+
+        guard let current = identity(from: currentPayload),
+              let update = identity(from: updatePayload) else {
+            return false
+        }
+        return timelineIdentity(current, matches: update)
     }
 
     private func trackLookupKey(_ track: MediaRemoteNowPlayingTrack) -> String {
@@ -1539,8 +1940,22 @@ final class MediaRemoteAdapterStreamSource {
         let contentIdentifier = stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty
         let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty
         guard contentIdentifier != nil || title != nil else { return nil }
+        let artist = stringValue(payload["artist"])?.adapterTrimmedNonEmpty
+        let album = stringValue(payload["album"])?.adapterTrimmedNonEmpty
+        let duration = doubleValue(payload["duration"])
+        if let title, artist != nil || album != nil || duration != nil {
+            return [
+                stringValue(payload["bundleIdentifier"]) ?? "",
+                pidValue(payload["processIdentifier"]).map(String.init) ?? "",
+                title,
+                artist?.lowercased() ?? "",
+                album?.lowercased() ?? "",
+                duration.map { String(format: "%.3f", $0) } ?? ""
+            ].joined(separator: "\u{1f}")
+        }
         return [
             stringValue(payload["bundleIdentifier"]) ?? "",
+            pidValue(payload["processIdentifier"]).map(String.init) ?? "",
             contentIdentifier ?? "",
             title ?? ""
         ].joined(separator: "\u{1f}")
@@ -1601,6 +2016,11 @@ final class MediaRemoteAdapterStreamSource {
     ) -> Bool {
         guard (response.sourceBundleIdentifier ?? "") == (current.sourceBundleIdentifier ?? ""),
               response.title == current.title else {
+            return false
+        }
+        if let responseProcessIdentifier = response.sourceProcessIdentifier,
+           let currentProcessIdentifier = current.sourceProcessIdentifier,
+           responseProcessIdentifier != currentProcessIdentifier {
             return false
         }
 

@@ -186,6 +186,11 @@ if CommandLine.arguments.contains("--adapter-status") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--qishui-control-diagnostic") {
+    print(QishuiSemanticAXController().diagnostic())
+    exit(0)
+}
+
 if let adapterWatchIndex = CommandLine.arguments.firstIndex(of: "--adapter-watch") {
     let seconds = CommandLine.arguments.indices.contains(adapterWatchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[adapterWatchIndex + 1]) ?? 5)

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 
 struct QishuiSemanticAXControlResult: Sendable {
@@ -130,7 +131,23 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             self.cachedControls = nil
         }
 
-        let discovery = discoverControls(processIdentifier: processIdentifier)
+        var discovery = discoverControls(processIdentifier: processIdentifier)
+        for attempt in 0..<2 where Self.shouldRetrySparseDiscovery(
+            scannedNodeCount: discovery.scanned,
+            candidateCount: discovery.matches.count,
+            attempt: attempt
+        ) {
+            if attempt == 0 {
+                _ = rebuildManualAccessibility(
+                    processIdentifier: processIdentifier
+                )
+            }
+            usleep(attempt == 0 ? 80_000 : 160_000)
+            discovery = discoverControls(
+                processIdentifier: processIdentifier,
+                timeout: attempt == 0 ? 0.25 : 0.5
+            )
+        }
         guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
             let detail = discovery.matches.isEmpty
@@ -183,8 +200,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         guard let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { return "qishuiRunning=false" }
-        let manualAccessibilityEnabled = enableManualAccessibility(
-            processIdentifier: app.processIdentifier
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        let manualAccessibilityEnabled = boolAttribute(
+            application,
+            Self.manualAccessibilityAttribute
         )
 
         let discovery = discoverControls(processIdentifier: app.processIdentifier)
@@ -195,10 +214,43 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             "scanned=\(discovery.scanned)",
             "candidateCount=\(discovery.matches.count)"
         ]
+        lines.append(contentsOf: rootDiagnostics(processIdentifier: app.processIdentifier))
         for (index, match) in discovery.matches.enumerated() {
             lines.append("candidate[\(index)]=\(diagnosticDescription(for: match))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func rootDiagnostics(processIdentifier: pid_t) -> [String] {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        let roots = applicationRoots(of: application)
+        var lines = [
+            "applicationRole=\(stringAttribute(application, kAXRoleAttribute as String))",
+            "applicationChildren=\(children(of: application).count)",
+            "applicationTraversalChildren=\(traversalChildren(of: application).count)",
+            "applicationRoots=\(roots.count)"
+        ]
+        for attribute in [
+            kAXFocusedWindowAttribute as String,
+            "AXMainWindow",
+            kAXWindowsAttribute as String,
+            kAXFocusedUIElementAttribute as String,
+            kAXChildrenAttribute as String
+        ] {
+            guard let value = copyAttribute(application, attribute) else {
+                lines.append("attribute[\(attribute)]=nil")
+                continue
+            }
+            let elements = accessibilityElements(from: value)
+            let roles = elements.map { stringAttribute($0, kAXRoleAttribute as String) }
+            lines.append("attribute[\(attribute)]=count:\(elements.count),roles:\(roles.joined(separator: ","))")
+        }
+        for (index, root) in roots.enumerated() {
+            lines.append(
+                "root[\(index)]=role:\(stringAttribute(root, kAXRoleAttribute as String)),children:\(children(of: root).count),traversal:\(traversalChildren(of: root).count),hash:\(CFHash(root))"
+            )
+        }
+        return lines
     }
 
     static func canProceedAfterManualAccessibility(
@@ -206,6 +258,14 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         isEnabled: Bool
     ) -> Bool {
         setResult == .success || isEnabled
+    }
+
+    static func shouldRetrySparseDiscovery(
+        scannedNodeCount: Int,
+        candidateCount: Int,
+        attempt: Int
+    ) -> Bool {
+        candidateCount == 0 && scannedNodeCount <= 8 && attempt < 2
     }
 
     static func isEligibleCandidate(_ facts: CandidateFacts) -> Bool {
@@ -221,9 +281,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return relativeY >= 0.72 && relativeY <= 1.02
     }
 
-    private func discoverControls(processIdentifier: pid_t) -> (matches: [DiscoveredControls], scanned: Int) {
+    private func discoverControls(
+        processIdentifier: pid_t,
+        timeout: Float? = nil
+    ) -> (matches: [DiscoveredControls], scanned: Int) {
+        let effectiveTimeout = timeout ?? messagingTimeout
         let application = AXUIElementCreateApplication(processIdentifier)
-        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        AXUIElementSetMessagingTimeout(application, effectiveTimeout)
 
         var queue = [QueueItem(element: application, depth: 0)]
         for root in applicationRoots(of: application) {
@@ -240,7 +304,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
             let identity = ElementIdentity(element: item.element)
             guard visited.insert(identity).inserted else { continue }
-            AXUIElementSetMessagingTimeout(item.element, messagingTimeout)
+            AXUIElementSetMessagingTimeout(item.element, effectiveTimeout)
 
             if let orderedControls = playbackControls(in: item.element),
                hasPlaybackTimeContext(around: item.element) {
@@ -292,6 +356,29 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return Self.canProceedAfterManualAccessibility(
             setResult: result,
             isEnabled: isEnabled
+        )
+    }
+
+    private func rebuildManualAccessibility(processIdentifier: pid_t) -> Bool {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.25)
+        _ = AXUIElementSetAttributeValue(
+            application,
+            Self.manualAccessibilityAttribute as CFString,
+            kCFBooleanFalse
+        )
+        usleep(20_000)
+        let result = AXUIElementSetAttributeValue(
+            application,
+            Self.manualAccessibilityAttribute as CFString,
+            kCFBooleanTrue
+        )
+        return Self.canProceedAfterManualAccessibility(
+            setResult: result,
+            isEnabled: boolAttribute(
+                application,
+                Self.manualAccessibilityAttribute
+            )
         )
     }
 
