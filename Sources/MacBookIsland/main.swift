@@ -520,6 +520,7 @@ final class IslandModel: ObservableObject {
     @Published var musicAccentColor = Color.white
     @Published var pendingTrackControl: MusicControlCommand?
     @Published private(set) var trackControlFeedbackGeneration: UInt64 = 0
+    @Published private(set) var playPauseFeedbackGeneration: UInt64 = 0
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -792,6 +793,7 @@ final class IslandModel: ObservableObject {
 
     func playPause() {
         noteDirectControlInteraction()
+        playPauseFeedbackGeneration &+= 1
         let previousSignature = musicSignature(music)
         let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         activeFeature = .music
@@ -3675,7 +3677,11 @@ struct ExpandedMusic: View {
                     }
                     .help("上一首")
 
-                    ControlButton(icon: model.music.isPlaying ? "pause.fill" : "play.fill", prominent: true) {
+                    ControlButton(
+                        icon: model.music.isPlaying ? "pause.fill" : "play.fill",
+                        prominent: true,
+                        feedbackToken: model.playPauseFeedbackGeneration
+                    ) {
                         model.playPause()
                     }
                     .help(model.music.isPlaying ? "暂停" : "播放")
@@ -4009,20 +4015,42 @@ struct ControlButton: View {
                     .font(.system(size: prominent ? 13 : 12, weight: .bold))
                     .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
                     .scaleEffect(
-                        feedbackPulse && !reduceMotion && !prominent ? 1.1 : 1
+                        feedbackPulse && !reduceMotion
+                            ? (prominent ? 0.84 : 1.1)
+                            : 1
                     )
+                    .id(icon)
+                    .transition(iconTransition)
             }
             .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
+            .scaleEffect(
+                feedbackPulse && prominent && !reduceMotion ? 0.94 : 1
+            )
         }
         .buttonStyle(IslandControlButtonStyle())
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.08)
+                : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
+            value: icon
+        )
         .onChange(of: feedbackToken) { _, token in
-            guard token > 0, !prominent else { return }
+            guard token > 0 else { return }
             triggerFeedbackPulse(token: token)
         }
         .onDisappear {
             feedbackTask?.cancel()
             feedbackTask = nil
+            feedbackPulse = false
         }
+    }
+
+    private var iconTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.76)),
+            removal: .opacity.combined(with: .scale(scale: 1.08))
+        )
     }
 
     private func triggerFeedbackPulse(token: UInt64) {
