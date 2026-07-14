@@ -11,6 +11,7 @@
 - 双击 App 或 `open "/Applications/顶屿.app"` 后顶屿出现，设置面板可打开。
 - 从旧原型升级时，macOS 会按新 Bundle ID 识别顶屿；辅助功能、日历和提醒事项权限需重新授权。
 - 正常运行进程不包含 `--preview-mode` 或 `--preview-feature` 参数。
+- 每个顶屿主进程最多只有一个 `stream-client com.soda.music` 子进程；退出 App、发送 SIGINT / SIGTERM 或停止音乐源后，主进程和对应子进程均须在 1 秒内结束，不得留下 PPID 为 1 的项目内 Perl stream 进程。
 - 三个汽水控制按钮只触发汽水 PID 内的唯一语义 AX 控件，不得启动 `/usr/bin/perl` 的 `send-client` 或 `/usr/bin/python3` 控制脚本。
 - 汽水重启后先确认 `AXManualAccessibility=0`；第一次控制应在不激活汽水的情况下自动置为 `1` 并成功，QuickTime / 抖音前台状态不变。
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
@@ -56,6 +57,7 @@
 ## 汽水音乐同步
 
 - 汽水音乐播放时，`--adapter-status` 显示 `verifiedQishuiSource=true`，适配器子进程参数包含 `stream-client com.soda.music`。
+- stream 异常退出后只允许一个延迟重启任务；停止期间的旧 stdout、termination 回调或重启任务不得恢复旧歌曲、重复启动子进程或覆盖新进程状态。
 - 灵动岛显示真实歌名、歌手、封面。
 - 切歌后歌名、歌手、封面原子更新，不能出现新歌名配旧歌手或旧封面。
 - 自然切歌先出现空 payload 或临时 `contentItemIdentifier` 时，岛继续保持上一首完整画面；新曲完整标题、歌手、专辑和封面只能一次提交。

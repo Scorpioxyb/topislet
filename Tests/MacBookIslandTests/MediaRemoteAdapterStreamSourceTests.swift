@@ -692,6 +692,46 @@ func artworkReadHasHardProcessTimeout() {
     #expect(elapsed < 1.8)
 }
 
+@Test("MediaRemote stream 停止和新代次会拒绝旧回调")
+func streamLifecycleRejectsStaleCallbacks() {
+    var lifecycle = MediaRemoteStreamLifecycle()
+    let firstGeneration = lifecycle.beginStart()
+    #expect(lifecycle.accepts(firstGeneration))
+
+    lifecycle.beginStop()
+    #expect(!lifecycle.accepts(firstGeneration))
+
+    let secondGeneration = lifecycle.beginStart()
+    #expect(secondGeneration != firstGeneration)
+    #expect(!lifecycle.accepts(firstGeneration))
+    #expect(lifecycle.accepts(secondGeneration))
+}
+
+@Test("MediaRemote stream 子进程忽略 TERM 时使用 KILL 收尾")
+func streamProcessTerminationHasKillFallback() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+    process.arguments = [
+        "-e",
+        "$SIG{TERM} = 'IGNORE'; select undef, undef, undef, 30;"
+    ]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    usleep(20_000)
+
+    let startedAt = Date()
+    MediaRemoteAdapterStreamSource.terminateStreamProcess(
+        process,
+        graceInterval: 0.05
+    )
+    let elapsed = Date().timeIntervalSince(startedAt)
+
+    #expect(!process.isRunning)
+    #expect(elapsed >= 0.05)
+    #expect(elapsed < 0.8)
+}
+
 private func streamEnvelope(_ payload: [String: Any], diff: Bool = false) throws -> Data {
     try JSONSerialization.data(withJSONObject: [
         "type": "data",

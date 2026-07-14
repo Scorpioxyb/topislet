@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Combine
 import CoreImage
+import Darwin
 import EventKit
 import QuartzCore
 import SwiftUI
@@ -2711,6 +2712,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+private final class AppTerminationSignalBridge {
+    private var sources: [DispatchSourceSignal] = []
+
+    init() {
+        for signalNumber in [SIGINT, SIGTERM] {
+            Darwin.signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(
+                signal: signalNumber,
+                queue: .main
+            )
+            source.setEventHandler {
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            sources.append(source)
+        }
+    }
+}
+
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
@@ -4510,5 +4531,6 @@ func mediaTimeText(_ seconds: TimeInterval) -> String {
 
 private let appDelegate = AppDelegate()
 let app = NSApplication.shared
+private let terminationSignalBridge = AppTerminationSignalBridge()
 app.delegate = appDelegate
 app.run()

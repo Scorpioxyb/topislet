@@ -39,6 +39,26 @@ private struct MediaRemoteSeekTimelineAnchor {
     var coherentSince: Date?
 }
 
+struct MediaRemoteStreamLifecycle {
+    private(set) var generation: UInt64 = 0
+    private(set) var isStopping = true
+
+    mutating func beginStart() -> UInt64 {
+        generation &+= 1
+        isStopping = false
+        return generation
+    }
+
+    mutating func beginStop() {
+        generation &+= 1
+        isStopping = true
+    }
+
+    func accepts(_ candidateGeneration: UInt64) -> Bool {
+        !isStopping && generation == candidateGeneration
+    }
+}
+
 @MainActor
 final class MediaRemoteAdapterStreamSource {
     typealias ChangeHandler = @MainActor @Sendable () -> Void
@@ -69,18 +89,20 @@ final class MediaRemoteAdapterStreamSource {
     private var pendingArtworkRequestLookupKey: String?
     private var lastArtworkRequestLookupKey: String?
     private var lastArtworkRequestAt: Date?
-    private var lastRestartAt: Date?
     private let lastVerifiedQishuiSnapshotTTL: TimeInterval = 5 * 60
     private var sampleID: UInt64 = 0
     private var sampleOrigin: MediaRemoteSampleOrigin = .unknown
     private var lastPlaybackEvidenceAt: Date?
     private var lastPlaybackEvidenceTrackIdentity: String?
-    private var isStopping = false
+    private var streamLifecycle = MediaRemoteStreamLifecycle()
+    private var restartTask: Task<Void, Never>?
     private var changeHandler: ChangeHandler?
 
     func start(onChange: @escaping ChangeHandler) {
         guard process == nil else { return }
-        isStopping = false
+        restartTask?.cancel()
+        restartTask = nil
+        let generation = streamLifecycle.beginStart()
         changeHandler = onChange
         guard let paths = adapterPaths() else {
             let snapshot = MediaRemoteNowPlayingSnapshot(
@@ -109,24 +131,33 @@ final class MediaRemoteAdapterStreamSource {
 
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { @MainActor in
-                self?.consume(data, onChange: onChange)
+            Task { @MainActor [weak self, weak process] in
+                guard let self,
+                      let process,
+                      streamLifecycle.accepts(generation),
+                      self.process === process else { return }
+                consume(data, onChange: onChange)
             }
         }
 
-        process.terminationHandler = { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.process = nil
-                self.outputBuffer.removeAll()
-                if !self.isStopping {
-                    self.scheduleRestart(onChange: onChange)
+        process.terminationHandler = { [weak self, weak process] _ in
+            Task { @MainActor [weak self, weak process] in
+                guard let self,
+                      let process,
+                      streamLifecycle.accepts(generation),
+                      self.process === process else { return }
+                if let pipe = process.standardOutput as? Pipe {
+                    pipe.fileHandleForReading.readabilityHandler = nil
                 }
+                process.terminationHandler = nil
+                self.process = nil
+                outputBuffer.removeAll()
+                scheduleRestart(onChange: onChange, generation: generation)
             }
         }
 
@@ -134,6 +165,8 @@ final class MediaRemoteAdapterStreamSource {
             try process.run()
             self.process = process
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            process.terminationHandler = nil
             latestSnapshot = MediaRemoteNowPlayingSnapshot(
                 isAvailable: false,
                 isVerifiedQishuiSource: false,
@@ -141,6 +174,7 @@ final class MediaRemoteAdapterStreamSource {
                 diagnostic: "MediaRemote Adapter 启动失败：\(error.localizedDescription)。",
                 checkedAt: Date()
             )
+            scheduleRestart(onChange: onChange, generation: generation)
         }
     }
 
@@ -346,17 +380,42 @@ final class MediaRemoteAdapterStreamSource {
     }
 
     func stop() {
-        isStopping = true
+        streamLifecycle.beginStop()
+        restartTask?.cancel()
+        restartTask = nil
         changeHandler = nil
-        if let pipe = process?.standardOutput as? Pipe {
+        let activeProcess = process
+        process = nil
+        if let pipe = activeProcess?.standardOutput as? Pipe {
             pipe.fileHandleForReading.readabilityHandler = nil
         }
-        process?.terminationHandler = nil
-        if process?.isRunning == true {
-            process?.terminate()
+        activeProcess?.terminationHandler = nil
+        if let activeProcess {
+            Self.terminateStreamProcess(activeProcess)
         }
-        process = nil
         invalidateQishuiSession()
+    }
+
+    nonisolated static func terminateStreamProcess(
+        _ process: Process,
+        graceInterval: TimeInterval = 0.2
+    ) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let terminationDeadline = Date().addingTimeInterval(graceInterval)
+        while process.isRunning, Date() < terminationDeadline {
+            usleep(10_000)
+        }
+        if process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+        let killDeadline = Date().addingTimeInterval(0.2)
+        while process.isRunning, Date() < killDeadline {
+            usleep(10_000)
+        }
+        if !process.isRunning {
+            process.waitUntilExit()
+        }
     }
 
     private func consume(_ data: Data, onChange: @escaping ChangeHandler) {
@@ -1388,12 +1447,21 @@ final class MediaRemoteAdapterStreamSource {
             || app.bundleURL?.path.hasPrefix("/Applications/汽水音乐.app/") == true
     }
 
-    private func scheduleRestart(onChange: @escaping ChangeHandler) {
-        let now = Date()
-        guard lastRestartAt.map({ now.timeIntervalSince($0) > 2 }) ?? true else { return }
-        lastRestartAt = now
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.start(onChange: onChange)
+    private func scheduleRestart(
+        onChange: @escaping ChangeHandler,
+        generation: UInt64
+    ) {
+        guard restartTask == nil,
+              process == nil,
+              streamLifecycle.accepts(generation) else { return }
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  streamLifecycle.accepts(generation),
+                  process == nil else { return }
+            restartTask = nil
+            start(onChange: onChange)
         }
     }
 
