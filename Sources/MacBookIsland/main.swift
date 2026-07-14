@@ -60,6 +60,7 @@ if CommandLine.arguments.contains("--apple-music-status") {
         print("track=\(snapshot.track?.title ?? "nil")")
         print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
         print("metadataLatencyMilliseconds=\(metadataLatencyMilliseconds)")
+        print("artworkLatencyMilliseconds=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         print("diagnostic=\(snapshot.diagnostic)")
         exit(0)
     }
@@ -3649,21 +3650,6 @@ struct AlbumArt: View {
     let track: MusicTrack
     let size: CGFloat
 
-    private var artworkIdentity: String {
-        let artworkKey: String
-        if let artworkData = track.artworkData {
-            let prefix = artworkData.prefix(16)
-                .map { String(format: "%02x", $0) }
-                .joined()
-            artworkKey = "data:\(artworkData.count):\(prefix)"
-        } else if let artworkURL = track.artworkURL {
-            artworkKey = "url:\(artworkURL.absoluteString)"
-        } else {
-            artworkKey = "none"
-        }
-        return "\(track.title)\u{1f}\(track.artist)\u{1f}\(artworkKey)"
-    }
-
     var body: some View {
         ZStack {
             if let artworkData = track.artworkData,
@@ -3694,7 +3680,6 @@ struct AlbumArt: View {
                     .offset(x: 3, y: 3)
             }
         }
-        .animation(.easeInOut(duration: 0.16), value: artworkIdentity)
     }
 
     private var fallbackArtwork: some View {

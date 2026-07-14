@@ -22,7 +22,9 @@
 - 授权“自动化 - Apple Music”后，`--apple-music-status` 返回 `availability=ready` 和真实歌曲；设置页显示连接、播放状态、进度与可用控制。
 - `--apple-music-status` 的 `artworkDataBytes` 大于 0，岛显示 Apple Music 当前歌曲的真实专辑封面；同曲重复刷新不得重复读取或闪烁封面。
 - 播放 Apple Music 电台且脚本返回 `artworkCount=0` 时，`--apple-music-status` 仍应通过 Apple 公共目录得到真实封面；目录存在同名异歌手、专辑不符或多重结果时必须保持无封面，不能猜测。
-- `--apple-music-status` 的 `metadataLatencyMilliseconds` 在封面未缓存时也只统计轻量播放快照，封面网络请求不得阻塞该数值；本机基线约为 206ms。
+- 已识别为无原生封面的电台连续切歌时，目录查询应从 `playerInfo` 通知开始并与权威快照并行；候选歌名、歌手或专辑与最终快照不一致时必须丢弃，不得提前显示错误封面。
+- `--apple-music-status` 的 `metadataLatencyMilliseconds` 与 `artworkLatencyMilliseconds` 应在原生封面歌曲上接近，本机基线约 265-300ms；电台目录网络请求不得阻塞前者。
+- 快速连续切歌时，旧快照完成不得清除后续 `playerInfo` 的封面请求；新封面数据发布后不得再额外淡入 160ms。
 - Apple Music 快速切歌时，迟到的上一首封面不得覆盖当前歌曲；封面读取失败时仍保留正确歌名、播放状态、进度和控制能力。
 - Apple Music 封面异步出现前后，进度不得倒退、暂停状态不得恢复推进、控制 `verifiedAt` 不得被缓存封面伪造为刚刚验证。
 - Apple Music 稳态播放 30 秒内不得持续高频发送 Apple Event；正常情况下依赖 `com.apple.Music.playerInfo`，播放 / 暂停 / 后台兜底间隔分别不短于 5 / 10 / 15 秒，且不得触发“无法处理此请求”商店警告。

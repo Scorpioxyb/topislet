@@ -26,6 +26,22 @@ func appleMusicObservationDecodesAtomicFields() throws {
     #expect(observation.trackIdentity?.providerIdentifier == "ABC123")
 }
 
+@Test("Apple Music playerInfo 可提前形成电台封面候选")
+func appleMusicPlayerInfoCreatesArtworkCandidate() throws {
+    let candidate = try #require(AppleMusicPlayerInfoCandidate(userInfo: [
+        "Name": "Strippers Lives Matter",
+        "Artist": "Rob49",
+        "Album": "Let Me Fly (Deluxe)",
+        "Player State": "Playing"
+    ]))
+
+    #expect(candidate.title == "Strippers Lives Matter")
+    #expect(candidate.artist == "Rob49")
+    #expect(candidate.album == "Let Me Fly (Deluxe)")
+    #expect(candidate.observation.trackIdentity?.fallbackSignature
+        == candidate.fallbackSignature)
+}
+
 @Test("Apple Music 封面合并不改变权威播放字段")
 func appleMusicArtworkMergePreservesObservation() throws {
     let observation = try #require(AppleMusicObservation.decode(fields: [

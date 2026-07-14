@@ -492,6 +492,9 @@ final class MusicAdapterCoordinator {
             )
         }
         if succeeded {
+            if controlKind == .previousTrack || controlKind == .nextTrack {
+                appleMusicAdapter.requestArtworkOnNextMetadata()
+            }
             scheduleAppleMusicRefresh(force: true)
         } else if controlKind == .playPause,
                   let current = latestAppleMusicSnapshot,
