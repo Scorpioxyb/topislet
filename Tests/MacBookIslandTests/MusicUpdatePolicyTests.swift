@@ -25,7 +25,8 @@ private func musicState(
         lyricIndex: 0,
         elapsedTime: elapsedTime,
         duration: duration,
-        canSeek: false
+        canSeek: false,
+        hasCurrentTrack: true
     )
 }
 
@@ -93,5 +94,29 @@ func qishuiExitAlwaysAcceptsIdleReset() {
         current: current,
         candidate: candidate,
         sourceAvailability: .qishuiNotRunning
+    ))
+}
+
+@Test("空状态不触发悬停展开")
+func emptyStateDoesNotExpandOnHover() {
+    #expect(!IslandHoverExpansionPolicy.allowsExpansion(
+        activeFeature: .music,
+        hasCurrentMusicTrack: false,
+        hasPendingNotification: false
+    ))
+    #expect(IslandHoverExpansionPolicy.allowsExpansion(
+        activeFeature: .music,
+        hasCurrentMusicTrack: true,
+        hasPendingNotification: false
+    ))
+    #expect(IslandHoverExpansionPolicy.allowsExpansion(
+        activeFeature: .timer,
+        hasCurrentMusicTrack: false,
+        hasPendingNotification: false
+    ))
+    #expect(!IslandHoverExpansionPolicy.allowsExpansion(
+        activeFeature: .notification,
+        hasCurrentMusicTrack: false,
+        hasPendingNotification: false
     ))
 }

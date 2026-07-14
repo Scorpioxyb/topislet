@@ -294,7 +294,8 @@ final class MusicAdapterCoordinator {
             track: placeholderTrack(statusLine: "正在等待汽水直接适配源"),
             isPlaying: false,
             progress: 0,
-            lyricIndex: 0
+            lyricIndex: 0,
+            hasCurrentTrack: false
         )
     }
 
@@ -377,11 +378,23 @@ final class MusicAdapterCoordinator {
     }
 
     func nextTrack() -> MusicState {
-        MusicState(track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"), isPlaying: false, progress: 0, lyricIndex: 0)
+        MusicState(
+            track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"),
+            isPlaying: false,
+            progress: 0,
+            lyricIndex: 0,
+            hasCurrentTrack: false
+        )
     }
 
     func previousTrack() -> MusicState {
-        MusicState(track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"), isPlaying: false, progress: 0, lyricIndex: 0)
+        MusicState(
+            track: placeholderTrack(statusLine: "已发送切歌控制，等待汽水直接状态回读"),
+            isPlaying: false,
+            progress: 0,
+            lyricIndex: 0,
+            hasCurrentTrack: false
+        )
     }
 
     func performControl(
@@ -1679,7 +1692,8 @@ final class MusicAdapterCoordinator {
             elapsedTime: elapsedTime,
             duration: duration,
             canSeek: snapshot.controls.supports(.absoluteSeek),
-            isPlaybackPending: false
+            isPlaybackPending: false,
+            hasCurrentTrack: true
         )
     }
 
@@ -1704,7 +1718,8 @@ final class MusicAdapterCoordinator {
             elapsedTime: nil,
             duration: nil,
             canSeek: false,
-            isPlaybackPending: false
+            isPlaybackPending: false,
+            hasCurrentTrack: false
         )
     }
 
@@ -1776,7 +1791,8 @@ final class MusicAdapterCoordinator {
                 canSeek: QishuiSeekSafety.supportsTargetedSeek
                     && !isCachedMediaFocus
                     && (effectiveTrack.duration.map { $0 > 0 } ?? false),
-                isPlaybackPending: pendingPlaybackOperation != nil
+                isPlaybackPending: pendingPlaybackOperation != nil,
+                hasCurrentTrack: true
             )
         }
 
@@ -1793,7 +1809,8 @@ final class MusicAdapterCoordinator {
                 elapsedTime: nil,
                 duration: nil,
                 canSeek: false,
-                isPlaybackPending: pendingPlaybackOperation != nil
+                isPlaybackPending: pendingPlaybackOperation != nil,
+                hasCurrentTrack: true
             )
         }
 
@@ -1806,7 +1823,8 @@ final class MusicAdapterCoordinator {
             elapsedTime: nil,
             duration: nil,
             canSeek: false,
-            isPlaybackPending: pendingPlaybackOperation != nil
+            isPlaybackPending: pendingPlaybackOperation != nil,
+            hasCurrentTrack: false
         )
     }
 

@@ -321,6 +321,23 @@ enum IslandFeature: String, Hashable {
 
 }
 
+enum IslandHoverExpansionPolicy {
+    static func allowsExpansion(
+        activeFeature: IslandFeature,
+        hasCurrentMusicTrack: Bool,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        switch activeFeature {
+        case .music:
+            return hasCurrentMusicTrack
+        case .timer:
+            return true
+        case .notification:
+            return hasPendingNotification
+        }
+    }
+}
+
 struct MusicTrack: Equatable {
     let title: String
     let artist: String
@@ -341,6 +358,7 @@ struct MusicState: Equatable {
     var duration: TimeInterval? = nil
     var canSeek: Bool = false
     var isPlaybackPending: Bool = false
+    var hasCurrentTrack: Bool
 }
 
 enum MusicUpdatePolicy {
@@ -354,6 +372,9 @@ enum MusicUpdatePolicy {
         }
         guard current.track.sourceBundleIdentifier
             == candidate.track.sourceBundleIdentifier else {
+            return false
+        }
+        guard candidate.hasCurrentTrack else {
             return false
         }
         guard current.duration != nil,
@@ -586,6 +607,14 @@ final class IslandModel: ObservableObject {
     var expandedHeaderWingWidth: CGFloat { 34 }
     var hasPendingNotification: Bool {
         activeIslandEvent != nil || !pendingIslandEvents.isEmpty
+    }
+
+    var canExpandOnHover: Bool {
+        IslandHoverExpansionPolicy.allowsExpansion(
+            activeFeature: activeFeature,
+            hasCurrentMusicTrack: music.hasCurrentTrack,
+            hasPendingNotification: hasPendingNotification
+        )
     }
 
     var collapsedWidth: CGFloat {
@@ -1589,6 +1618,7 @@ final class IslandModel: ObservableObject {
             var timelinePreservingUpdate = music
             timelinePreservingUpdate.isPlaying = reconciledMusic.isPlaying
             timelinePreservingUpdate.isPlaybackPending = reconciledMusic.isPlaybackPending
+            timelinePreservingUpdate.hasCurrentTrack = reconciledMusic.hasCurrentTrack
             if timelinePreservingUpdate != music {
                 music = timelinePreservingUpdate
             }
@@ -2045,6 +2075,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        Publishers.CombineLatest3(
+            model.$activeFeature.removeDuplicates(),
+            model.$music
+                .map(\.hasCurrentTrack)
+                .removeDuplicates(),
+            model.$notification
+                .map { $0.count > 0 }
+                .removeDuplicates()
+        )
+        .map { feature, hasCurrentTrack, hasPendingNotification in
+            IslandHoverExpansionPolicy.allowsExpansion(
+                activeFeature: feature,
+                hasCurrentMusicTrack: hasCurrentTrack,
+                hasPendingNotification: hasPendingNotification
+            )
+        }
+        .removeDuplicates()
+        .dropFirst()
+        .sink { [weak self] _ in
+            self?.updateIslandHover(at: NSEvent.mouseLocation)
+        }
+        .store(in: &cancellables)
+
         model.layout.objectWillChange
             .sink { [weak self] _ in
                 DispatchQueue.main.async {
@@ -2126,7 +2179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateIslandHover(at point: CGPoint) {
-        let isInside = isInsideIslandHoverZone(point)
+        let isInside = model.canExpandOnHover && isInsideIslandHoverZone(point)
         guard isInside != isPointerInsideHoverZone else { return }
         isPointerInsideHoverZone = isInside
         hoverGeneration += 1
@@ -2144,6 +2197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let self,
                       hoverGeneration == generation,
                       isPointerInsideHoverZone,
+                      model.canExpandOnHover,
                       model.mode != .expanded else { return }
                 didExpandFromHover = true
                 hoverReturnMode = returnMode
