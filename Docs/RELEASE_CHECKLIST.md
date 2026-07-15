@@ -6,7 +6,7 @@ App 版本：`0.1.1 (17)`
 
 ## 当前结论
 
-本版本按**公开 GitHub Alpha 开发者预览版**发布。项目负责人已接受 ad-hoc 签名和未公证带来的 Gatekeeper 提示；未完成的动态回归继续作为 Alpha 已知风险跟踪，不能把本版本宣传为稳定版。
+本版本按**公开 GitHub Alpha 开发者预览版**发布。P0 动态回归已全部关闭；项目负责人已接受 ad-hoc 签名和未公证带来的 Gatekeeper 提示，因此仍不能把本版本宣传为稳定版。
 
 ## P0：公开前必须完成
 
@@ -16,7 +16,7 @@ App 版本：`0.1.1 (17)`
 - [x] 确认稳定 Bundle ID：`io.github.scorpioxyb.topislet`。
 - [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
 - [x] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令，并完成逐字节重建验证。
-- [ ] 在最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
+- [x] 在 build 17 最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
 - [x] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
   - [x] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
@@ -86,9 +86,9 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 - [x] 抖音前台时三种控制只命中汽水，前台 0 切换、鼠标 0 位移、抖音 0 误控；汽水最小化状态也通过。
 - [x] QuickTime 前台时播放/暂停、下一首、上一首只命中汽水；QuickTime 播放开关与时间线零变化。
 - [x] Chrome 带声音视频成为系统媒体焦点时，汽水仍持续同步，三种控制只命中汽水；Chrome 始终播放、前台不变、鼠标不动。
-- [ ] Safari 带声音视频成为系统媒体焦点时，汽水同步和三种控制不误控视频。
+- [x] Safari 带声音视频成为系统媒体焦点时，汽水同步和三种控制不误控视频。
   - [x] Safari 静音循环视频实测三种控制通过，视频持续推进、前台不变、鼠标不动。
-  - [ ] Safari WebDriver 需要先在 Safari 设置中启用“允许远程自动化”，或由产品负责人手动播放带声音视频完成确认。
+  - [x] Safari WebDriver 有声回归通过：系统当前媒体明确为 Safari，汽水三种控制均保持 Safari 播放、前台不变、鼠标零位移。
 - [x] 展开、收回、连续点击和悬停动画无跳位或明显卡顿。
   - [x] 自动化和本机结构验收通过：单 `NSPanel`、中心/顶边固定、悬停保持 12 秒连续 3 次不自收回、旧动画 completion 失效、6 次快速反向悬停后尺寸正确。
   - [x] 产品负责人已完成最终 MOV 视觉验收，确认进入下一阶段。

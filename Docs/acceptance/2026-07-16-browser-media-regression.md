@@ -6,7 +6,9 @@
 - 汽水音乐：`com.soda.music`，辅助功能语义控件已就绪。
 - Chrome：`150.0.7871.115`。
 - Safari：macOS 26.5.2 系统版本。
-- 视频：由本机已有 H.264/AAC 录屏生成的 15 秒临时 M4V；临时页面、视频和 Chrome 测试配置在回归后全部移入废纸篓。
+- Chrome 视频：由本机已有 H.264/AAC 录屏生成的 15 秒临时 M4V。
+- Safari 视频：本机已有 45.7 秒 HEVC/AAC 录屏，通过 `localhost` 临时页面播放。
+- 临时页面、媒体副本和浏览器测试配置在回归后全部移入废纸篓。
 
 ## Chrome 带声音媒体焦点
 
@@ -32,22 +34,36 @@
 
 结论：Chrome 带声音视频抢占系统媒体焦点时，汽水同步和三种控制隔离通过。
 
-## Safari 初步回归
+## Safari 带声音媒体焦点
 
-Safari WebDriver 无法建立会话，系统返回必须先在 Safari 设置的“开发者”中启用“允许远程自动化”。未擅自修改该系统设置。
+启用 Safari“允许远程自动化”后，SafariDriver 成功连接 `26.5.2`。按实际冲突顺序先播放汽水，再启动 Safari 有声视频；MediaRemote 全局读取明确返回：
 
-改用 Safari 允许的静音自动循环播放后，辅助功能树连续读取到：
+- `bundleIdentifier=com.apple.WebKit.GPU`
+- `parentApplicationBundleIdentifier=com.apple.Safari`
+- `title=TopIslet Safari Media P0`
+- `playbackRate=1`
+- `duration=45.7`
 
-- 视频按钮为“暂停”，说明处于播放态。
-- 已播放时间连续推进并在 15 秒后循环。
-- 顶屿三种汽水控制均成功。
-- Safari 始终保持前台，鼠标位置不变，视频继续推进。
+与此同时，顶屿 `--adapter-status` 持续返回：
 
-静音自动播放没有注册为系统 MediaRemote 当前媒体，因此只能证明 Safari 播放期间没有 UI 误触，不能代替带声音媒体焦点回归。
+- `verifiedQishuiSource=true`
+- `sourceBundleIdentifier=com.soda.music`
+- 汽水歌曲、播放态、进度和封面均可读取。
+
+在每项控制前重新确认 Safari 为系统当前媒体，再依次执行汽水播放/暂停、下一首、上一首：
+
+- 三次 `semanticQishuiControlSent=true`，汽水播放态或歌曲按命令变化。
+- Safari 每次操作后均为 `paused=false`，时间线持续推进并正常循环。
+- 前台应用在每次调用前后均为 `com.apple.Safari`。
+- 原子探针记录每次控制调用前后鼠标 `pointerDelta=0.0,0.0`。
+- 切歌稳定后，汽水歌名、歌手、专辑和封面恢复为完整一致状态。
+
+结论：Safari 带声音视频抢占系统媒体焦点时，汽水同步和三种控制隔离通过。
 
 ## 结论
 
 - Chrome 浏览器 P0 冲突回归：通过。
 - Safari 静音视频隔离：通过。
-- Safari 带声音媒体焦点：待产品负责人手动播放一次后完成最终确认。
-- Computer Use 本轮初始化返回 `Transport closed`；没有遗留 Computer Use、Chrome 测试实例、Safari、SafariDriver 或临时测试进程。
+- Safari 带声音媒体焦点：通过。
+- 回归后汽水恢复暂停；SafariDriver、本地测试服务器和 WebDriver 会话均已关闭，临时页面与媒体副本已移入废纸篓。
+- 本轮未使用 Computer Use，没有遗留鼠标控制会话。
