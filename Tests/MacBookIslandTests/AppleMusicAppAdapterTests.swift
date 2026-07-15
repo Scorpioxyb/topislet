@@ -398,6 +398,45 @@ func appleMusicPlaybackControlClearsExpectationOnAuthoritativeEvidence() throws 
     ) == .acceptAndClear)
 }
 
+@Test("Apple Music 快速播放暂停始终使用显式最终意图")
+func rapidAppleMusicPlaybackControlsUseExplicitLatestIntent() throws {
+    let issuedAt = Date(timeIntervalSince1970: 1_000)
+    let initialSnapshot = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: issuedAt
+    )
+    let instance = try #require(initialSnapshot.instance)
+    let track = try #require(initialSnapshot.track)
+    let targetStates: [MusicPlaybackState] = [.paused, .playing, .paused]
+    let actions = targetStates.compactMap {
+        AppleMusicPlaybackControlExpectation.action(for: $0)
+    }
+    let latestExpectation = AppleMusicPlaybackControlExpectation(
+        instance: instance,
+        trackIdentity: track.identity,
+        targetState: .paused,
+        issuedAt: issuedAt.addingTimeInterval(0.1)
+    )
+    let stalePlayingSnapshot = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: issuedAt.addingTimeInterval(0.2)
+    )
+    let finalPausedSnapshot = appleMusicPlaybackSnapshot(
+        state: .paused,
+        checkedAt: issuedAt.addingTimeInterval(0.3)
+    )
+
+    #expect(actions == [.pause, .play, .pause])
+    #expect(latestExpectation.resolution(
+        for: stalePlayingSnapshot,
+        at: issuedAt.addingTimeInterval(0.2)
+    ) == .reject)
+    #expect(latestExpectation.resolution(
+        for: finalPausedSnapshot,
+        at: issuedAt.addingTimeInterval(0.3)
+    ) == .acceptAndClear)
+}
+
 private func appleMusicPlaybackSnapshot(
     state: MusicPlaybackState,
     providerIdentifier: String = "TRACK",

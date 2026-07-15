@@ -10,10 +10,11 @@ struct QishuiSemanticAXControlResult: Sendable {
 
 final class QishuiSemanticAXController: @unchecked Sendable {
     private static let manualAccessibilityAttribute = "AXManualAccessibility"
+    private static let incompleteDiscoveryNodeThreshold = 256
 
     struct CandidateFacts: Equatable {
         let windowIsNormal: Bool
-        let windowIsMainOrFocused: Bool
+        let windowIsPrimary: Bool
         let windowIsVisible: Bool
         let windowIsMinimized: Bool
         let containerIsVisible: Bool
@@ -117,6 +118,14 @@ final class QishuiSemanticAXController: @unchecked Sendable {
                 didPress: false,
                 diagnostic: "无法初始化汽水音乐的辅助功能控件树，未发送\(command.label)。"
             )
+        }
+        let temporarilyUnminimizedWindow = temporarilyUnminimizeUniqueWindow(
+            processIdentifier: processIdentifier
+        )
+        defer {
+            if let temporarilyUnminimizedWindow {
+                restoreMinimizedWindow(temporarilyUnminimizedWindow)
+            }
         }
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
@@ -265,12 +274,14 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         candidateCount: Int,
         attempt: Int
     ) -> Bool {
-        candidateCount == 0 && scannedNodeCount <= 8 && attempt < 2
+        candidateCount == 0
+            && scannedNodeCount <= incompleteDiscoveryNodeThreshold
+            && attempt < 2
     }
 
     static func isEligibleCandidate(_ facts: CandidateFacts) -> Bool {
         guard facts.windowIsNormal,
-              facts.windowIsMainOrFocused,
+              facts.windowIsPrimary,
               facts.windowIsVisible,
               !facts.windowIsMinimized,
               facts.containerIsVisible,
@@ -279,6 +290,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
               facts.hasPlaybackTimeContext,
               let relativeY = facts.relativeY else { return false }
         return relativeY >= 0.72 && relativeY <= 1.02
+    }
+
+    static func shouldTemporarilyUnminimize(
+        standardWindowCount: Int,
+        isMinimized: Bool
+    ) -> Bool {
+        standardWindowCount == 1 && isMinimized
     }
 
     private func discoverControls(
@@ -382,6 +400,55 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         )
     }
 
+    private func temporarilyUnminimizeUniqueWindow(
+        processIdentifier: pid_t
+    ) -> AXUIElement? {
+        let windows = standardWindows(processIdentifier: processIdentifier)
+        guard let window = windows.first,
+              Self.shouldTemporarilyUnminimize(
+                standardWindowCount: windows.count,
+                isMinimized: boolAttribute(window, kAXMinimizedAttribute as String)
+              ) else {
+            return nil
+        }
+        let result = AXUIElementSetAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanFalse
+        )
+        guard result == .success else { return nil }
+        usleep(80_000)
+        return window
+    }
+
+    private func restoreMinimizedWindow(_ window: AXUIElement) {
+        _ = AXUIElementSetAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanTrue
+        )
+    }
+
+    private func standardWindows(processIdentifier: pid_t) -> [AXUIElement] {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        guard let value = copyAttribute(application, kAXWindowsAttribute as String) else {
+            return []
+        }
+        return accessibilityElements(from: value).filter { window in
+            stringAttribute(window, kAXRoleAttribute as String) == kAXWindowRole as String
+                && stringAttribute(window, kAXSubroleAttribute as String)
+                    == kAXStandardWindowSubrole as String
+        }
+    }
+
+    private func isUniqueStandardWindow(
+        _ window: AXUIElement,
+        processIdentifier: pid_t
+    ) -> Bool {
+        let windows = standardWindows(processIdentifier: processIdentifier)
+        return windows.count == 1 && CFEqual(windows[0], window)
+    }
+
     private func diagnosticDescription(for match: DiscoveredControls) -> String {
         let window = windowAncestor(of: match.container)
         let containerFrame = frame(of: match.container)
@@ -429,9 +496,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return CandidateFacts(
             windowIsNormal: windowRole == kAXWindowRole as String
                 && windowSubrole == kAXStandardWindowSubrole as String,
-            windowIsMainOrFocused: window.map {
+            windowIsPrimary: window.map {
                 boolAttribute($0, kAXMainAttribute as String)
                     || boolAttribute($0, kAXFocusedAttribute as String)
+                    || isUniqueStandardWindow(
+                        $0,
+                        processIdentifier: controls.processIdentifier
+                    )
             } ?? false,
             windowIsVisible: window.map(isVisible) ?? false,
             windowIsMinimized: window.map {

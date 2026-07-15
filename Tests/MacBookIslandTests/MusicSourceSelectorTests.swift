@@ -207,6 +207,28 @@ func unavailableForegroundSourceFallsBackToPlayback() {
     #expect(selection.source == .qishui)
 }
 
+@Test("未适配的视频前台应用不能抢走汽水来源")
+func unsupportedForegroundMediaCannotStealQishuiSelection() {
+    let selector = MusicSourceSelector()
+    let unsupportedForegroundSources = [
+        "com.apple.QuickTimePlayerX",
+        "com.apple.Safari",
+        "com.google.Chrome"
+    ]
+
+    for bundleIdentifier in unsupportedForegroundSources {
+        let foregroundSource = MusicSourceID(bundleIdentifier: bundleIdentifier)
+        let selection = selector.update(
+            qishui: candidate(.qishui, playback: .playing),
+            appleMusic: candidate(.appleMusic, playback: .paused),
+            foregroundSource: foregroundSource
+        )
+
+        #expect(foregroundSource == nil)
+        #expect(selection.source == .qishui)
+    }
+}
+
 @Test("汽水控制绑定来自岛当前显示来源")
 func qishuiControlBindingUsesDisplayedSource() {
     let binding = DisplayedMusicControlBinding(

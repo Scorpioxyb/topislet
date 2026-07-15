@@ -89,6 +89,31 @@ func staleControlResultCannotResolveNewerOperation() {
     ))
 }
 
+@Test("快速播放暂停乱序完成时只接受最后一次意图")
+func rapidAlternatingPlaybackControlsHonorLatestIntent() {
+    let operationIDs = [1, 2, 3]
+    let outOfOrderCompletions = [2, 1, 3]
+    let finalOperationID = try! #require(operationIDs.last)
+
+    let acceptedCompletions = outOfOrderCompletions.filter {
+        PlaybackControlTimeline.isCurrentOperation(
+            completedOperationID: $0,
+            currentOperationID: finalOperationID
+        )
+    }
+    let thirdClickAt = Date(timeIntervalSince1970: 100.1)
+    let finalElapsed = PlaybackControlTimeline.optimisticElapsed(
+        targetIsPlaying: false,
+        anchorElapsed: 42.1,
+        issuedAt: thirdClickAt,
+        now: thirdClickAt.addingTimeInterval(0.8),
+        duration: 180
+    )
+
+    #expect(acceptedCompletions == [3])
+    #expect(finalElapsed == 42.1)
+}
+
 @Test("播放中的权威时间戳会在接收时折算为当前进度")
 func authoritativeTimestampProjectsToReceiptTime() {
     let startedAt = Date(timeIntervalSince1970: 1_000)

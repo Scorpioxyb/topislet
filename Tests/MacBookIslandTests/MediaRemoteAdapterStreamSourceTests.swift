@@ -764,6 +764,85 @@ func trackTransitionRetainsPreviousCompleteSnapshotUntilAtomicCommit() throws {
     #expect(committed.sampleID == first.sampleID + 1)
 }
 
+@Test("十次连续切歌始终原子提交完整元数据")
+@MainActor
+func tenSequentialTrackTransitionsNeverPublishMixedMetadata() throws {
+    let source = makeStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 2_500)
+    let processIdentifier: pid_t = 123
+
+    func trackPayload(_ index: Int, temporary: Bool = false) -> [String: Any] {
+        [
+            "bundleIdentifier": "com.soda.music",
+            "processIdentifier": processIdentifier,
+            "contentItemIdentifier": temporary ? "temporary-\(index)" : "song-\(index)",
+            "title": "Song \(index)",
+            "artist": "Artist \(index)",
+            "album": "Album \(index)",
+            "duration": 180.0 + Double(index),
+            "elapsedTimeNow": Double(index),
+            "playing": 1,
+            "playbackRate": 1.0,
+            "artworkData": Data([UInt8(index), 0xA5]).base64EncodedString()
+        ]
+    }
+
+    let initial = try #require(source.ingestStreamEnvelopeForTesting(
+        streamEnvelope(trackPayload(0)),
+        receivedAt: startedAt,
+        receivedUptime: 250
+    ))
+    var committedSnapshot = initial
+
+    for index in 1...10 {
+        let roundStartedAt = startedAt.addingTimeInterval(Double(index) * 2)
+        let previousTrack = try #require(committedSnapshot.currentTrack)
+        var sparsePayload = trackPayload(index, temporary: true)
+        sparsePayload["artist"] = previousTrack.artist
+        sparsePayload["album"] = previousTrack.album
+        sparsePayload["duration"] = previousTrack.duration
+        sparsePayload["artworkData"] = previousTrack.artworkData?.base64EncodedString()
+
+        let staged = try #require(source.ingestStreamEnvelopeForTesting(
+            streamEnvelope(sparsePayload),
+            receivedAt: roundStartedAt,
+            receivedUptime: 250 + Double(index) * 2
+        ))
+        #expect(staged == committedSnapshot)
+
+        let staleGeneration = source.metadataRequestGenerationForTesting()
+        let committed = try #require(source.ingestStreamEnvelopeForTesting(
+            streamEnvelope(trackPayload(index)),
+            receivedAt: roundStartedAt.addingTimeInterval(1.1),
+            receivedUptime: 251.1 + Double(index) * 2
+        ))
+        let committedTrack = try #require(committed.currentTrack)
+
+        #expect(committed.sampleID == initial.sampleID + UInt64(index))
+        #expect(committedTrack.title == "Song \(index)")
+        #expect(committedTrack.artist == "Artist \(index)")
+        #expect(committedTrack.album == "Album \(index)")
+        #expect(committedTrack.duration == 180.0 + Double(index))
+        #expect(committedTrack.artworkData == Data([UInt8(index), 0xA5]))
+        #expect(committedTrack.sourceProcessIdentifier == Optional(processIdentifier))
+
+        let afterStaleMetadata = try #require(source.applyMetadataPayloadForTesting(
+            trackPayload(index - 1),
+            receivedAt: roundStartedAt.addingTimeInterval(1.2),
+            receivedUptime: 251.2 + Double(index) * 2,
+            requestGeneration: staleGeneration
+        ))
+        #expect(afterStaleMetadata == committed)
+        committedSnapshot = committed
+    }
+
+    let finalTrack = try #require(source.snapshot()?.currentTrack)
+    #expect(finalTrack.title == "Song 10")
+    #expect(finalTrack.artist == "Artist 10")
+    #expect(finalTrack.album == "Album 10")
+    #expect(finalTrack.artworkData == Data([10, 0xA5]))
+}
+
 @Test("同曲播放事件的易变 contentItemIdentifier 不触发切歌门控")
 @MainActor
 func volatileContentIdentifierDoesNotDeferSameTrackUpdate() throws {

@@ -22,6 +22,12 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
+      - name: Verify release source
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          VERSION: ${{ inputs.version }}
+        run: bash Scripts/verify-release-source.sh
+
       - name: Build release candidate
         env:
           VERSION: ${{ inputs.version }}
@@ -30,6 +36,8 @@ jobs:
         run: bash Scripts/build-release.sh
 
       - name: Verify release candidate
+        env:
+          VERSION: ${{ inputs.version }}
         run: bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v${{ inputs.version }}-arm64.dmg
 
       - name: Upload candidate artifact

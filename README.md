@@ -74,11 +74,12 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 ## 第一次使用
 
 1. 打开 App，确认菜单栏出现顶屿图标。
-2. 打开汽水音乐并播放歌曲，灵动岛会自动显示播放状态。
-3. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
-4. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
-5. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
-6. 使用 Apple Music Alpha 支持时，在“设置 → 音乐”中检查并授权“自动化 - Apple Music”。顶屿不会自动启动 Apple Music；不需要时可关闭该适配。
+2. 从顶屿菜单打开“设置 → 音乐”；如果“辅助功能”显示待授权，点击“打开辅助功能设置”并允许当前 `/Applications/顶屿.app`。
+3. 打开汽水音乐并播放歌曲，灵动岛会自动显示播放状态。
+4. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
+5. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
+6. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
+7. 使用 Apple Music Alpha 支持时，在“设置 → 音乐”中检查并授权“自动化 - Apple Music”。顶屿不会自动启动 Apple Music；不需要时可关闭该适配。
 
 > 从旧版“MacBook 灵动岛”升级：先退出旧版并将旧 `.app` 移到废纸篓，避免两个进程同时显示顶部岛。由于 App 显示名和 Bundle ID 已更改，macOS 会把顶屿识别为新的 App；首次启动后需要重新授予辅助功能权限，如启用日程功能，也需要重新授予日历和提醒事项权限。旧版布局和设置可能不会自动迁移。
 
@@ -121,9 +122,12 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 ```bash
 swift build
 swift build -c release
-bash -n Scripts/package-app.sh Scripts/build-release.sh
+swift test
+bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/verify-release-source.sh Scripts/verify-release-dmg.sh
 plutil -lint Packaging/Info.plist
 ```
+
+顶屿运行且已适配音乐正在播放时，可执行 `swift Scripts/verify-island-window-animation.swift` 验证单窗口展开/收回的中心、顶边和目标尺寸。脚本结束后会恢复鼠标位置。
 
 项目使用 SwiftUI + AppKit；主要模块说明见 [产品需求](Docs/PRODUCT_REQUIREMENTS.md)、[路线图](Docs/ROADMAP.md) 和 [QA 检查清单](Docs/QA_CHECKLIST.md)。
 

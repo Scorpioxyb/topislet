@@ -21,7 +21,7 @@ func existingManualAccessibilityAllowsScanning() {
     ))
 }
 
-@Test("汽水 AX 冷启动小树允许两次有界重试")
+@Test("汽水 AX 不完整树允许两次有界重试")
 func sparseAXDiscoveryUsesBoundedRetries() {
     #expect(QishuiSemanticAXController.shouldRetrySparseDiscovery(
         scannedNodeCount: 2,
@@ -29,7 +29,7 @@ func sparseAXDiscoveryUsesBoundedRetries() {
         attempt: 0
     ))
     #expect(QishuiSemanticAXController.shouldRetrySparseDiscovery(
-        scannedNodeCount: 8,
+        scannedNodeCount: 189,
         candidateCount: 0,
         attempt: 1
     ))
@@ -39,7 +39,7 @@ func sparseAXDiscoveryUsesBoundedRetries() {
         attempt: 2
     ))
     #expect(!QishuiSemanticAXController.shouldRetrySparseDiscovery(
-        scannedNodeCount: 9,
+        scannedNodeCount: 257,
         candidateCount: 0,
         attempt: 0
     ))
@@ -54,7 +54,7 @@ func sparseAXDiscoveryUsesBoundedRetries() {
 func visibleMainBottomPlayerIsEligible() {
     let facts = QishuiSemanticAXController.CandidateFacts(
         windowIsNormal: true,
-        windowIsMainOrFocused: true,
+        windowIsPrimary: true,
         windowIsVisible: true,
         windowIsMinimized: false,
         containerIsVisible: true,
@@ -76,7 +76,7 @@ func hiddenOrOffPlayerCandidatesAreRejected() {
     ) -> QishuiSemanticAXController.CandidateFacts {
         .init(
             windowIsNormal: true,
-            windowIsMainOrFocused: true,
+            windowIsPrimary: true,
             windowIsVisible: visible,
             windowIsMinimized: minimized,
             containerIsVisible: true,
@@ -95,5 +95,21 @@ func hiddenOrOffPlayerCandidatesAreRejected() {
     ))
     #expect(!QishuiSemanticAXController.isEligibleCandidate(
         facts(relativeY: 0.42)
+    ))
+}
+
+@Test("唯一最小化标准窗口允许后台临时恢复")
+func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
+    #expect(QishuiSemanticAXController.shouldTemporarilyUnminimize(
+        standardWindowCount: 1,
+        isMinimized: true
+    ))
+    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
+        standardWindowCount: 2,
+        isMinimized: true
+    ))
+    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
+        standardWindowCount: 1,
+        isMinimized: false
     ))
 }

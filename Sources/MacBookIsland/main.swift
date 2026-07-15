@@ -281,6 +281,131 @@ enum IslandMode: String {
     case expanded
 }
 
+enum IslandWindowLayout {
+    static func size(
+        for mode: IslandMode,
+        collapsedWidth: CGFloat,
+        compactWidth: CGFloat,
+        expandedWidth: CGFloat,
+        expandedHeight: CGFloat,
+        topBandHeight: CGFloat
+    ) -> NSSize {
+        switch mode {
+        case .collapsed:
+            return NSSize(width: collapsedWidth, height: topBandHeight)
+        case .compact:
+            return NSSize(width: compactWidth, height: topBandHeight)
+        case .expanded:
+            return NSSize(width: expandedWidth, height: expandedHeight)
+        }
+    }
+
+    static func frame(
+        for size: NSSize,
+        in screenFrame: NSRect,
+        yOffset: CGFloat
+    ) -> NSRect {
+        NSRect(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.maxY - size.height - yOffset,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    static func acceptsAnimationCompletion(
+        completedAnimationID: Int,
+        currentAnimationID: Int,
+        targetMode: IslandMode,
+        currentMode: IslandMode
+    ) -> Bool {
+        completedAnimationID == currentAnimationID && targetMode == currentMode
+    }
+}
+
+struct IslandAnimationCompletionGate {
+    private(set) var currentAnimationID = 0
+    private var completedAnimationID: Int?
+
+    mutating func beginAnimation() -> Int {
+        currentAnimationID &+= 1
+        completedAnimationID = nil
+        return currentAnimationID
+    }
+
+    mutating func claimCompletion(
+        animationID: Int,
+        targetMode: IslandMode,
+        currentMode: IslandMode
+    ) -> Bool {
+        guard completedAnimationID != animationID,
+              IslandWindowLayout.acceptsAnimationCompletion(
+                completedAnimationID: animationID,
+                currentAnimationID: currentAnimationID,
+                targetMode: targetMode,
+                currentMode: currentMode
+              ) else {
+            return false
+        }
+        completedAnimationID = animationID
+        return true
+    }
+}
+
+struct IslandInteractionRegions: Equatable {
+    let header: NSRect
+    let body: NSRect?
+    let bridge: NSRect?
+
+    static func make(
+        panelFrame: NSRect,
+        mode: IslandMode,
+        headerWidth: CGFloat,
+        topBandHeight: CGFloat,
+        expandedBodyHeight: CGFloat,
+        expandedPanelTopGap: CGFloat
+    ) -> IslandInteractionRegions {
+        let header = NSRect(
+            x: panelFrame.midX - headerWidth / 2,
+            y: panelFrame.maxY - topBandHeight,
+            width: headerWidth,
+            height: topBandHeight
+        )
+        guard mode == .expanded else {
+            return IslandInteractionRegions(header: header, body: nil, bridge: nil)
+        }
+
+        let body = NSRect(
+            x: panelFrame.minX,
+            y: panelFrame.minY,
+            width: panelFrame.width,
+            height: expandedBodyHeight
+        )
+        let bridgeHeight = max(
+            0,
+            min(expandedPanelTopGap, header.minY - body.maxY)
+        )
+        let bridge = bridgeHeight > 0
+            ? NSRect(
+                x: header.minX,
+                y: body.maxY,
+                width: header.width,
+                height: bridgeHeight
+            )
+            : nil
+        return IslandInteractionRegions(header: header, body: body, bridge: bridge)
+    }
+
+    func contains(_ point: CGPoint, tolerance: CGFloat = 0) -> Bool {
+        let expandedHeader = header.insetBy(dx: -tolerance, dy: -tolerance)
+        let expandedBody = body?.insetBy(dx: -tolerance, dy: -tolerance)
+        let expandedBridge = bridge?.insetBy(dx: -tolerance, dy: -tolerance)
+        return expandedHeader.contains(point)
+            || expandedBody?.contains(point) == true
+            || expandedBridge?.contains(point) == true
+    }
+}
+
 private enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
         mode == .expanded ? 0.24 : 0.18
@@ -676,11 +801,22 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedHeight: CGFloat {
-        topBandHeight + expandedBodyHeight - expandedPanelTopGap
+        topBandHeight + expandedPanelTopGap + expandedBodyHeight
     }
 
     var expandedHeaderWidth: CGFloat {
         notchWidth + expandedHeaderWingWidth * 2
+    }
+
+    var currentHeaderWidth: CGFloat {
+        switch mode {
+        case .collapsed:
+            return collapsedWidth
+        case .compact:
+            return compactWidth
+        case .expanded:
+            return expandedHeaderWidth
+        }
     }
 
     var statusWaveIsActive: Bool {
@@ -1949,7 +2085,6 @@ final class IslandHostingView<Content: View>: NSHostingView<Content> {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = IslandModel()
     private var panel: IslandPanel?
-    private var expandedPanel: IslandPanel?
     private var statusItem: NSStatusItem?
     private var calibrationWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -1960,7 +2095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverLocalMouseMonitor: Any?
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
-    private var panelAnimationID = 0
+    private var panelAnimationGate = IslandAnimationCompletionGate()
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
     private var isPointerInsideHoverZone = false
@@ -2060,19 +2195,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureIslandHostingView(host, size: size)
         panel.contentView = host
 
-        let expandedSize = expandedPanelSize()
-        let expandedPanel = makeIslandPanel(size: expandedSize, level: .floating)
-        let expandedRoot = ExpandedIslandBodyPanel(model: model)
-        let expandedHost = IslandHostingView(rootView: expandedRoot)
-        configureIslandHostingView(expandedHost, size: expandedSize)
-        expandedPanel.contentView = expandedHost
-        expandedPanel.ignoresMouseEvents = true
-
         self.panel = panel
-        self.expandedPanel = expandedPanel
         repositionPanel(animated: false)
         panel.orderFrontRegardless()
-        expandedPanel.orderOut(nil)
     }
 
     private func makeIslandPanel(size: NSSize, level: NSWindow.Level) -> IslandPanel {
@@ -2106,7 +2231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.layer?.isOpaque = false
-        hostingView.layer?.masksToBounds = false
+        hostingView.layer?.masksToBounds = true
     }
 
     private func createStatusItem() {
@@ -2141,7 +2266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] mode in
                 guard let self else { return }
                 handleObservedModeChange(mode)
-                repositionPanel(animated: true, targetMode: mode, modeTransition: true)
+                repositionPanel(animated: true, targetMode: mode)
             }
             .store(in: &cancellables)
 
@@ -2321,7 +2446,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func isInsideIslandHoverZone(_ point: CGPoint) -> Bool {
         guard model.isVisible, let panel, panel.isVisible else { return false }
-        let headerZone = panel.frame.insetBy(dx: -3, dy: -3)
         if model.mode == .compact,
            model.activeFeature != .music {
             let compactControlZone = CGRect(
@@ -2334,31 +2458,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return false
             }
         }
-        guard model.mode == .expanded,
-              let expandedPanel,
-              expandedPanel.isVisible else {
-            return headerZone.contains(point)
-        }
-
-        let bodyZone = expandedPanel.frame.insetBy(dx: -3, dy: -3)
-        if headerZone.contains(point) || bodyZone.contains(point) {
-            return true
-        }
-
-        let bridgeMinX = max(panel.frame.minX, expandedPanel.frame.minX)
-        let bridgeMaxX = min(panel.frame.maxX, expandedPanel.frame.maxX)
-        let bridgeMinY = min(panel.frame.minY, expandedPanel.frame.maxY)
-        let bridgeMaxY = max(panel.frame.minY, expandedPanel.frame.maxY)
-        guard bridgeMaxX > bridgeMinX, bridgeMaxY > bridgeMinY else {
-            return false
-        }
-        let bridge = CGRect(
-            x: bridgeMinX,
-            y: bridgeMinY,
-            width: bridgeMaxX - bridgeMinX,
-            height: bridgeMaxY - bridgeMinY
-        )
-        return bridge.contains(point)
+        return interactionRegions(for: panel.frame, mode: model.mode)
+            .contains(point, tolerance: 3)
     }
 
     private func handleObservedModeChange(_ mode: IslandMode) {
@@ -2409,12 +2510,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            settingsWindow.frame.contains(clickPoint) {
             return
         }
-        let headerFrame = panel.frame.insetBy(dx: -2, dy: -2)
-        let bodyFrame = expandedPanel?.isVisible == true
-            ? expandedPanel?.frame.insetBy(dx: -2, dy: -2)
-            : nil
-        guard !headerFrame.contains(clickPoint),
-              bodyFrame?.contains(clickPoint) != true else { return }
+        let regions = interactionRegions(for: panel.frame, mode: model.mode)
+        guard !regions.contains(clickPoint, tolerance: 2) else { return }
         model.requestIslandMode(.compact, bypassCooldown: true)
     }
 
@@ -2457,24 +2554,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func panelSize(for mode: IslandMode) -> NSSize {
-        switch mode {
-        case .collapsed:
-            return NSSize(width: model.collapsedWidth, height: model.topBandHeight)
-        case .compact:
-            return NSSize(width: model.compactWidth, height: model.topBandHeight)
-        case .expanded:
-            return NSSize(width: model.expandedHeaderWidth, height: model.topBandHeight)
-        }
+        IslandWindowLayout.size(
+            for: mode,
+            collapsedWidth: model.collapsedWidth,
+            compactWidth: model.compactWidth,
+            expandedWidth: model.expandedWidth,
+            expandedHeight: model.expandedHeight,
+            topBandHeight: model.topBandHeight
+        )
     }
 
-    private func expandedPanelSize() -> NSSize {
-        NSSize(width: model.expandedWidth, height: model.expandedBodyHeight)
+    private func interactionRegions(
+        for panelFrame: NSRect,
+        mode: IslandMode
+    ) -> IslandInteractionRegions {
+        let headerWidth: CGFloat
+        switch mode {
+        case .collapsed:
+            headerWidth = model.collapsedWidth
+        case .compact:
+            headerWidth = model.compactWidth
+        case .expanded:
+            headerWidth = model.expandedHeaderWidth
+        }
+        return IslandInteractionRegions.make(
+            panelFrame: panelFrame,
+            mode: mode,
+            headerWidth: headerWidth,
+            topBandHeight: model.topBandHeight,
+            expandedBodyHeight: model.expandedBodyHeight,
+            expandedPanelTopGap: model.expandedPanelTopGap
+        )
     }
 
     private func repositionPanel(
         animated: Bool,
-        targetMode: IslandMode? = nil,
-        modeTransition: Bool = false
+        targetMode: IslandMode? = nil
     ) {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
@@ -2483,37 +2598,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = targetMode ?? model.mode
         let size = panelSize(for: mode)
         let frame = panelFrame(for: size, on: screen)
-        let bodySize = expandedPanelSize()
-        let bodyFrame = expandedPanelFrame(for: bodySize, on: screen)
 
         guard animated else {
-            panelAnimationID += 1
+            _ = panelAnimationGate.beginAnimation()
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
-
-            expandedPanel?.setFrame(bodyFrame, display: true)
-            expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-            expandedPanel?.alphaValue = 1
-            expandedPanel?.ignoresMouseEvents = mode != .expanded
             updatePanelVisibility()
             return
         }
 
-        panelAnimationID += 1
-        let animationID = panelAnimationID
+        let animationID = panelAnimationGate.beginAnimation()
         let animationDuration = IslandMotion.duration(for: mode)
-        // The body is already at its final frame when expanding. Accept clicks
-        // immediately so a visible control cannot be inert during the animation.
-        expandedPanel?.ignoresMouseEvents = mode != .expanded
 
         if model.isVisible {
             panel.orderFrontRegardless()
-            if mode == .expanded, let expandedPanel {
-                expandedPanel.setFrame(bodyFrame, display: true)
-                expandedPanel.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-                expandedPanel.alphaValue = 1
-                expandedPanel.orderFrontRegardless()
-            }
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -2521,73 +2619,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             context.timingFunction = IslandMotion.timingFunction(for: mode)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
-
-            if let expandedPanel,
-               !modeTransition,
-               mode == .expanded,
-               expandedPanel.isVisible {
-                expandedPanel.animator().setFrame(bodyFrame, display: true)
-            }
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                guard let self,
-                      self.panelAnimationID == animationID,
-                      self.model.mode == mode else { return }
+                guard let self else { return }
                 self.finishAnimatedReposition(
+                    animationID: animationID,
                     targetMode: mode,
-                    headerFrame: frame,
-                    bodyFrame: bodyFrame,
-                    bodySize: bodySize
+                    frame: frame,
+                    size: size
                 )
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
-            guard let self,
-                  panelAnimationID == animationID,
-                  model.mode == mode else { return }
+            guard let self else { return }
             finishAnimatedReposition(
+                animationID: animationID,
                 targetMode: mode,
-                headerFrame: frame,
-                bodyFrame: bodyFrame,
-                bodySize: bodySize
+                frame: frame,
+                size: size
             )
         }
     }
 
     private func finishAnimatedReposition(
+        animationID: Int,
         targetMode: IslandMode,
-        headerFrame: NSRect,
-        bodyFrame: NSRect,
-        bodySize: NSSize
+        frame: NSRect,
+        size: NSSize
     ) {
-        panel?.setFrame(headerFrame, display: true)
-        if targetMode != .expanded {
-            expandedPanel?.orderOut(nil)
-        } else {
-            expandedPanel?.setFrame(bodyFrame, display: true)
-        }
-        panel?.contentView?.frame = NSRect(origin: .zero, size: panel?.frame.size ?? .zero)
-        expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-        expandedPanel?.alphaValue = 1
-        expandedPanel?.ignoresMouseEvents = targetMode != .expanded
+        guard panelAnimationGate.claimCompletion(
+            animationID: animationID,
+            targetMode: targetMode,
+            currentMode: model.mode
+        ) else { return }
+        panel?.setFrame(frame, display: true)
+        panel?.contentView?.frame = NSRect(origin: .zero, size: size)
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height - CGFloat(model.layout.islandYOffset),
-            width: size.width,
-            height: size.height
-        )
-    }
-
-    private func expandedPanelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        let headerMinY = screen.frame.maxY - model.topBandHeight - CGFloat(model.layout.islandYOffset)
-        return NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: headerMinY - model.expandedPanelTopGap - size.height,
-            width: size.width,
-            height: size.height
+        IslandWindowLayout.frame(
+            for: size,
+            in: screen.frame,
+            yOffset: CGFloat(model.layout.islandYOffset)
         )
     }
 
@@ -2595,14 +2668,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let panel else { return }
         if model.isVisible {
             panel.orderFrontRegardless()
-            if model.mode == .expanded {
-                expandedPanel?.orderFrontRegardless()
-            } else {
-                expandedPanel?.orderOut(nil)
-            }
         } else {
             panel.orderOut(nil)
-            expandedPanel?.orderOut(nil)
         }
     }
 
@@ -3322,8 +3389,11 @@ struct IslandRootView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .top) {
+                ExpandedIslandBodyPanel(model: model)
+                    .offset(y: model.topBandHeight + model.expandedPanelTopGap)
+
                 IslandShell(
-                    width: proxy.size.width,
+                    width: model.currentHeaderWidth,
                     height: model.topBandHeight,
                     cornerRadius: model.topBandHeight / 2,
                     fillOpacity: 1,
@@ -3332,6 +3402,7 @@ struct IslandRootView: View {
                 ) {
                     Color.clear
                 }
+                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
 
                 ZStack {
                     CollapsedIsland(model: model)
@@ -3349,9 +3420,11 @@ struct IslandRootView: View {
                         .allowsHitTesting(model.mode == .expanded)
                         .accessibilityHidden(model.mode != .expanded)
                 }
+                .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
+                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
                 .animation(IslandMotion.headerContentAnimation(for: model.mode), value: model.mode)
             }
-            .frame(width: proxy.size.width, height: model.topBandHeight, alignment: .top)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
