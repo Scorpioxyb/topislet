@@ -92,6 +92,23 @@ private func verifyAnchoring(
     }
 }
 
+private func verifyCanvasDoesNotInterpolate(
+    _ samples: [WindowSample],
+    allowedSizes: [CGSize]
+) throws {
+    let hasUnexpectedSize = samples.contains { sample in
+        !allowedSizes.contains { allowed in
+            abs(sample.frame.width - allowed.width) <= 0.75
+                && abs(sample.frame.height - allowed.height) <= 0.75
+        }
+    }
+    guard !hasUnexpectedSize else {
+        throw VerificationError.failed(
+            "检测到 WindowServer 与岛形同时拉伸；窗口只能在起止透明画布间切换"
+        )
+    }
+}
+
 private func run() throws {
     let originalPointer = CGEvent(source: nil)?.location ?? .zero
     defer {
@@ -128,6 +145,10 @@ private func run() throws {
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
     )
+    try verifyCanvasDoesNotInterpolate(
+        expansion,
+        allowedSizes: [initial.frame.size, expanded.frame.size]
+    )
 
     postMouseMove(to: outsidePoint)
     let collapse = try sampleFrames(duration: 0.75)
@@ -136,6 +157,10 @@ private func run() throws {
         collapse,
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
+    )
+    try verifyCanvasDoesNotInterpolate(
+        collapse,
+        allowedSizes: [expanded.frame.size, collapsed.frame.size]
     )
 
     guard abs(collapsed.frame.width - initial.frame.width) <= 0.75,

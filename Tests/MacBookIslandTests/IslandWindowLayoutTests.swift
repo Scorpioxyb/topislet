@@ -52,6 +52,26 @@ func rapidIslandModeReversalNeverChangesCenter() {
     #expect(centers.allSatisfy { $0 == screenFrame.midX })
 }
 
+@Test("动画画布只扩展透明窗口，不会裁切可见岛形")
+func animationCanvasContainsCurrentAndTargetGeometry() {
+    let expansionCanvas = IslandWindowLayout.animationCanvasSize(
+        current: NSSize(width: 377, height: 34),
+        target: NSSize(width: 460, height: 190)
+    )
+    let collapseCanvas = IslandWindowLayout.animationCanvasSize(
+        current: NSSize(width: 460, height: 190),
+        target: NSSize(width: 377, height: 34)
+    )
+    let compactPromotionCanvas = IslandWindowLayout.animationCanvasSize(
+        current: NSSize(width: 245, height: 34),
+        target: NSSize(width: 377, height: 34)
+    )
+
+    #expect(expansionCanvas == NSSize(width: 460, height: 190))
+    #expect(collapseCanvas == NSSize(width: 460, height: 190))
+    #expect(compactPromotionCanvas == NSSize(width: 377, height: 34))
+}
+
 @Test("展开交互区域精确区分顶部主体和透明肩部")
 func expandedInteractionRegionsExcludeTransparentShoulders() throws {
     let panelFrame = NSRect(x: 730, y: 889, width: 460, height: 189)

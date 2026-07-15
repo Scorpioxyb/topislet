@@ -313,6 +313,16 @@ enum IslandWindowLayout {
         )
     }
 
+    static func animationCanvasSize(
+        current: NSSize,
+        target: NSSize
+    ) -> NSSize {
+        NSSize(
+            width: max(current.width, target.width),
+            height: max(current.height, target.height)
+        )
+    }
+
     static func acceptsAnimationCompletion(
         completedAnimationID: Int,
         currentAnimationID: Int,
@@ -409,13 +419,6 @@ struct IslandInteractionRegions: Equatable {
 private enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
         mode == .expanded ? 0.24 : 0.18
-    }
-
-    static func timingFunction(for mode: IslandMode) -> CAMediaTimingFunction {
-        if mode == .expanded {
-            return CAMediaTimingFunction(controlPoints: 0.25, 0.10, 0.25, 1.0)
-        }
-        return CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
     }
 
     static func geometryAnimation(for mode: IslandMode) -> Animation {
@@ -2609,28 +2612,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let animationID = panelAnimationGate.beginAnimation()
         let animationDuration = IslandMotion.duration(for: mode)
+        let canvasSize = IslandWindowLayout.animationCanvasSize(
+            current: panel.frame.size,
+            target: size
+        )
+        let canvasFrame = panelFrame(for: canvasSize, on: screen)
 
         if model.isVisible {
             panel.orderFrontRegardless()
         }
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration
-            context.timingFunction = IslandMotion.timingFunction(for: mode)
-            context.allowsImplicitAnimation = true
-            panel.animator().setFrame(frame, display: true)
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.finishAnimatedReposition(
-                    animationID: animationID,
-                    targetMode: mode,
-                    frame: frame,
-                    size: size
-                )
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
+        // The transparent window only provides enough canvas for the visible
+        // SwiftUI shell animation. Animating both layers caused a double-scale
+        // effect that made the expanded music body look like a popover.
+        panel.setFrame(canvasFrame, display: true)
+        panel.contentView?.frame = NSRect(origin: .zero, size: canvasSize)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.02) { [weak self] in
             guard let self else { return }
             finishAnimatedReposition(
                 animationID: animationID,
