@@ -150,6 +150,17 @@ private func run() throws {
         allowedSizes: [initial.frame.size, expanded.frame.size]
     )
 
+    let hoverPersistence = try sampleFrames(duration: 1.0)
+    try verifyAnchoring(
+        hoverPersistence,
+        expectedCenterX: expectedCenterX,
+        expectedTop: expectedTop
+    )
+    try verifyCanvasDoesNotInterpolate(
+        hoverPersistence,
+        allowedSizes: [expanded.frame.size]
+    )
+
     postMouseMove(to: outsidePoint)
     let collapse = try sampleFrames(duration: 0.75)
     let collapsed = try currentSample()
@@ -172,6 +183,7 @@ private func run() throws {
     print("窗口数量: 1")
     print("紧凑尺寸: \(Int(initial.frame.width))x\(Int(initial.frame.height))")
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")
+    print("悬停保持: 1.0s")
 }
 
 do {
