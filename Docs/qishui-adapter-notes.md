@@ -4,7 +4,7 @@
 
 - 汽水音乐 Bundle ID 是 `com.soda.music`。
 - 早期浅层 Accessibility 树只能稳定看到主窗口和系统窗口按钮；后续通过深层汽水内容窗口 AX 扫描，已能读取当前可见歌名、封面、歌词和进度，但播放/暂停状态仍只能间接推断。
-- V1 当前控制策略为汽水唯一语义 AX 直控：播放/暂停、上一首、下一首只触发汽水 PID 内经过结构校验的唯一播放器控件，不切换前台 App、不移动鼠标，也不发送全局媒体键。MediaRemote client 命令仅保留为诊断研究入口。
+- V1 当前控制策略为汽水唯一语义 AX 直控：播放/暂停、上一首、下一首只触发汽水 PID 内经过结构校验的唯一播放器控件，不切换前台 App、不移动鼠标，也不发送全局媒体键。Vendor 脚本仍保留底层 MediaRemote client 命令用于复现研究，但 App 产品路径和主 CLI 均不调用，QA 不得把它用于控制验收。
 - 桌面歌词界面来自 `/Applications/汽水音乐.app/Contents/Resources/desktopLyrics.asar`。
 - `desktopLyrics.asar` 内部通过 `window.transportPort` 连接主进程服务，不是通过 Accessibility 读取 UI。
 - 桌面歌词订阅的共享状态包括 `player`、`queue`、`desktopLyrics`。
@@ -31,7 +31,8 @@
 - 2026-07-10 定向控制突破：普通 App 二进制仍拿不到 MediaRemote clients，但系统解释器进程可以通过 Adapter 的同步 `findNowPlayingClient` 找到 `com.soda.music`，再调用 `MRMediaRemoteSendCommandToClient`。轻量桥已实测完成暂停→播放→暂停、下一首和上一首，前台 App 保持不变；App 主线程只等待后台桥返回，真实结果仍由汽水专属流确认。
 - 2026-07-13 QuickTime 抢焦点实机回归发现：`send-client` 即使返回成功，仍可能暂停系统当前视频而非汽水。产品按钮已停止调用该私有控制入口，改为汽水唯一语义 AX 直控；MediaRemote Adapter 继续负责汽水专属状态流和诊断。
 - 2026-07-13 定位到汽水重启后按钮偶发无反应的根因：Electron/Chromium 的 `AXManualAccessibility` 默认为 `0`，此时只能扫描到不完整控件树；对汽水 PID 的 AXApplication 设置该属性为 `1` 后，无需激活汽水即可稳定发现底部三个语义控件。QuickTime 前台实测播放/暂停、下一首、上一首均只影响汽水。
-- 2026-07-12 定向控制迁移到现有 `/usr/bin/perl` + MediaRemoteAdapter：Adapter 新增 `send-client`，仅接受命令 2/4/5；该入口现仅用于诊断研究。运行链不再调用 `/usr/bin/python3`。
+- 2026-07-15 完成新一轮安装版实机回归：暂停进度冻结、恢复推进、常驻 stream 原子切歌、三次并发切歌、播放中退出和新 PID 冷启动均通过；QuickTime 实际播放并占用系统媒体焦点时，汽水专属状态以及播放/暂停、下一首语义控制仍保持隔离。浏览器控制通道返回 `Transport closed`，真实抖音播放仍单独保留为 P0 待验收，详见 `Docs/acceptance/2026-07-15-qishui-runtime-regression.md`。
+- 2026-07-12 定向控制曾迁移到现有 `/usr/bin/perl` + MediaRemoteAdapter：Adapter 新增 `send-client`，仅接受命令 2/4/5。2026-07-13 证明该命令可能误控系统当前视频后，App 产品路径和主 CLI 已移除调用；Vendor 入口仅为复现研究保留，QA 不得用于控制验收。运行链不再调用 `/usr/bin/python3`。
 - 2026-07-09 进度条修正：AX 窗口树会同时暴露当前播放、列表项、旧歌和其他区域的多个 `mm:ss / mm:ss` 文本，不能作为可信进度来源。当前主进度只认 MediaRemote Adapter 的 `elapsedTime/duration`；当媒体焦点被抢走但仍保留最近可信汽水快照时，按最近可信播放态本地推进进度。AX fallback 的 `progress=unavailable` 是刻意降级，避免显示假进度。
 - 2026-07-13 汽水 2.9.1 进度轨道可写性复核：底部播放器栏的轨道、已播放宽度和滑块外观均只暴露为 `AXGroup`，`AXValue` 实测为只读，且没有 `AXSlider`、`AXMinValue`、`AXMaxValue` 或增减动作。`QishuiProbe --settable-attributes` 可输出这些属性的可写性；在出现唯一、可写、可回读确认的汽水专属控件前，产品继续禁用 seek。
 
