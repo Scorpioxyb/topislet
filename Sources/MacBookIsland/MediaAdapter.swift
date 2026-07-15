@@ -51,8 +51,8 @@ enum MusicSeekInteraction {
 }
 
 enum QishuiSeekSafety {
-    // MediaRemote only exposes a system-global seek command. Until Qishui exposes
-    // a client-targeted seek primitive, enabling it can move another app's video.
+    // Even MRMediaRemoteSendCommandToPlayer routes seek through the system media
+    // focus on macOS 26.5.2. Keep Qishui read-only until it exposes targeted seek.
     static let supportsTargetedSeek = false
 }
 
