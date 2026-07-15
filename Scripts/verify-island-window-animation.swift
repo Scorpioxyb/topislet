@@ -4,6 +4,7 @@ import CoreGraphics
 import Foundation
 
 private let ownerName = "顶屿"
+private let hoverPersistenceDuration: TimeInterval = 12
 
 private struct WindowSample {
     let frame: CGRect
@@ -96,15 +97,18 @@ private func verifyCanvasDoesNotInterpolate(
     _ samples: [WindowSample],
     allowedSizes: [CGSize]
 ) throws {
-    let hasUnexpectedSize = samples.contains { sample in
+    let unexpectedSample = samples.enumerated().first { _, sample in
         !allowedSizes.contains { allowed in
             abs(sample.frame.width - allowed.width) <= 0.75
                 && abs(sample.frame.height - allowed.height) <= 0.75
         }
     }
-    guard !hasUnexpectedSize else {
+    guard unexpectedSample == nil else {
+        let index = unexpectedSample?.offset ?? 0
+        let size = unexpectedSample?.element.frame.size ?? .zero
         throw VerificationError.failed(
-            "检测到 WindowServer 与岛形同时拉伸；窗口只能在起止透明画布间切换"
+            "检测到非目标窗口尺寸 \(Int(size.width))x\(Int(size.height))，"
+                + "约发生在采样开始后 \(String(format: "%.3f", Double(index) * 0.005))s"
         )
     }
 }
@@ -150,7 +154,7 @@ private func run() throws {
         allowedSizes: [initial.frame.size, expanded.frame.size]
     )
 
-    let hoverPersistence = try sampleFrames(duration: 1.0)
+    let hoverPersistence = try sampleFrames(duration: hoverPersistenceDuration)
     try verifyAnchoring(
         hoverPersistence,
         expectedCenterX: expectedCenterX,
@@ -183,7 +187,7 @@ private func run() throws {
     print("窗口数量: 1")
     print("紧凑尺寸: \(Int(initial.frame.width))x\(Int(initial.frame.height))")
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")
-    print("悬停保持: 1.0s")
+    print("悬停保持: \(String(format: "%.1f", hoverPersistenceDuration))s")
 }
 
 do {
