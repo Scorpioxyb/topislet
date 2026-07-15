@@ -63,13 +63,13 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 
 ## 最终验证
 
-- [ ] 从干净 tag 构建，不使用工作区未提交文件。
+- [x] 从干净 tag 构建，不使用工作区未提交文件。
 - [x] 挂载 DMG 后，“顶屿.app”签名验证通过，且“Applications”快捷入口正确指向 `/Applications`。
 - [ ] 正式签名版 `spctl -a -vv -t exec` 通过。
 - [ ] 公证版 `xcrun stapler validate` 通过。
 - [x] App 主二进制为 arm64，最低系统版本为 26.0。
 - [x] Vendor framework 最低系统版本为 26.0，包含 arm64。
-- [ ] Release 页附 SHA-256、已知限制、权限说明和第三方声明。
+- [x] Release 页材料已包含 SHA-256、已知限制、权限说明和第三方声明。
 - [x] 从旧原型升级后，已在新 Bundle ID 下重新授予辅助功能并确认汽水三种控制正常；日历和提醒事项为 P2，不阻塞本次 Alpha。
 
 ## P0 实机回归
