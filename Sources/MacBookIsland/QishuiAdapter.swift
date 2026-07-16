@@ -14,7 +14,7 @@ struct QishuiDirectTrack: Equatable {
 struct QishuiDirectSnapshot: Equatable {
     let isRunning: Bool
     let processIdentifier: pid_t?
-    let controlAvailability: QishuiControlAvailability
+    let windowAvailability: QishuiControlAvailability
     let supportRoot: URL
     let currentTrack: QishuiDirectTrack?
     let desktopLyricsEnabled: Bool?
@@ -48,7 +48,7 @@ final class QishuiAdapter {
             return QishuiDirectSnapshot(
                 isRunning: false,
                 processIdentifier: nil,
-                controlAvailability: .notRunning,
+                windowAvailability: .notRunning,
                 supportRoot: supportRoot,
                 currentTrack: nil,
                 desktopLyricsEnabled: nil,
@@ -64,11 +64,11 @@ final class QishuiAdapter {
             axReader.invalidateCache()
         }
 
-        let controlAvailability = QishuiSemanticAXController.controlAvailability(
+        let windowAvailability = QishuiSemanticAXController.windowAvailability(
             processIdentifier: runningApp.processIdentifier
         )
         let axResult: QishuiAXReadResult
-        if controlAvailability == .windowClosed {
+        if windowAvailability == .windowClosed {
             axResult = QishuiAXReadResult(
                 track: nil,
                 requiresAccessibility: false,
@@ -83,7 +83,7 @@ final class QishuiAdapter {
         let diagnostic: String
         if let currentTrack, currentTrack.sourceName == "汽水窗口 AX" {
             diagnostic = "\(axResult.diagnostic) 扫描节点 \(axResult.scannedNodeCount) 个；为降低延迟，本轮未读取汽水本地缓存目录。"
-        } else if controlAvailability == .windowClosed {
+        } else if windowAvailability == .windowClosed {
             diagnostic = "汽水主窗口已关闭；专属状态流可继续同步，但播放控制会保持禁用，直到窗口重新显示或最小化。"
         } else if axResult.requiresAccessibility {
             diagnostic = axResult.diagnostic
@@ -96,7 +96,7 @@ final class QishuiAdapter {
         return QishuiDirectSnapshot(
             isRunning: true,
             processIdentifier: runningApp.processIdentifier,
-            controlAvailability: controlAvailability,
+            windowAvailability: windowAvailability,
             supportRoot: supportRoot,
             currentTrack: currentTrack,
             desktopLyricsEnabled: nil,

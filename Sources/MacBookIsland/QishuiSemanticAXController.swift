@@ -3,27 +3,32 @@ import ApplicationServices
 import Darwin
 import Foundation
 
-enum QishuiControlAvailability: Equatable, Sendable {
+enum QishuiControlAvailability: String, Equatable, Sendable {
     case available
     case windowClosed
+    case controlTreeUnavailable
     case accessibilityRequired
     case notRunning
     case unknown
 
     var allowsControl: Bool {
-        self == .available || self == .unknown
+        self == .available
     }
 
     var unavailableReason: String? {
         switch self {
-        case .available, .unknown:
+        case .available:
             return nil
         case .windowClosed:
             return "汽水主窗口已关闭；请先显示或最小化汽水窗口。"
+        case .controlTreeUnavailable:
+            return "汽水辅助功能控件暂不可用；顶屿会在后台自动重试。"
         case .accessibilityRequired:
             return "顶屿需要辅助功能权限才能控制汽水音乐。"
         case .notRunning:
             return "汽水音乐当前未运行。"
+        case .unknown:
+            return "正在确认汽水播放控件是否可用。"
         }
     }
 }
@@ -165,26 +170,12 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             self.cachedControls = nil
         }
 
-        var discovery = discoverControls(processIdentifier: processIdentifier)
-        for attempt in 0..<2 where Self.shouldRetrySparseDiscovery(
-            scannedNodeCount: discovery.scanned,
-            candidateCount: discovery.matches.count,
-            attempt: attempt
-        ) {
-            if attempt == 0 {
-                _ = rebuildManualAccessibility(
-                    processIdentifier: processIdentifier
-                )
-            }
-            usleep(attempt == 0 ? 80_000 : 160_000)
-            discovery = discoverControls(
-                processIdentifier: processIdentifier,
-                timeout: attempt == 0 ? 0.25 : 0.5
-            )
-        }
+        let discovery = discoverControlsWithRecovery(
+            processIdentifier: processIdentifier
+        )
         guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
-            let controlAvailability = Self.controlAvailability(
+            let controlAvailability = Self.windowAvailability(
                 processIdentifier: processIdentifier
             )
             let detail: String
@@ -233,6 +224,57 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return enableManualAccessibility(
             processIdentifier: app.processIdentifier
         )
+    }
+
+    func controlAvailability(
+        processIdentifier expectedProcessIdentifier: pid_t?
+    ) -> QishuiControlAvailability {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let windowAvailability = Self.windowAvailability(
+            processIdentifier: expectedProcessIdentifier
+        )
+        switch windowAvailability {
+        case .available, .controlTreeUnavailable:
+            break
+        case .windowClosed, .accessibilityRequired, .notRunning, .unknown:
+            cachedControls = nil
+            return windowAvailability
+        }
+        guard let processIdentifier = expectedProcessIdentifier,
+              enableManualAccessibility(processIdentifier: processIdentifier) else {
+            cachedControls = nil
+            return .unknown
+        }
+
+        if let cachedControls,
+           cachedControls.processIdentifier == processIdentifier,
+           Self.isEligibleHealthCandidate(candidateFacts(for: cachedControls)) {
+            return .available
+        }
+
+        let temporarilyUnminimizedWindow = temporarilyUnminimizeUniqueWindow(
+            processIdentifier: processIdentifier
+        )
+        defer {
+            if let temporarilyUnminimizedWindow {
+                restoreMinimizedWindow(temporarilyUnminimizedWindow)
+            }
+        }
+        let discovery = discoverControlsWithRecovery(
+            processIdentifier: processIdentifier
+        )
+        let availability = Self.resolveSemanticControlAvailability(
+            windowAvailability: windowAvailability,
+            candidateCount: discovery.matches.count
+        )
+        if availability == .available, let match = discovery.matches.first {
+            cachedControls = match.controls
+        } else {
+            cachedControls = nil
+        }
+        return availability
     }
 
     func diagnostic() -> String {
@@ -325,6 +367,20 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return relativeY >= 0.72 && relativeY <= 1.02
     }
 
+    static func isEligibleHealthCandidate(_ facts: CandidateFacts) -> Bool {
+        if isEligibleCandidate(facts) {
+            return true
+        }
+        guard facts.windowIsNormal,
+              facts.windowIsPrimary,
+              facts.windowIsMinimized,
+              facts.controlsAreEnabled,
+              facts.controlsAreInsideWindow,
+              facts.hasPlaybackTimeContext,
+              let relativeY = facts.relativeY else { return false }
+        return relativeY >= 0.72 && relativeY <= 1.02
+    }
+
     static func shouldTemporarilyUnminimize(
         standardWindowCount: Int,
         isMinimized: Bool
@@ -332,7 +388,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         standardWindowCount == 1 && isMinimized
     }
 
-    static func resolveControlAvailability(
+    static func resolveWindowAvailability(
         isRunning: Bool,
         accessibilityTrusted: Bool,
         windowReadSucceeded: Bool,
@@ -343,10 +399,23 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         guard accessibilityTrusted else { return .accessibilityRequired }
         guard windowReadSucceeded else { return .unknown }
         guard reportedWindowCount > 0 else { return .windowClosed }
-        return standardWindowCount > 0 ? .available : .unknown
+        return standardWindowCount > 0 ? .available : .controlTreeUnavailable
     }
 
-    static func controlAvailability(
+    static func resolveSemanticControlAvailability(
+        windowAvailability: QishuiControlAvailability,
+        candidateCount: Int?
+    ) -> QishuiControlAvailability {
+        switch windowAvailability {
+        case .available, .controlTreeUnavailable:
+            guard let candidateCount else { return .unknown }
+            return candidateCount == 1 ? .available : .controlTreeUnavailable
+        case .windowClosed, .accessibilityRequired, .notRunning, .unknown:
+            return windowAvailability
+        }
+    }
+
+    static func windowAvailability(
         processIdentifier expectedProcessIdentifier: pid_t?
     ) -> QishuiControlAvailability {
         let runningApplications = NSRunningApplication.runningApplications(
@@ -395,13 +464,36 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             }
             count += 1
         }
-        return resolveControlAvailability(
+        return resolveWindowAvailability(
             isRunning: true,
             accessibilityTrusted: true,
             windowReadSucceeded: true,
             reportedWindowCount: values.count,
             standardWindowCount: standardWindowCount
         )
+    }
+
+    private func discoverControlsWithRecovery(
+        processIdentifier: pid_t
+    ) -> (matches: [DiscoveredControls], scanned: Int) {
+        var discovery = discoverControls(processIdentifier: processIdentifier)
+        for attempt in 0..<2 where Self.shouldRetrySparseDiscovery(
+            scannedNodeCount: discovery.scanned,
+            candidateCount: discovery.matches.count,
+            attempt: attempt
+        ) {
+            if attempt == 0 {
+                _ = rebuildManualAccessibility(
+                    processIdentifier: processIdentifier
+                )
+            }
+            usleep(attempt == 0 ? 80_000 : 160_000)
+            discovery = discoverControls(
+                processIdentifier: processIdentifier,
+                timeout: attempt == 0 ? 0.25 : 0.5
+            )
+        }
+        return discovery
     }
 
     private func discoverControls(
