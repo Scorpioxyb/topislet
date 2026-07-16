@@ -191,6 +191,19 @@ if CommandLine.arguments.contains("--qishui-control-diagnostic") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--qishui-control-availability") {
+    let processIdentifier = NSRunningApplication.runningApplications(
+        withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+    ).first(where: { !$0.isTerminated })?.processIdentifier
+    let availability = QishuiSemanticAXController().controlAvailability(
+        processIdentifier: processIdentifier
+    )
+    print("controlAvailability=\(availability.rawValue)")
+    print("allowsControl=\(availability.allowsControl)")
+    print("reason=\(availability.unavailableReason ?? "nil")")
+    exit(availability == .available ? 0 : 2)
+}
+
 if let adapterWatchIndex = CommandLine.arguments.firstIndex(of: "--adapter-watch") {
     let seconds = CommandLine.arguments.indices.contains(adapterWatchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[adapterWatchIndex + 1]) ?? 5)

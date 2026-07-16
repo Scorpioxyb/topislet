@@ -111,6 +111,8 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 .build/debug/MacBookIsland --apple-music-status
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --qishui-status
+.build/debug/MacBookIsland --qishui-control-availability
+.build/debug/MacBookIsland --qishui-control-diagnostic
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --eventkit-status
 ```

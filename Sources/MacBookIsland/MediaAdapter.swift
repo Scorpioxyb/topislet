@@ -264,6 +264,14 @@ struct AppleMusicPlaybackControlExpectation: Equatable {
 
 @MainActor
 final class MusicAdapterCoordinator {
+    private static let qishuiControlStructureNotifications: Set<String> = [
+        "AXFocusedWindowChanged",
+        "AXWindowCreated",
+        "AXUIElementDestroyed",
+        "AXWindowMiniaturized",
+        "AXWindowDeminiaturized"
+    ]
+
     private let qishuiAdapter = QishuiAdapter()
     private let appleMusicTransitionTimeline = AppleMusicTransitionTimeline()
     private lazy var appleMusicAdapter = AppleMusicAppAdapter(
@@ -287,6 +295,10 @@ final class MusicAdapterCoordinator {
     private var nextPlaybackOperationID = 0
     private var controlGeneration = 0
     private var qishuiControlAvailabilityGeneration: UInt64 = 0
+    private var qishuiControlAvailabilityRefreshInFlight = false
+    private var qishuiControlAvailabilityRefreshQueued = false
+    private var qishuiControlAvailabilityRetryAttempt = 0
+    private var qishuiControlAvailabilityRetryTask: Task<Void, Never>?
     private var lastTrackControlStartedAt: Date?
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
@@ -347,9 +359,11 @@ final class MusicAdapterCoordinator {
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
-        qishuiAXChangeMonitor.start { [weak self] _ in
+        qishuiAXChangeMonitor.start { [weak self] notification in
             guard let self else { return }
-            self.scheduleQishuiControlAvailabilityRefresh()
+            if Self.qishuiControlStructureNotifications.contains(notification) {
+                self.scheduleQishuiControlAvailabilityRefresh()
+            }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
         scheduleQishuiControlAvailabilityRefresh()
@@ -365,6 +379,7 @@ final class MusicAdapterCoordinator {
         foregroundMusicSource = nil
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
+        cancelQishuiControlAvailabilityScheduling()
         resetPendingPlaybackOperation(clearTimelineFloor: true)
     }
 
@@ -552,6 +567,10 @@ final class MusicAdapterCoordinator {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
         let didPost = controlResult.didPress
+        if !didPost {
+            latestQishuiControlAvailability = .controlTreeUnavailable
+            scheduleQishuiControlAvailabilityRefresh()
+        }
 
         if let playbackOperationID {
             if didPost {
@@ -788,10 +807,11 @@ final class MusicAdapterCoordinator {
     private func probeQishuiControlAvailability(
         processIdentifier: pid_t
     ) async -> QishuiControlAvailability {
-        await withCheckedContinuation { continuation in
+        let semanticController = qishuiSemanticAXController
+        return await withCheckedContinuation { continuation in
             qishuiControlQueue.async {
                 continuation.resume(returning:
-                    QishuiSemanticAXController.controlAvailability(
+                    semanticController.controlAvailability(
                         processIdentifier: processIdentifier
                     )
                 )
@@ -1041,38 +1061,93 @@ final class MusicAdapterCoordinator {
         qishuiSemanticAXController.invalidateCache()
     }
 
-    private func scheduleQishuiControlAvailabilityRefresh() {
+    private func scheduleQishuiControlAvailabilityRefresh(
+        cancelPendingRetry: Bool = true
+    ) {
+        if cancelPendingRetry {
+            qishuiControlAvailabilityRetryTask?.cancel()
+            qishuiControlAvailabilityRetryTask = nil
+        }
+        guard !qishuiControlAvailabilityRefreshInFlight else {
+            qishuiControlAvailabilityRefreshQueued = true
+            return
+        }
         qishuiControlAvailabilityGeneration &+= 1
         let generation = qishuiControlAvailabilityGeneration
         guard let processIdentifier = NSRunningApplication.runningApplications(
             withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
         ).first(where: { !$0.isTerminated })?.processIdentifier else {
+            qishuiControlAvailabilityRefreshQueued = false
+            qishuiControlAvailabilityRetryAttempt = 0
             guard latestQishuiControlAvailability != .notRunning else { return }
             latestQishuiControlAvailability = .notRunning
             publishCurrentState()
             return
         }
 
+        qishuiControlAvailabilityRefreshInFlight = true
+        let semanticController = qishuiSemanticAXController
         qishuiControlQueue.async {
-            let availability = QishuiSemanticAXController.controlAvailability(
+            let availability = semanticController.controlAvailability(
                 processIdentifier: processIdentifier
             )
             Task { @MainActor [weak self] in
                 guard let self,
-                      generation == self.qishuiControlAvailabilityGeneration,
-                      NSRunningApplication.runningApplications(
+                      generation == self.qishuiControlAvailabilityGeneration else {
+                    return
+                }
+                self.qishuiControlAvailabilityRefreshInFlight = false
+                guard NSRunningApplication.runningApplications(
                         withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
                       ).contains(where: {
                           !$0.isTerminated
                               && $0.processIdentifier == processIdentifier
-                      }),
-                      availability != self.latestQishuiControlAvailability else {
+                      }) else {
+                    self.markQishuiNotRunning()
                     return
                 }
-                self.latestQishuiControlAvailability = availability
-                self.publishCurrentState()
+                if availability != self.latestQishuiControlAvailability {
+                    self.latestQishuiControlAvailability = availability
+                    self.publishCurrentState()
+                }
+                if self.qishuiControlAvailabilityRefreshQueued {
+                    self.qishuiControlAvailabilityRefreshQueued = false
+                    self.scheduleQishuiControlAvailabilityRefresh()
+                    return
+                }
+                if availability == .available {
+                    self.qishuiControlAvailabilityRetryAttempt = 0
+                } else {
+                    self.scheduleQishuiControlAvailabilityRetry()
+                }
             }
         }
+    }
+
+    private func scheduleQishuiControlAvailabilityRetry() {
+        qishuiControlAvailabilityRetryTask?.cancel()
+        let attempt = qishuiControlAvailabilityRetryAttempt
+        let delay = min(3.0 * pow(2.0, Double(attempt)), 12.0)
+        qishuiControlAvailabilityRetryAttempt = min(attempt + 1, 2)
+        qishuiControlAvailabilityRetryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.qishuiControlAvailabilityRetryTask = nil
+            self.scheduleQishuiControlAvailabilityRefresh(cancelPendingRetry: false)
+        }
+    }
+
+    private func cancelQishuiControlAvailabilityScheduling() {
+        qishuiControlAvailabilityGeneration &+= 1
+        qishuiControlAvailabilityRefreshInFlight = false
+        qishuiControlAvailabilityRefreshQueued = false
+        qishuiControlAvailabilityRetryAttempt = 0
+        qishuiControlAvailabilityRetryTask?.cancel()
+        qishuiControlAvailabilityRetryTask = nil
     }
 
     private func refreshFromRealtimeSignal(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
@@ -1130,7 +1205,7 @@ final class MusicAdapterCoordinator {
                 lastCachedOverrideRefreshAttemptAt = Date()
                 let directSnapshot = qishuiAdapter.snapshot()
                 latestQishuiSnapshot = directSnapshot
-                latestQishuiControlAvailability = directSnapshot.controlAvailability
+                applyQishuiWindowAvailability(directSnapshot.windowAvailability)
                 if let directTrack = directSnapshot.currentTrack {
                     updateQishuiPlaybackInference(track: directTrack, checkedAt: directSnapshot.checkedAt)
                     if pendingPlaybackOperation == nil
@@ -1170,7 +1245,7 @@ final class MusicAdapterCoordinator {
         _ snapshot: QishuiDirectSnapshot
     ) -> MusicSourceStatus {
         latestQishuiSnapshot = snapshot
-        latestQishuiControlAvailability = snapshot.controlAvailability
+        applyQishuiWindowAvailability(snapshot.windowAvailability)
         lastSourceRefreshAt = snapshot.checkedAt
 
         guard snapshot.isRunning else {
@@ -1301,6 +1376,7 @@ final class MusicAdapterCoordinator {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 switch source {
                 case .qishui:
+                    self.scheduleQishuiControlAvailabilityRefresh()
                     await self.refreshForegroundQishuiState()
                     return
                 case .appleMusic:
@@ -1330,6 +1406,7 @@ final class MusicAdapterCoordinator {
                 self.publishCurrentState()
                 switch source {
                 case .qishui:
+                    self.scheduleQishuiControlAvailabilityRefresh()
                     await self.refreshForegroundQishuiState()
                     return
                 case .appleMusic:
@@ -1363,7 +1440,7 @@ final class MusicAdapterCoordinator {
 
     private func markQishuiNotRunning(checkedAt: Date = Date()) {
         controlGeneration += 1
-        qishuiControlAvailabilityGeneration &+= 1
+        cancelQishuiControlAvailabilityScheduling()
         latestMediaRemoteSnapshot = nil
         latestQishuiSnapshot = nil
         latestQishuiControlAvailability = .notRunning
@@ -1384,6 +1461,21 @@ final class MusicAdapterCoordinator {
             detail: "当前不显示播放数据；打开汽水音乐后，顶屿会自动恢复。",
             checkedAt: checkedAt
         )
+    }
+
+    private func applyQishuiWindowAvailability(
+        _ windowAvailability: QishuiControlAvailability
+    ) {
+        switch windowAvailability {
+        case .available:
+            break
+        case .windowClosed,
+             .controlTreeUnavailable,
+             .accessibilityRequired,
+             .notRunning,
+             .unknown:
+            latestQishuiControlAvailability = windowAvailability
+        }
     }
 
     private func refreshSourceStatusIfNeeded() -> MusicSourceStatus? {

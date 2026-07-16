@@ -98,6 +98,36 @@ func hiddenOrOffPlayerCandidatesAreRejected() {
     ))
 }
 
+@Test("已验证的唯一最小化窗口控件可复用健康状态")
+func cachedMinimizedControlsRemainHealthy() {
+    let minimized = QishuiSemanticAXController.CandidateFacts(
+        windowIsNormal: true,
+        windowIsPrimary: true,
+        windowIsVisible: false,
+        windowIsMinimized: true,
+        containerIsVisible: false,
+        controlsAreEnabled: true,
+        controlsAreInsideWindow: true,
+        relativeY: 0.9,
+        hasPlaybackTimeContext: true
+    )
+    #expect(!QishuiSemanticAXController.isEligibleCandidate(minimized))
+    #expect(QishuiSemanticAXController.isEligibleHealthCandidate(minimized))
+
+    let duplicateWindow = QishuiSemanticAXController.CandidateFacts(
+        windowIsNormal: true,
+        windowIsPrimary: false,
+        windowIsVisible: false,
+        windowIsMinimized: true,
+        containerIsVisible: false,
+        controlsAreEnabled: true,
+        controlsAreInsideWindow: true,
+        relativeY: 0.9,
+        hasPlaybackTimeContext: true
+    )
+    #expect(!QishuiSemanticAXController.isEligibleHealthCandidate(duplicateWindow))
+}
+
 @Test("唯一最小化标准窗口允许后台临时恢复")
 func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
     #expect(QishuiSemanticAXController.shouldTemporarilyUnminimize(
@@ -118,52 +148,81 @@ func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
     ))
 }
 
-@Test("汽水窗口能力只禁用明确不可控制状态")
-func qishuiControlAvailabilityUsesDefiniteWindowEvidence() {
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+@Test("汽水窗口状态区分关闭、异常控件树和读取失败")
+func qishuiWindowAvailabilityUsesDefiniteWindowEvidence() {
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: false,
         accessibilityTrusted: true,
         windowReadSucceeded: true,
         reportedWindowCount: 1,
         standardWindowCount: 1
     ) == .notRunning)
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: true,
         accessibilityTrusted: false,
         windowReadSucceeded: true,
         reportedWindowCount: 1,
         standardWindowCount: 1
     ) == .accessibilityRequired)
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: true,
         accessibilityTrusted: true,
         windowReadSucceeded: false,
         reportedWindowCount: 0,
         standardWindowCount: 0
     ) == .unknown)
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: true,
         accessibilityTrusted: true,
         windowReadSucceeded: true,
         reportedWindowCount: 0,
         standardWindowCount: 0
     ) == .windowClosed)
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: true,
         accessibilityTrusted: true,
         windowReadSucceeded: true,
         reportedWindowCount: 1,
         standardWindowCount: 1
     ) == .available)
-    #expect(QishuiSemanticAXController.resolveControlAvailability(
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
         isRunning: true,
         accessibilityTrusted: true,
         windowReadSucceeded: true,
         reportedWindowCount: 1,
         standardWindowCount: 0
+    ) == .controlTreeUnavailable)
+}
+
+@Test("只有唯一语义播放控件组允许发送控制")
+func qishuiControlAvailabilityRequiresUniqueSemanticCandidate() {
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .available,
+        candidateCount: 1
+    ) == .available)
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .available,
+        candidateCount: 0
+    ) == .controlTreeUnavailable)
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .available,
+        candidateCount: 2
+    ) == .controlTreeUnavailable)
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .controlTreeUnavailable,
+        candidateCount: 1
+    ) == .available)
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .available,
+        candidateCount: nil
     ) == .unknown)
+    #expect(QishuiSemanticAXController.resolveSemanticControlAvailability(
+        windowAvailability: .windowClosed,
+        candidateCount: 1
+    ) == .windowClosed)
 
     #expect(QishuiControlAvailability.available.allowsControl)
-    #expect(QishuiControlAvailability.unknown.allowsControl)
+    #expect(!QishuiControlAvailability.unknown.allowsControl)
+    #expect(!QishuiControlAvailability.controlTreeUnavailable.allowsControl)
     #expect(!QishuiControlAvailability.windowClosed.allowsControl)
 }
