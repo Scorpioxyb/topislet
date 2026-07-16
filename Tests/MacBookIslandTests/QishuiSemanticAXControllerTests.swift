@@ -109,6 +109,10 @@ func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
         isMinimized: true
     ))
     #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
+        standardWindowCount: 0,
+        isMinimized: false
+    ))
+    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
         standardWindowCount: 1,
         isMinimized: false
     ))
