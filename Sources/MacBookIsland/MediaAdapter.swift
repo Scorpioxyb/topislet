@@ -190,6 +190,25 @@ enum AppleMusicRefreshPolicy {
     }
 }
 
+enum AppleMusicTransientRefreshPolicy {
+    static let retryDelays: [TimeInterval] = [0.25, 0.6, 1.2, 2.4]
+
+    static func retryDelay(
+        preserving current: MusicAppSnapshot?,
+        after candidate: MusicAppSnapshot,
+        attempt: Int
+    ) -> TimeInterval? {
+        guard retryDelays.indices.contains(attempt),
+              let current,
+              case .ready = current.availability,
+              current.instance == candidate.instance,
+              case .degraded = candidate.availability else {
+            return nil
+        }
+        return retryDelays[attempt]
+    }
+}
+
 enum AppleMusicSourceAvailabilityPolicy {
     static func snapshotMatchesRunningInstance(
         runningProcessIdentifier: pid_t?,
@@ -318,6 +337,8 @@ final class MusicAdapterCoordinator {
     private var appleMusicRefreshTask: Task<Void, Never>?
     private var appleMusicRefreshQueued = false
     private var appleMusicRefreshGeneration: UInt64 = 0
+    private var appleMusicTransientRetryAttempt = 0
+    private var appleMusicTransientRetryTask: Task<Void, Never>?
     private var lastAppleMusicRefreshCompletedAt: Date?
     private var lastAppleMusicControlAt: Date?
     private var appleMusicConsecutiveRefreshFailures = 0
@@ -1343,6 +1364,7 @@ final class MusicAdapterCoordinator {
                     self.appleMusicRefreshTask?.cancel()
                     self.appleMusicRefreshTask = nil
                     self.appleMusicRefreshQueued = false
+                    self.cancelAppleMusicTransientRetry(resetAttempt: true)
                     self.clearAppleMusicPlaybackControlExpectation()
                     self.latestAppleMusicSnapshot = nil
                     self.lastAppleMusicRefreshCompletedAt = Date()
@@ -1370,6 +1392,7 @@ final class MusicAdapterCoordinator {
                     self.qishuiSemanticAXController.invalidateCache()
                     self.scheduleQishuiControlAvailabilityRefresh()
                 case .appleMusic:
+                    self.cancelAppleMusicTransientRetry(resetAttempt: true)
                     self.lastAppleMusicRefreshCompletedAt = nil
                     self.appleMusicConsecutiveRefreshFailures = 0
                 }
@@ -1527,6 +1550,7 @@ final class MusicAdapterCoordinator {
     }
 
     private func startAppleMusicObservation() {
+        cancelAppleMusicTransientRetry(resetAttempt: true)
         appleMusicAdapter.start { [weak self] invalidation in
             switch invalidation {
             case .sourceChanged:
@@ -1544,6 +1568,7 @@ final class MusicAdapterCoordinator {
         appleMusicRefreshTask?.cancel()
         appleMusicRefreshTask = nil
         appleMusicRefreshQueued = false
+        cancelAppleMusicTransientRetry(resetAttempt: true)
         lastAppleMusicRefreshCompletedAt = nil
         lastAppleMusicControlAt = nil
         clearAppleMusicPlaybackControlExpectation()
@@ -1559,6 +1584,7 @@ final class MusicAdapterCoordinator {
             appleMusicRefreshTask?.cancel()
             appleMusicRefreshTask = nil
             appleMusicRefreshQueued = false
+            cancelAppleMusicTransientRetry(resetAttempt: true)
             appleMusicConsecutiveRefreshFailures = 0
             clearAppleMusicPlaybackControlExpectation()
             if latestAppleMusicSnapshot != nil {
@@ -1567,6 +1593,11 @@ final class MusicAdapterCoordinator {
                 publishCurrentState()
             }
             return
+        }
+
+        if force {
+            appleMusicTransientRetryTask?.cancel()
+            appleMusicTransientRetryTask = nil
         }
 
         let isSelected = musicSourceSelector.selection.source == .appleMusic
@@ -1599,6 +1630,26 @@ final class MusicAdapterCoordinator {
             let snapshot = await self.appleMusicAdapter.snapshot(refresh: .metadata)
             guard !Task.isCancelled,
                   generation == self.appleMusicRefreshGeneration else { return }
+            if let retryDelay = AppleMusicTransientRefreshPolicy.retryDelay(
+                preserving: self.latestAppleMusicSnapshot,
+                after: snapshot,
+                attempt: self.appleMusicTransientRetryAttempt
+            ) {
+                self.lastAppleMusicRefreshCompletedAt = Date()
+                self.appleMusicConsecutiveRefreshFailures = min(
+                    self.appleMusicConsecutiveRefreshFailures + 1,
+                    3
+                )
+                self.appleMusicRefreshTask = nil
+                self.appleMusicTransitionTimeline.record(
+                    .snapshotRejected,
+                    detail: "reason=transient-degraded retryMs=\(Int(retryDelay * 1_000))"
+                )
+                self.appleMusicRefreshQueued = false
+                self.scheduleAppleMusicTransientRetry(after: retryDelay)
+                return
+            }
+            self.cancelAppleMusicTransientRetry(resetAttempt: true)
             self.applyAppleMusicSnapshotIfNewer(snapshot)
             self.lastAppleMusicRefreshCompletedAt = Date()
             if case .ready = snapshot.availability {
@@ -1615,6 +1666,28 @@ final class MusicAdapterCoordinator {
                 self.appleMusicRefreshQueued = false
                 self.scheduleAppleMusicRefresh(force: true)
             }
+        }
+    }
+
+    private func scheduleAppleMusicTransientRetry(after delay: TimeInterval) {
+        appleMusicTransientRetryTask?.cancel()
+        appleMusicTransientRetryAttempt += 1
+        let generation = appleMusicRefreshGeneration
+        appleMusicTransientRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.appleMusicRefreshGeneration else { return }
+            self.appleMusicTransientRetryTask = nil
+            self.scheduleAppleMusicRefresh(force: true)
+        }
+    }
+
+    private func cancelAppleMusicTransientRetry(resetAttempt: Bool) {
+        appleMusicTransientRetryTask?.cancel()
+        appleMusicTransientRetryTask = nil
+        if resetAttempt {
+            appleMusicTransientRetryAttempt = 0
         }
     }
 
