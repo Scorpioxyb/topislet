@@ -117,3 +117,53 @@ func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
         isMinimized: false
     ))
 }
+
+@Test("汽水窗口能力只禁用明确不可控制状态")
+func qishuiControlAvailabilityUsesDefiniteWindowEvidence() {
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: false,
+        accessibilityTrusted: true,
+        windowReadSucceeded: true,
+        reportedWindowCount: 1,
+        standardWindowCount: 1
+    ) == .notRunning)
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: true,
+        accessibilityTrusted: false,
+        windowReadSucceeded: true,
+        reportedWindowCount: 1,
+        standardWindowCount: 1
+    ) == .accessibilityRequired)
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: true,
+        accessibilityTrusted: true,
+        windowReadSucceeded: false,
+        reportedWindowCount: 0,
+        standardWindowCount: 0
+    ) == .unknown)
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: true,
+        accessibilityTrusted: true,
+        windowReadSucceeded: true,
+        reportedWindowCount: 0,
+        standardWindowCount: 0
+    ) == .windowClosed)
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: true,
+        accessibilityTrusted: true,
+        windowReadSucceeded: true,
+        reportedWindowCount: 1,
+        standardWindowCount: 1
+    ) == .available)
+    #expect(QishuiSemanticAXController.resolveControlAvailability(
+        isRunning: true,
+        accessibilityTrusted: true,
+        windowReadSucceeded: true,
+        reportedWindowCount: 1,
+        standardWindowCount: 0
+    ) == .unknown)
+
+    #expect(QishuiControlAvailability.available.allowsControl)
+    #expect(QishuiControlAvailability.unknown.allowsControl)
+    #expect(!QishuiControlAvailability.windowClosed.allowsControl)
+}

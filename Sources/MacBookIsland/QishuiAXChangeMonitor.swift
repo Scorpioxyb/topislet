@@ -24,7 +24,19 @@ final class QishuiAXChangeMonitor {
         "AXFocusedWindowChanged",
         "AXSelectedChildrenChanged",
         "AXSelectedRowsChanged",
-        "AXLayoutChanged"
+        "AXLayoutChanged",
+        "AXWindowCreated",
+        "AXUIElementDestroyed",
+        "AXWindowMiniaturized",
+        "AXWindowDeminiaturized"
+    ]
+
+    private let structuralWindowNotifications: Set<String> = [
+        "AXFocusedWindowChanged",
+        "AXWindowCreated",
+        "AXUIElementDestroyed",
+        "AXWindowMiniaturized",
+        "AXWindowDeminiaturized"
     ]
 
     func start(onChange: @escaping (String) -> Void) {
@@ -181,9 +193,14 @@ final class QishuiAXChangeMonitor {
 
     fileprivate func handleAXNotification(_ notification: String) {
         debounceWorkItem?.cancel()
+        let shouldReattach = structuralWindowNotifications.contains(notification)
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                self?.onChange?(notification)
+                guard let self else { return }
+                if shouldReattach {
+                    self.refreshObservedTargets(force: true)
+                }
+                self.onChange?(notification)
             }
         }
         debounceWorkItem = workItem

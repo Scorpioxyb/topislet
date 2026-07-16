@@ -522,6 +522,10 @@ struct MusicState: Equatable {
     var duration: TimeInterval? = nil
     var canSeek: Bool = false
     var isPlaybackPending: Bool = false
+    var canPlayPause: Bool = true
+    var canPreviousTrack: Bool = true
+    var canNextTrack: Bool = true
+    var controlUnavailableReason: String? = nil
     var hasCurrentTrack: Bool
 }
 
@@ -1022,6 +1026,7 @@ final class IslandModel: ObservableObject {
     }
 
     func playPause() {
+        guard music.canPlayPause else { return }
         noteDirectControlInteraction()
         playPauseFeedbackGeneration &+= 1
         let previousSignature = musicSignature(music)
@@ -1049,6 +1054,7 @@ final class IslandModel: ObservableObject {
     }
 
     func nextTrack() {
+        guard music.canNextTrack else { return }
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
@@ -1093,6 +1099,7 @@ final class IslandModel: ObservableObject {
     }
 
     func previousTrack() {
+        guard music.canPreviousTrack else { return }
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
@@ -1830,6 +1837,10 @@ final class IslandModel: ObservableObject {
             var timelinePreservingUpdate = music
             timelinePreservingUpdate.isPlaying = reconciledMusic.isPlaying
             timelinePreservingUpdate.isPlaybackPending = reconciledMusic.isPlaybackPending
+            timelinePreservingUpdate.canPlayPause = reconciledMusic.canPlayPause
+            timelinePreservingUpdate.canPreviousTrack = reconciledMusic.canPreviousTrack
+            timelinePreservingUpdate.canNextTrack = reconciledMusic.canNextTrack
+            timelinePreservingUpdate.controlUnavailableReason = reconciledMusic.controlUnavailableReason
             timelinePreservingUpdate.hasCurrentTrack = reconciledMusic.hasCurrentTrack
             if timelinePreservingUpdate != music {
                 music = timelinePreservingUpdate
@@ -2009,6 +2020,10 @@ final class IslandModel: ObservableObject {
             || newMusic.duration != music.duration
             || newMusic.canSeek != music.canSeek
             || newMusic.isPlaybackPending != music.isPlaybackPending
+            || newMusic.canPlayPause != music.canPlayPause
+            || newMusic.canPreviousTrack != music.canPreviousTrack
+            || newMusic.canNextTrack != music.canNextTrack
+            || newMusic.controlUnavailableReason != music.controlUnavailableReason
             || newMusic.hasCurrentTrack != music.hasCurrentTrack {
             lastMusicProgressPublishAt = Date()
             return true
@@ -2966,6 +2981,17 @@ private struct MusicSettingsPane: View {
         }
     }
 
+    private var availableControlText: String {
+        let controls = [
+            model.music.canPlayPause ? "播放暂停" : nil,
+            model.music.canPreviousTrack ? "上一首" : nil,
+            model.music.canNextTrack ? "下一首" : nil
+        ].compactMap { $0 }
+        return controls.isEmpty
+            ? model.music.controlUnavailableReason ?? "不可用"
+            : controls.joined(separator: "、")
+    }
+
     private var diagnosticText: String {
         [
             "track=\(model.music.track.title) - \(model.music.track.artist)",
@@ -2976,6 +3002,10 @@ private struct MusicSettingsPane: View {
             "elapsedTime=\(model.music.elapsedTime.map { String(format: "%.3f", $0) } ?? "nil")",
             "duration=\(model.music.duration.map { String(format: "%.3f", $0) } ?? "nil")",
             "canSeek=\(model.music.canSeek)",
+            "canPlayPause=\(model.music.canPlayPause)",
+            "canPreviousTrack=\(model.music.canPreviousTrack)",
+            "canNextTrack=\(model.music.canNextTrack)",
+            "controlUnavailableReason=\(model.music.controlUnavailableReason ?? "nil")",
             "pending=\(model.music.isPlaybackPending)",
             "artworkBytes=\(model.music.track.artworkData?.count ?? 0)",
             "artworkURL=\(model.music.track.artworkURL?.absoluteString ?? "nil")",
@@ -3079,6 +3109,7 @@ private struct MusicSettingsPane: View {
                 LabeledContent("最近更新", value: musicStatusAgeText(model.musicSourceStatus.checkedAt))
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
                 LabeledContent("封面状态", value: artworkStatusText)
+                LabeledContent("可用控制", value: availableControlText)
                 LabeledContent(
                     "控制策略",
                     value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
@@ -3956,7 +3987,12 @@ struct ExpandedMusic: View {
                     ) {
                         model.previousTrack()
                     }
-                    .help("上一首")
+                    .disabled(!model.music.canPreviousTrack)
+                    .help(
+                        model.music.canPreviousTrack
+                            ? "上一首"
+                            : model.music.controlUnavailableReason ?? "上一首当前不可用"
+                    )
 
                     ControlButton(
                         icon: model.music.isPlaying ? "pause.fill" : "play.fill",
@@ -3965,7 +4001,12 @@ struct ExpandedMusic: View {
                     ) {
                         model.playPause()
                     }
-                    .help(model.music.isPlaying ? "暂停" : "播放")
+                    .disabled(!model.music.canPlayPause)
+                    .help(
+                        model.music.canPlayPause
+                            ? (model.music.isPlaying ? "暂停" : "播放")
+                            : model.music.controlUnavailableReason ?? "播放控制当前不可用"
+                    )
 
                     ControlButton(
                         icon: "forward.fill",
@@ -3975,7 +4016,12 @@ struct ExpandedMusic: View {
                     ) {
                         model.nextTrack()
                     }
-                    .help("下一首")
+                    .disabled(!model.music.canNextTrack)
+                    .help(
+                        model.music.canNextTrack
+                            ? "下一首"
+                            : model.music.controlUnavailableReason ?? "下一首当前不可用"
+                    )
                 }
                 .frame(width: 224, alignment: .center)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4279,6 +4325,7 @@ struct ControlButton: View {
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
     @State private var feedbackPulse = false
     @State private var feedbackTask: Task<Void, Never>?
 
@@ -4307,6 +4354,7 @@ struct ControlButton: View {
             )
         }
         .buttonStyle(IslandControlButtonStyle())
+        .opacity(isEnabled ? 1 : 0.38)
         .animation(
             reduceMotion
                 ? .easeOut(duration: 0.08)
