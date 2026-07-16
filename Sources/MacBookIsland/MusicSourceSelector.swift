@@ -55,6 +55,9 @@ struct MusicSourceSelection: Equatable, Sendable {
 }
 
 final class MusicSourceSelector {
+    static let qishuiSwitchDelay: TimeInterval = 0.2
+    static let appleMusicSwitchDelay: TimeInterval = 0.4
+
     private(set) var selection = MusicSourceSelection(source: nil, generation: 0)
     private var pendingSource: MusicSourceID?
     private var pendingSince: Date?
@@ -96,7 +99,9 @@ final class MusicSourceSelector {
             pendingSince = now
             return selection
         }
-        let delay: TimeInterval = preferred == .qishui ? 0.25 : 0.8
+        let delay = preferred == .qishui
+            ? Self.qishuiSwitchDelay
+            : Self.appleMusicSwitchDelay
         guard let pendingSince,
               now.timeIntervalSince(pendingSince) >= delay else {
             return selection

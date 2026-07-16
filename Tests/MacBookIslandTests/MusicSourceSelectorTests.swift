@@ -47,10 +47,53 @@ func appleMusicRequiresStablePlaybackBeforeSwitch() {
     let committed = selector.update(
         qishui: candidate(.qishui, playback: .paused),
         appleMusic: candidate(.appleMusic, playback: .playing),
-        at: startedAt.addingTimeInterval(0.95)
+        at: startedAt.addingTimeInterval(
+            0.11 + MusicSourceSelector.appleMusicSwitchDelay
+        )
     )
 
     #expect(pending.source == .qishui)
+    #expect(committed.source == .appleMusic)
+}
+
+@Test("双来源快速抖动不会切换且稳定播放在一个 tick 内提交")
+func rapidSourceFlappingDoesNotChangeSelection() {
+    let selector = MusicSourceSelector()
+    let startedAt = Date(timeIntervalSince1970: 200)
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .paused),
+        at: startedAt
+    )
+
+    for index in 1...100 {
+        let appleMusicIsPlaying = index.isMultiple(of: 2)
+        let selection = selector.update(
+            qishui: candidate(
+                .qishui,
+                playback: appleMusicIsPlaying ? .paused : .playing
+            ),
+            appleMusic: candidate(
+                .appleMusic,
+                playback: appleMusicIsPlaying ? .playing : .paused
+            ),
+            at: startedAt.addingTimeInterval(Double(index) * 0.05)
+        )
+        #expect(selection.source == .qishui)
+    }
+
+    let stableStartedAt = startedAt.addingTimeInterval(5.1)
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        at: stableStartedAt
+    )
+    let committed = selector.update(
+        qishui: candidate(.qishui, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        at: stableStartedAt.addingTimeInterval(0.5)
+    )
+
     #expect(committed.source == .appleMusic)
 }
 
