@@ -731,6 +731,14 @@ final class IslandModel: ObservableObject {
     @Published var eventKitStatus = EventKitActivityStatus.current
     @Published var isVisible = true
 
+    var appleMusicTransitionDiagnostic: String {
+        musicAdapter.appleMusicTransitionReport()
+    }
+
+    var latestAppleMusicTransitionDiagnostic: String {
+        musicAdapter.latestAppleMusicTransitionReport()
+    }
+
     private let musicAdapter = MusicAdapterCoordinator()
     private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
@@ -1825,6 +1833,7 @@ final class IslandModel: ObservableObject {
             timelinePreservingUpdate.hasCurrentTrack = reconciledMusic.hasCurrentTrack
             if timelinePreservingUpdate != music {
                 music = timelinePreservingUpdate
+                musicAdapter.noteMusicUIPublished(timelinePreservingUpdate)
             }
             if let newStatus,
                shouldPublishMusicStatus(newStatus) {
@@ -1835,6 +1844,7 @@ final class IslandModel: ObservableObject {
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
+            musicAdapter.noteMusicUIPublished(reconciledMusic)
             if becameAvailable {
                 autoCompactOnNextMusicTrack = false
             }
@@ -2970,7 +2980,9 @@ private struct MusicSettingsPane: View {
             "artworkBytes=\(model.music.track.artworkData?.count ?? 0)",
             "artworkURL=\(model.music.track.artworkURL?.absoluteString ?? "nil")",
             "checkedAt=\(model.musicSourceStatus.checkedAt.ISO8601Format())",
-            "detail=\(model.musicSourceStatus.detail)"
+            "detail=\(model.musicSourceStatus.detail)",
+            "appleMusicTimeline:",
+            model.appleMusicTransitionDiagnostic
         ].joined(separator: "\n")
     }
 
@@ -3093,6 +3105,12 @@ private struct MusicSettingsPane: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Text(model.latestAppleMusicTransitionDiagnostic)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
 
                     Button("复制诊断信息") {
                         let pasteboard = NSPasteboard.general

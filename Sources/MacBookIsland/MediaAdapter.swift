@@ -265,7 +265,10 @@ struct AppleMusicPlaybackControlExpectation: Equatable {
 @MainActor
 final class MusicAdapterCoordinator {
     private let qishuiAdapter = QishuiAdapter()
-    private let appleMusicAdapter = AppleMusicAppAdapter()
+    private let appleMusicTransitionTimeline = AppleMusicTransitionTimeline()
+    private lazy var appleMusicAdapter = AppleMusicAppAdapter(
+        transitionTimeline: appleMusicTransitionTimeline
+    )
     private let musicSourceSelector = MusicSourceSelector()
     private let qishuiAXChangeMonitor = QishuiAXChangeMonitor()
     private let qishuiSemanticAXController = QishuiSemanticAXController()
@@ -308,6 +311,7 @@ final class MusicAdapterCoordinator {
     private var appleMusicControlGeneration: UInt64 = 0
     private var pendingAppleMusicPlaybackControl: AppleMusicPlaybackControlExpectation?
     private var appleMusicPlaybackExpectationTask: Task<Void, Never>?
+    private var lastAppleMusicUIPublishFingerprint: String?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -597,6 +601,10 @@ final class MusicAdapterCoordinator {
         let controlGeneration = appleMusicControlGeneration
         let controlIssuedAt = Date()
         lastAppleMusicControlAt = controlIssuedAt
+        appleMusicTransitionTimeline.beginControl(
+            command: command.label,
+            baseline: "\(track.title) - \(track.artist ?? "")"
+        )
         clearAppleMusicPlaybackControlExpectation()
         let resolvedAction: MusicControlAction
         if controlKind == .playPause,
@@ -631,6 +639,19 @@ final class MusicAdapterCoordinator {
             action: resolvedAction
         )
         let result = await appleMusicAdapter.perform(request)
+        let dispositionLabel: String
+        switch result.disposition {
+        case .accepted:
+            dispositionLabel = "accepted"
+        case .rejected:
+            dispositionLabel = "rejected"
+        case .failed:
+            dispositionLabel = "failed"
+        }
+        appleMusicTransitionTimeline.record(
+            .controlCompleted,
+            detail: "command=\(command.label) disposition=\(dispositionLabel)"
+        )
         let succeeded = result.disposition == .accepted
         guard controlGeneration == appleMusicControlGeneration else {
             return MusicControlOutcome(
@@ -774,6 +795,35 @@ final class MusicAdapterCoordinator {
 
     func currentState() -> MusicState {
         selectedMusicUpdate().music
+    }
+
+    func appleMusicTransitionReport() -> String {
+        appleMusicTransitionTimeline.report()
+    }
+
+    func latestAppleMusicTransitionReport() -> String {
+        appleMusicTransitionTimeline.latestReport()
+    }
+
+    func noteMusicUIPublished(_ state: MusicState) {
+        guard state.track.sourceBundleIdentifier
+            == MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier else {
+            lastAppleMusicUIPublishFingerprint = nil
+            return
+        }
+        let artworkBytes = state.track.artworkData?.count ?? 0
+        let fingerprint = [
+            state.track.title,
+            state.track.artist,
+            String(artworkBytes),
+            String(state.isPlaying)
+        ].joined(separator: "\u{1f}")
+        guard fingerprint != lastAppleMusicUIPublishFingerprint else { return }
+        lastAppleMusicUIPublishFingerprint = fingerprint
+        appleMusicTransitionTimeline.record(
+            .uiPublished,
+            detail: "track=\(state.track.title) artist=\(state.track.artist) artworkBytes=\(artworkBytes) isPlaying=\(state.isPlaying)"
+        )
     }
 
     func refreshPlaybackPositionNow() -> (music: MusicState, status: MusicSourceStatus) {
@@ -1390,17 +1440,29 @@ final class MusicAdapterCoordinator {
     private func applyAppleMusicSnapshotIfNewer(_ snapshot: MusicAppSnapshot) {
         if let current = latestAppleMusicSnapshot,
            current.checkedAt > snapshot.checkedAt {
+            appleMusicTransitionTimeline.record(
+                .snapshotRejected,
+                detail: "reason=older checkedAt=\(snapshot.checkedAt.ISO8601Format())"
+            )
             return
         }
         if let expectation = pendingAppleMusicPlaybackControl {
             switch expectation.resolution(for: snapshot, at: Date()) {
             case .reject:
+                appleMusicTransitionTimeline.record(
+                    .snapshotRejected,
+                    detail: "reason=playback-expectation track=\(snapshot.track?.title ?? "")"
+                )
                 return
             case .acceptAndClear:
                 clearAppleMusicPlaybackControlExpectation()
             }
         }
         latestAppleMusicSnapshot = snapshot
+        appleMusicTransitionTimeline.record(
+            .snapshotApplied,
+            detail: "source=authoritative track=\(snapshot.track?.title ?? "") artist=\(snapshot.track?.artist ?? "") artworkBytes=\(snapshot.track?.artworkData?.count ?? 0) revision=\(snapshot.revision)"
+        )
     }
 
     private func beginAppleMusicPlaybackControlExpectation(
@@ -1473,6 +1535,10 @@ final class MusicAdapterCoordinator {
             provenance: current.provenance,
             checkedAt: current.checkedAt,
             diagnostic: snapshot.diagnostic
+        )
+        appleMusicTransitionTimeline.record(
+            .snapshotApplied,
+            detail: "source=cached-artwork track=\(currentTrack.title) artist=\(currentTrack.artist ?? "") artworkBytes=\(artworkData.count) revision=\(max(current.revision, snapshot.revision))"
         )
     }
 
