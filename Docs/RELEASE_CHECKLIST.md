@@ -98,3 +98,4 @@ SIGN_IDENTITY="Developer ID Application: <Team> (<TEAM_ID>)"
 
 - [ ] 日历和提醒事项授权、撤权、关闭开关及大日历库回归。
 - [ ] Apple Music 多账号、电台和网络封面回退的长期稳定性回归。
+  - [x] build 18 当前账号扩展样本通过：普通歌曲、播放 / 暂停、跨专辑封面、电台精确目录回退和汽水来源优先级，见 [`Docs/acceptance/2026-07-17-apple-music-alpha-extended.md`](acceptance/2026-07-17-apple-music-alpha-extended.md)。
