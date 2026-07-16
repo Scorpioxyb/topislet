@@ -481,6 +481,33 @@ private func appleMusicPlaybackSnapshot(
     )
 }
 
+private func degradedAppleMusicSnapshot(
+    matching snapshot: MusicAppSnapshot,
+    processIdentifier: pid_t? = nil,
+    checkedAt: Date
+) -> MusicAppSnapshot {
+    let instance = snapshot.instance.map {
+        MusicAppInstance(
+            app: $0.app,
+            processIdentifier: processIdentifier ?? $0.processIdentifier,
+            launchedAt: $0.launchedAt
+        )
+    }
+    return MusicAppSnapshot(
+        descriptor: snapshot.descriptor,
+        instance: instance,
+        availability: .degraded(reason: "track changed during read"),
+        track: nil,
+        playbackState: .unknown,
+        timeline: nil,
+        controls: .none,
+        revision: snapshot.revision,
+        provenance: snapshot.provenance,
+        checkedAt: checkedAt,
+        diagnostic: "409"
+    )
+}
+
 @Test("Apple Music 轮询失败会指数退避")
 func appleMusicRefreshPolicyBacksOffFailures() {
     #expect(AppleMusicRefreshPolicy.interval(
@@ -495,6 +522,62 @@ func appleMusicRefreshPolicyBacksOffFailures() {
         recentlyControlled: false,
         consecutiveFailures: 4
     ) == 20)
+}
+
+@Test("Apple Music 同一进程瞬时失败使用有界短重试")
+func appleMusicTransientRefreshUsesBoundedRetry() {
+    let current = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let degraded = degradedAppleMusicSnapshot(
+        matching: current,
+        checkedAt: Date(timeIntervalSince1970: 1_001)
+    )
+
+    let delays = AppleMusicTransientRefreshPolicy.retryDelays.indices.map {
+        AppleMusicTransientRefreshPolicy.retryDelay(
+            preserving: current,
+            after: degraded,
+            attempt: $0
+        )
+    }
+    #expect(delays == [0.25, 0.6, 1.2, 2.4])
+    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
+        preserving: current,
+        after: degraded,
+        attempt: AppleMusicTransientRefreshPolicy.retryDelays.count
+    ) == nil)
+
+    let otherInstance = degradedAppleMusicSnapshot(
+        matching: current,
+        processIdentifier: 43,
+        checkedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
+        preserving: current,
+        after: otherInstance,
+        attempt: 0
+    ) == nil)
+
+    let permissionRequired = MusicAppSnapshot(
+        descriptor: degraded.descriptor,
+        instance: degraded.instance,
+        availability: .permissionRequired(permission: "自动化 - Apple Music"),
+        track: nil,
+        playbackState: .unknown,
+        timeline: nil,
+        controls: .none,
+        revision: degraded.revision,
+        provenance: degraded.provenance,
+        checkedAt: degraded.checkedAt,
+        diagnostic: "permission revoked"
+    )
+    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
+        preserving: current,
+        after: permissionRequired,
+        attempt: 0
+    ) == nil)
 }
 
 @Test("Apple Music 停止状态不伪造歌曲和进度")
