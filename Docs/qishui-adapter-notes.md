@@ -36,6 +36,7 @@
 - 2026-07-09 进度条修正：AX 窗口树会同时暴露当前播放、列表项、旧歌和其他区域的多个 `mm:ss / mm:ss` 文本，不能作为可信进度来源。当前主进度只认 MediaRemote Adapter 的 `elapsedTime/duration`；当媒体焦点被抢走但仍保留最近可信汽水快照时，按最近可信播放态本地推进进度。AX fallback 的 `progress=unavailable` 是刻意降级，避免显示假进度。
 - 2026-07-13 汽水 2.9.1 进度轨道可写性复核：底部播放器栏的轨道、已播放宽度和滑块外观均只暴露为 `AXGroup`，`AXValue` 实测为只读，且没有 `AXSlider`、`AXMinValue`、`AXMaxValue` 或增减动作。`QishuiProbe --settable-attributes` 可输出这些属性的可写性；在出现唯一、可写、可回读确认的汽水专属控件前，产品继续禁用 seek。
 - 2026-07-16 继续验证 `MRMediaRemoteGetNowPlayingPlayerForClient` + `MRMediaRemoteSendCommandToPlayer`：汽水 client 明确声明 `SeekToPlaybackPosition (24)`，且能解析出 `com.soda.music` PID `19785` 的 `default` player path；但 QuickTime 实际播放时，从 `5.0s` 跳到 `12.03s`，汽水仍停在 `3.23s`。因此 player-path API 在 macOS 26.5.2 上仍受系统媒体焦点路由，不能作为汽水专属 seek。试验后已关闭 QuickTime 测试文档并恢复汽水原暂停状态。
+- 2026-07-16 完成无 AX 窗口控制调查：汽水 2.9.1 主窗口关闭后进程与专属状态流仍在，但 AX 只剩菜单栏，`AXWindows=count:0`、扫描 2 个节点且无控制候选。应用菜单仅有“显示汽水音乐”，Dock 菜单没有播放命令；`Info.plist` 没有公开 URL 类型，应用没有 AppleScript 字典，也没有外部可连接的本地 IPC。直接按压“显示汽水音乐”、`open -g -b com.soda.music` 以及先隐藏再显示都会强制激活汽水，因此不满足零前台切换门禁。当前产品继续安全拒绝，并在诊断中提示用户保留可见或最小化主窗口；详见 `Docs/acceptance/2026-07-16-qishui-windowless-control-investigation.md`。
 
 ## 架构含义
 

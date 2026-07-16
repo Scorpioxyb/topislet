@@ -159,9 +159,17 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
         guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
-            let detail = discovery.matches.isEmpty
-                ? "扫描 \(discovery.scanned) 个汽水辅助功能节点后未找到唯一播放控制组；为避免误操作，未发送\(command.label)。"
-                : "发现 \(discovery.matches.count) 个候选播放控制组；为避免误操作，未发送\(command.label)。"
+            let standardWindowCount = standardWindows(
+                processIdentifier: processIdentifier
+            ).count
+            let detail: String
+            if discovery.matches.isEmpty, standardWindowCount == 0 {
+                detail = "汽水主窗口已关闭，当前没有可验证的播放控件；请先显示或最小化汽水窗口。为避免激活汽水或误控其他媒体，未发送\(command.label)。"
+            } else if discovery.matches.isEmpty {
+                detail = "扫描 \(discovery.scanned) 个汽水辅助功能节点后未找到唯一播放控制组；为避免误操作，未发送\(command.label)。"
+            } else {
+                detail = "发现 \(discovery.matches.count) 个候选播放控制组；为避免误操作，未发送\(command.label)。"
+            }
             return QishuiSemanticAXControlResult(didPress: false, diagnostic: detail)
         }
 
