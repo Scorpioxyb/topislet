@@ -17,6 +17,7 @@ App 版本：`0.1.1 (18)`
 - [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
 - [x] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令，并完成逐字节重建验证。
 - [x] build 17 完成 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收；build 18 仅包含已验收源码、版本与发布材料更新。
+- [x] 从公开 `v0.1.1-alpha.4` Release 重新下载并安装 build 18，完成发布后验收并记录于 [`Docs/acceptance/2026-07-16-v0.1.1-alpha.4-post-release.md`](acceptance/2026-07-16-v0.1.1-alpha.4-post-release.md)。
 - [x] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
   - [x] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
