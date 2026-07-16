@@ -278,6 +278,7 @@ final class MusicAdapterCoordinator {
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
+    private var latestQishuiControlAvailability: QishuiControlAvailability = .unknown
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastSourceRefreshAt: Date?
     private var lastPlaybackPositionRefreshAt: Date?
@@ -285,6 +286,7 @@ final class MusicAdapterCoordinator {
     private var pendingPlaybackTimeoutTask: Task<Void, Never>?
     private var nextPlaybackOperationID = 0
     private var controlGeneration = 0
+    private var qishuiControlAvailabilityGeneration: UInt64 = 0
     private var lastTrackControlStartedAt: Date?
     private var playbackTimelineFloor: PlaybackTimelineFloor?
     private var cachedPlaybackOverride: CachedPlaybackOverride?
@@ -326,6 +328,10 @@ final class MusicAdapterCoordinator {
             isPlaying: false,
             progress: 0,
             lyricIndex: 0,
+            canPlayPause: false,
+            canPreviousTrack: false,
+            canNextTrack: false,
+            controlUnavailableReason: "正在等待汽水音乐。",
             hasCurrentTrack: false
         )
     }
@@ -343,8 +349,10 @@ final class MusicAdapterCoordinator {
         }
         qishuiAXChangeMonitor.start { [weak self] _ in
             guard let self else { return }
+            self.scheduleQishuiControlAvailabilityRefresh()
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
         }
+        scheduleQishuiControlAvailabilityRefresh()
         reconcileForegroundMusicSource()
         schedulePlaybackPositionRefresh()
     }
@@ -414,6 +422,9 @@ final class MusicAdapterCoordinator {
             isPlaying: false,
             progress: 0,
             lyricIndex: 0,
+            canPlayPause: false,
+            canPreviousTrack: false,
+            canNextTrack: false,
             hasCurrentTrack: false
         )
     }
@@ -424,6 +435,9 @@ final class MusicAdapterCoordinator {
             isPlaying: false,
             progress: 0,
             lyricIndex: 0,
+            canPlayPause: false,
+            canPreviousTrack: false,
+            canNextTrack: false,
             hasCurrentTrack: false
         )
     }
@@ -483,6 +497,28 @@ final class MusicAdapterCoordinator {
             ).first?.processIdentifier
         guard let targetProcessIdentifier else {
             markQishuiNotRunning()
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        }
+
+        let controlAvailability = await probeQishuiControlAvailability(
+            processIdentifier: targetProcessIdentifier
+        )
+        guard controlAttemptGeneration == controlGeneration else {
+            return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        }
+        latestQishuiControlAvailability = controlAvailability
+        guard controlAvailability.allowsControl else {
+            cachedStatus = MusicSourceStatus(
+                sourceName: "汽水音乐",
+                availability: controlAvailability == .accessibilityRequired
+                    ? .accessibilityRequired
+                    : .qishuiMediaRemoteCached,
+                headline: "当前无法执行\(command.label)",
+                detail: controlAvailability.unavailableReason
+                    ?? "汽水播放控件当前不可用。",
+                checkedAt: Date()
+            )
+            publishCurrentState()
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
@@ -749,6 +785,20 @@ final class MusicAdapterCoordinator {
         }
     }
 
+    private func probeQishuiControlAvailability(
+        processIdentifier: pid_t
+    ) async -> QishuiControlAvailability {
+        await withCheckedContinuation { continuation in
+            qishuiControlQueue.async {
+                continuation.resume(returning:
+                    QishuiSemanticAXController.controlAvailability(
+                        processIdentifier: processIdentifier
+                    )
+                )
+            }
+        }
+    }
+
     private func synchronizeAfterQueuedTrackControl(
         generation: Int
     ) async -> Bool {
@@ -991,6 +1041,40 @@ final class MusicAdapterCoordinator {
         qishuiSemanticAXController.invalidateCache()
     }
 
+    private func scheduleQishuiControlAvailabilityRefresh() {
+        qishuiControlAvailabilityGeneration &+= 1
+        let generation = qishuiControlAvailabilityGeneration
+        guard let processIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+        ).first(where: { !$0.isTerminated })?.processIdentifier else {
+            guard latestQishuiControlAvailability != .notRunning else { return }
+            latestQishuiControlAvailability = .notRunning
+            publishCurrentState()
+            return
+        }
+
+        qishuiControlQueue.async {
+            let availability = QishuiSemanticAXController.controlAvailability(
+                processIdentifier: processIdentifier
+            )
+            Task { @MainActor [weak self] in
+                guard let self,
+                      generation == self.qishuiControlAvailabilityGeneration,
+                      NSRunningApplication.runningApplications(
+                        withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+                      ).contains(where: {
+                          !$0.isTerminated
+                              && $0.processIdentifier == processIdentifier
+                      }),
+                      availability != self.latestQishuiControlAvailability else {
+                    return
+                }
+                self.latestQishuiControlAvailability = availability
+                self.publishCurrentState()
+            }
+        }
+    }
+
     private func refreshFromRealtimeSignal(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
         guard !realtimeRefreshInFlight else {
             realtimeRefreshQueued = true
@@ -1046,6 +1130,7 @@ final class MusicAdapterCoordinator {
                 lastCachedOverrideRefreshAttemptAt = Date()
                 let directSnapshot = qishuiAdapter.snapshot()
                 latestQishuiSnapshot = directSnapshot
+                latestQishuiControlAvailability = directSnapshot.controlAvailability
                 if let directTrack = directSnapshot.currentTrack {
                     updateQishuiPlaybackInference(track: directTrack, checkedAt: directSnapshot.checkedAt)
                     if pendingPlaybackOperation == nil
@@ -1085,6 +1170,7 @@ final class MusicAdapterCoordinator {
         _ snapshot: QishuiDirectSnapshot
     ) -> MusicSourceStatus {
         latestQishuiSnapshot = snapshot
+        latestQishuiControlAvailability = snapshot.controlAvailability
         lastSourceRefreshAt = snapshot.checkedAt
 
         guard snapshot.isRunning else {
@@ -1207,6 +1293,7 @@ final class MusicAdapterCoordinator {
                     self.lastSourceRefreshAt = nil
                     self.qishuiAdapter.invalidateAXCache()
                     self.qishuiSemanticAXController.invalidateCache()
+                    self.scheduleQishuiControlAvailabilityRefresh()
                 case .appleMusic:
                     self.lastAppleMusicRefreshCompletedAt = nil
                     self.appleMusicConsecutiveRefreshFailures = 0
@@ -1276,8 +1363,10 @@ final class MusicAdapterCoordinator {
 
     private func markQishuiNotRunning(checkedAt: Date = Date()) {
         controlGeneration += 1
+        qishuiControlAvailabilityGeneration &+= 1
         latestMediaRemoteSnapshot = nil
         latestQishuiSnapshot = nil
+        latestQishuiControlAvailability = .notRunning
         lastSourceRefreshAt = checkedAt
         lastPlaybackPositionRefreshAt = nil
         lastTrackControlStartedAt = nil
@@ -1805,6 +1894,10 @@ final class MusicAdapterCoordinator {
             duration: duration,
             canSeek: snapshot.controls.supports(.absoluteSeek),
             isPlaybackPending: false,
+            canPlayPause: snapshot.controls.supports(.playPause),
+            canPreviousTrack: snapshot.controls.supports(.previousTrack),
+            canNextTrack: snapshot.controls.supports(.nextTrack),
+            controlUnavailableReason: "Apple Music 当前没有提供这个控制。",
             hasCurrentTrack: true
         )
     }
@@ -1831,6 +1924,10 @@ final class MusicAdapterCoordinator {
             duration: nil,
             canSeek: false,
             isPlaybackPending: false,
+            canPlayPause: false,
+            canPreviousTrack: false,
+            canNextTrack: false,
+            controlUnavailableReason: "Apple Music 当前没有可控制的歌曲。",
             hasCurrentTrack: false
         )
     }
@@ -1896,6 +1993,8 @@ final class MusicAdapterCoordinator {
 
     private func currentQishuiMusicState() -> MusicState {
         let statusLine = fallbackStatusLine(for: cachedStatus.availability)
+        let controlsAvailable = latestQishuiControlAvailability.allowsControl
+        let controlUnavailableReason = latestQishuiControlAvailability.unavailableReason
         if let snapshot = latestMediaRemoteSnapshot,
            let track = snapshot.currentTrack {
             let isCachedMediaFocus = cachedStatus.availability == .qishuiMediaRemoteCached
@@ -1918,6 +2017,10 @@ final class MusicAdapterCoordinator {
                     && !isCachedMediaFocus
                     && (effectiveTrack.duration.map { $0 > 0 } ?? false),
                 isPlaybackPending: pendingPlaybackOperation != nil,
+                canPlayPause: controlsAvailable,
+                canPreviousTrack: controlsAvailable,
+                canNextTrack: controlsAvailable,
+                controlUnavailableReason: controlUnavailableReason,
                 hasCurrentTrack: true
             )
         }
@@ -1936,6 +2039,10 @@ final class MusicAdapterCoordinator {
                 duration: nil,
                 canSeek: false,
                 isPlaybackPending: pendingPlaybackOperation != nil,
+                canPlayPause: controlsAvailable,
+                canPreviousTrack: controlsAvailable,
+                canNextTrack: controlsAvailable,
+                controlUnavailableReason: controlUnavailableReason,
                 hasCurrentTrack: true
             )
         }
@@ -1950,6 +2057,10 @@ final class MusicAdapterCoordinator {
             duration: nil,
             canSeek: false,
             isPlaybackPending: pendingPlaybackOperation != nil,
+            canPlayPause: controlsAvailable,
+            canPreviousTrack: controlsAvailable,
+            canNextTrack: controlsAvailable,
+            controlUnavailableReason: controlUnavailableReason,
             hasCurrentTrack: false
         )
     }

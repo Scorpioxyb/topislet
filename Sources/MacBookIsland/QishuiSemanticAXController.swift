@@ -3,6 +3,31 @@ import ApplicationServices
 import Darwin
 import Foundation
 
+enum QishuiControlAvailability: Equatable, Sendable {
+    case available
+    case windowClosed
+    case accessibilityRequired
+    case notRunning
+    case unknown
+
+    var allowsControl: Bool {
+        self == .available || self == .unknown
+    }
+
+    var unavailableReason: String? {
+        switch self {
+        case .available, .unknown:
+            return nil
+        case .windowClosed:
+            return "汽水主窗口已关闭；请先显示或最小化汽水窗口。"
+        case .accessibilityRequired:
+            return "顶屿需要辅助功能权限才能控制汽水音乐。"
+        case .notRunning:
+            return "汽水音乐当前未运行。"
+        }
+    }
+}
+
 struct QishuiSemanticAXControlResult: Sendable {
     let didPress: Bool
     let diagnostic: String
@@ -159,14 +184,14 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
         guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
-            let standardWindowCount = standardWindows(
+            let controlAvailability = Self.controlAvailability(
                 processIdentifier: processIdentifier
-            ).count
+            )
             let detail: String
-            if discovery.matches.isEmpty, standardWindowCount == 0 {
+            if discovery.matches.isEmpty, controlAvailability == .windowClosed {
                 detail = "汽水主窗口已关闭，当前没有可验证的播放控件；请先显示或最小化汽水窗口。为避免激活汽水或误控其他媒体，未发送\(command.label)。"
             } else if discovery.matches.isEmpty {
-                detail = "扫描 \(discovery.scanned) 个汽水辅助功能节点后未找到唯一播放控制组；为避免误操作，未发送\(command.label)。"
+                detail = "汽水窗口仍存在，但扫描 \(discovery.scanned) 个辅助功能节点后未找到唯一播放控制组；汽水辅助功能树可能暂不可用。为避免误操作，未发送\(command.label)。"
             } else {
                 detail = "发现 \(discovery.matches.count) 个候选播放控制组；为避免误操作，未发送\(command.label)。"
             }
@@ -305,6 +330,78 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         isMinimized: Bool
     ) -> Bool {
         standardWindowCount == 1 && isMinimized
+    }
+
+    static func resolveControlAvailability(
+        isRunning: Bool,
+        accessibilityTrusted: Bool,
+        windowReadSucceeded: Bool,
+        reportedWindowCount: Int,
+        standardWindowCount: Int
+    ) -> QishuiControlAvailability {
+        guard isRunning else { return .notRunning }
+        guard accessibilityTrusted else { return .accessibilityRequired }
+        guard windowReadSucceeded else { return .unknown }
+        guard reportedWindowCount > 0 else { return .windowClosed }
+        return standardWindowCount > 0 ? .available : .unknown
+    }
+
+    static func controlAvailability(
+        processIdentifier expectedProcessIdentifier: pid_t?
+    ) -> QishuiControlAvailability {
+        let runningApplications = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.soda.music"
+        )
+        guard let processIdentifier = expectedProcessIdentifier,
+              runningApplications.contains(where: {
+                  !$0.isTerminated && $0.processIdentifier == processIdentifier
+              }) else {
+            return .notRunning
+        }
+        guard AXIsProcessTrusted() else { return .accessibilityRequired }
+
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.08)
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            application,
+            kAXWindowsAttribute as CFString,
+            &value
+        )
+        guard result == .success, let values = value as? [Any] else {
+            return .unknown
+        }
+
+        let standardWindowCount = values.reduce(into: 0) { count, value in
+            guard CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else {
+                return
+            }
+            let window = value as! AXUIElement
+            var roleValue: CFTypeRef?
+            var subroleValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                window,
+                kAXRoleAttribute as CFString,
+                &roleValue
+            ) == .success,
+            AXUIElementCopyAttributeValue(
+                window,
+                kAXSubroleAttribute as CFString,
+                &subroleValue
+            ) == .success,
+            roleValue as? String == kAXWindowRole as String,
+            subroleValue as? String == kAXStandardWindowSubrole as String else {
+                return
+            }
+            count += 1
+        }
+        return resolveControlAvailability(
+            isRunning: true,
+            accessibilityTrusted: true,
+            windowReadSucceeded: true,
+            reportedWindowCount: values.count,
+            standardWindowCount: standardWindowCount
+        )
     }
 
     private func discoverControls(

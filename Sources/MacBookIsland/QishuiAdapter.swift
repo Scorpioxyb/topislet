@@ -14,6 +14,7 @@ struct QishuiDirectTrack: Equatable {
 struct QishuiDirectSnapshot: Equatable {
     let isRunning: Bool
     let processIdentifier: pid_t?
+    let controlAvailability: QishuiControlAvailability
     let supportRoot: URL
     let currentTrack: QishuiDirectTrack?
     let desktopLyricsEnabled: Bool?
@@ -47,6 +48,7 @@ final class QishuiAdapter {
             return QishuiDirectSnapshot(
                 isRunning: false,
                 processIdentifier: nil,
+                controlAvailability: .notRunning,
                 supportRoot: supportRoot,
                 currentTrack: nil,
                 desktopLyricsEnabled: nil,
@@ -62,12 +64,27 @@ final class QishuiAdapter {
             axReader.invalidateCache()
         }
 
-        let axResult = axReader.read(from: runningApp)
+        let controlAvailability = QishuiSemanticAXController.controlAvailability(
+            processIdentifier: runningApp.processIdentifier
+        )
+        let axResult: QishuiAXReadResult
+        if controlAvailability == .windowClosed {
+            axResult = QishuiAXReadResult(
+                track: nil,
+                requiresAccessibility: false,
+                diagnostic: "汽水主窗口已关闭，AX 播放控件当前不可用。",
+                scannedNodeCount: 0
+            )
+        } else {
+            axResult = axReader.read(from: runningApp)
+        }
         let currentTrack = axResult.track
 
         let diagnostic: String
         if let currentTrack, currentTrack.sourceName == "汽水窗口 AX" {
             diagnostic = "\(axResult.diagnostic) 扫描节点 \(axResult.scannedNodeCount) 个；为降低延迟，本轮未读取汽水本地缓存目录。"
+        } else if controlAvailability == .windowClosed {
+            diagnostic = "汽水主窗口已关闭；专属状态流可继续同步，但播放控制会保持禁用，直到窗口重新显示或最小化。"
         } else if axResult.requiresAccessibility {
             diagnostic = axResult.diagnostic
         } else if axResult.scannedNodeCount > 0 {
@@ -79,6 +96,7 @@ final class QishuiAdapter {
         return QishuiDirectSnapshot(
             isRunning: true,
             processIdentifier: runningApp.processIdentifier,
+            controlAvailability: controlAvailability,
             supportRoot: supportRoot,
             currentTrack: currentTrack,
             desktopLyricsEnabled: nil,
