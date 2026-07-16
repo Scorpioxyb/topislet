@@ -535,30 +535,35 @@ func appleMusicTransientRefreshUsesBoundedRetry() {
         checkedAt: Date(timeIntervalSince1970: 1_001)
     )
 
-    let delays = AppleMusicTransientRefreshPolicy.retryDelays.indices.map {
-        AppleMusicTransientRefreshPolicy.retryDelay(
-            preserving: current,
-            after: degraded,
+    let decisions = AppleMusicSnapshotAdmissionPolicy.retryDelays.indices.map {
+        AppleMusicSnapshotAdmissionPolicy.decision(
+            current: current,
+            candidate: degraded,
             attempt: $0
         )
     }
-    #expect(delays == [0.25, 0.6, 1.2, 2.4])
-    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
-        preserving: current,
-        after: degraded,
-        attempt: AppleMusicTransientRefreshPolicy.retryDelays.count
-    ) == nil)
+    #expect(decisions == [
+        .retry(after: 0.25),
+        .retry(after: 0.6),
+        .retry(after: 1.2),
+        .retry(after: 2.4)
+    ])
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: degraded,
+        attempt: AppleMusicSnapshotAdmissionPolicy.retryDelays.count
+    ) == .accept)
 
     let otherInstance = degradedAppleMusicSnapshot(
         matching: current,
         processIdentifier: 43,
         checkedAt: Date(timeIntervalSince1970: 1_001)
     )
-    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
-        preserving: current,
-        after: otherInstance,
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: otherInstance,
         attempt: 0
-    ) == nil)
+    ) == .accept)
 
     let permissionRequired = MusicAppSnapshot(
         descriptor: degraded.descriptor,
@@ -573,11 +578,21 @@ func appleMusicTransientRefreshUsesBoundedRetry() {
         checkedAt: degraded.checkedAt,
         diagnostic: "permission revoked"
     )
-    #expect(AppleMusicTransientRefreshPolicy.retryDelay(
-        preserving: current,
-        after: permissionRequired,
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: permissionRequired,
         attempt: 0
-    ) == nil)
+    ) == .accept)
+
+    let olderReady = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: Date(timeIntervalSince1970: 999)
+    )
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: olderReady,
+        attempt: 0
+    ) == .rejectOlder)
 }
 
 @Test("Apple Music 停止状态不伪造歌曲和进度")

@@ -190,22 +190,31 @@ enum AppleMusicRefreshPolicy {
     }
 }
 
-enum AppleMusicTransientRefreshPolicy {
+enum AppleMusicSnapshotAdmissionDecision: Equatable {
+    case accept
+    case rejectOlder
+    case retry(after: TimeInterval)
+}
+
+enum AppleMusicSnapshotAdmissionPolicy {
     static let retryDelays: [TimeInterval] = [0.25, 0.6, 1.2, 2.4]
 
-    static func retryDelay(
-        preserving current: MusicAppSnapshot?,
-        after candidate: MusicAppSnapshot,
+    static func decision(
+        current: MusicAppSnapshot?,
+        candidate: MusicAppSnapshot,
         attempt: Int
-    ) -> TimeInterval? {
-        guard retryDelays.indices.contains(attempt),
-              let current,
+    ) -> AppleMusicSnapshotAdmissionDecision {
+        if let current, current.checkedAt > candidate.checkedAt {
+            return .rejectOlder
+        }
+        guard let current,
+              retryDelays.indices.contains(attempt),
               case .ready = current.availability,
               current.instance == candidate.instance,
               case .degraded = candidate.availability else {
-            return nil
+            return .accept
         }
-        return retryDelays[attempt]
+        return .retry(after: retryDelays[attempt])
     }
 }
 
@@ -1054,11 +1063,18 @@ final class MusicAdapterCoordinator {
     ) async -> (music: MusicState, status: MusicSourceStatus) {
         if selectedMusicSource() == .appleMusic {
             let route = musicSourceSelector.selection
+            if let inFlightRefresh = appleMusicRefreshTask {
+                await inFlightRefresh.value
+                guard musicSourceSelector.selection == route else {
+                    return (selectedMusicState(), selectedMusicStatus())
+                }
+                return (selectedMusicState(), selectedMusicStatus())
+            }
             let snapshot = await appleMusicAdapter.snapshot(refresh: .timeline)
             guard musicSourceSelector.selection == route else {
                 return (selectedMusicState(), selectedMusicStatus())
             }
-            applyAppleMusicSnapshotIfNewer(snapshot)
+            _ = admitAppleMusicSnapshot(snapshot)
             return (selectedMusicState(), selectedMusicStatus())
         }
         if (forcePositionRefresh
@@ -1630,27 +1646,17 @@ final class MusicAdapterCoordinator {
             let snapshot = await self.appleMusicAdapter.snapshot(refresh: .metadata)
             guard !Task.isCancelled,
                   generation == self.appleMusicRefreshGeneration else { return }
-            if let retryDelay = AppleMusicTransientRefreshPolicy.retryDelay(
-                preserving: self.latestAppleMusicSnapshot,
-                after: snapshot,
-                attempt: self.appleMusicTransientRetryAttempt
-            ) {
+            let admission = self.admitAppleMusicSnapshot(snapshot)
+            if case .retryScheduled = admission {
                 self.lastAppleMusicRefreshCompletedAt = Date()
                 self.appleMusicConsecutiveRefreshFailures = min(
                     self.appleMusicConsecutiveRefreshFailures + 1,
                     3
                 )
                 self.appleMusicRefreshTask = nil
-                self.appleMusicTransitionTimeline.record(
-                    .snapshotRejected,
-                    detail: "reason=transient-degraded retryMs=\(Int(retryDelay * 1_000))"
-                )
                 self.appleMusicRefreshQueued = false
-                self.scheduleAppleMusicTransientRetry(after: retryDelay)
                 return
             }
-            self.cancelAppleMusicTransientRetry(resetAttempt: true)
-            self.applyAppleMusicSnapshotIfNewer(snapshot)
             self.lastAppleMusicRefreshCompletedAt = Date()
             if case .ready = snapshot.availability {
                 self.appleMusicConsecutiveRefreshFailures = 0
@@ -1691,14 +1697,36 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func applyAppleMusicSnapshotIfNewer(_ snapshot: MusicAppSnapshot) {
-        if let current = latestAppleMusicSnapshot,
-           current.checkedAt > snapshot.checkedAt {
+    private enum AppleMusicSnapshotAdmissionResult {
+        case applied
+        case rejected
+        case retryScheduled
+    }
+
+    @discardableResult
+    private func admitAppleMusicSnapshot(
+        _ snapshot: MusicAppSnapshot
+    ) -> AppleMusicSnapshotAdmissionResult {
+        switch AppleMusicSnapshotAdmissionPolicy.decision(
+            current: latestAppleMusicSnapshot,
+            candidate: snapshot,
+            attempt: appleMusicTransientRetryAttempt
+        ) {
+        case .rejectOlder:
             appleMusicTransitionTimeline.record(
                 .snapshotRejected,
                 detail: "reason=older checkedAt=\(snapshot.checkedAt.ISO8601Format())"
             )
-            return
+            return .rejected
+        case let .retry(after: retryDelay):
+            appleMusicTransitionTimeline.record(
+                .snapshotRejected,
+                detail: "reason=transient-degraded retryMs=\(Int(retryDelay * 1_000))"
+            )
+            scheduleAppleMusicTransientRetry(after: retryDelay)
+            return .retryScheduled
+        case .accept:
+            break
         }
         if let expectation = pendingAppleMusicPlaybackControl {
             switch expectation.resolution(for: snapshot, at: Date()) {
@@ -1707,16 +1735,18 @@ final class MusicAdapterCoordinator {
                     .snapshotRejected,
                     detail: "reason=playback-expectation track=\(snapshot.track?.title ?? "")"
                 )
-                return
+                return .rejected
             case .acceptAndClear:
                 clearAppleMusicPlaybackControlExpectation()
             }
         }
+        cancelAppleMusicTransientRetry(resetAttempt: true)
         latestAppleMusicSnapshot = snapshot
         appleMusicTransitionTimeline.record(
             .snapshotApplied,
             detail: "source=authoritative track=\(snapshot.track?.title ?? "") artist=\(snapshot.track?.artist ?? "") artworkBytes=\(snapshot.track?.artworkData?.count ?? 0) revision=\(snapshot.revision)"
         )
+        return .applied
     }
 
     private func beginAppleMusicPlaybackControlExpectation(
@@ -1766,7 +1796,7 @@ final class MusicAdapterCoordinator {
               current.instance == snapshot.instance,
               let currentTrack = current.track,
               currentTrack.identity == snapshot.track?.identity else {
-            applyAppleMusicSnapshotIfNewer(snapshot)
+            _ = admitAppleMusicSnapshot(snapshot)
             return
         }
         let updatedTrack = MusicTrackSnapshot(
