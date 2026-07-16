@@ -52,24 +52,26 @@ func rapidIslandModeReversalNeverChangesCenter() {
     #expect(centers.allSatisfy { $0 == screenFrame.midX })
 }
 
-@Test("动画画布只扩展透明窗口，不会裁切可见岛形")
-func animationCanvasContainsCurrentAndTargetGeometry() {
-    let expansionCanvas = IslandWindowLayout.animationCanvasSize(
-        current: NSSize(width: 377, height: 34),
-        target: NSSize(width: 460, height: 190)
-    )
-    let collapseCanvas = IslandWindowLayout.animationCanvasSize(
-        current: NSSize(width: 460, height: 190),
-        target: NSSize(width: 377, height: 34)
-    )
-    let compactPromotionCanvas = IslandWindowLayout.animationCanvasSize(
-        current: NSSize(width: 245, height: 34),
-        target: NSSize(width: 377, height: 34)
-    )
+@Test("窗口插值全过程保持顶部和中心锚定")
+func interpolatedWindowFramesStayTopAnchoredAndCentered() {
+    let screenFrame = NSRect(x: 0, y: 0, width: 1_920, height: 1_080)
+    let frames = (0...20).map { step in
+        let progress = CGFloat(step) / 20
+        let size = NSSize(
+            width: 377 + (460 - 377) * progress,
+            height: 34 + (190 - 34) * progress
+        )
+        return IslandWindowLayout.frame(
+            for: size,
+            in: screenFrame,
+            yOffset: 2
+        )
+    }
 
-    #expect(expansionCanvas == NSSize(width: 460, height: 190))
-    #expect(collapseCanvas == NSSize(width: 460, height: 190))
-    #expect(compactPromotionCanvas == NSSize(width: 377, height: 34))
+    #expect(frames.map(\.midX).allSatisfy { $0 == screenFrame.midX })
+    #expect(frames.map(\.maxY).allSatisfy { $0 == screenFrame.maxY - 2 })
+    #expect(frames.map(\.width) == frames.map(\.width).sorted())
+    #expect(frames.map(\.height) == frames.map(\.height).sorted())
 }
 
 @Test("展开交互区域精确区分顶部主体和透明肩部")

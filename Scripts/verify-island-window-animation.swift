@@ -94,23 +94,43 @@ private func verifyAnchoring(
     }
 }
 
-private func verifyCanvasDoesNotInterpolate(
+private func verifyWindowSizeInterpolation(
     _ samples: [WindowSample],
-    allowedSizes: [CGSize]
+    from startSize: CGSize,
+    to endSize: CGSize
 ) throws {
-    let unexpectedSample = samples.enumerated().first { _, sample in
-        !allowedSizes.contains { allowed in
-            abs(sample.frame.width - allowed.width) <= 0.75
-                && abs(sample.frame.height - allowed.height) <= 0.75
-        }
+    let minimumWidth = min(startSize.width, endSize.width) - 0.75
+    let maximumWidth = max(startSize.width, endSize.width) + 0.75
+    let minimumHeight = min(startSize.height, endSize.height) - 0.75
+    let maximumHeight = max(startSize.height, endSize.height) + 0.75
+    guard samples.allSatisfy({ sample in
+        minimumWidth...maximumWidth ~= sample.frame.width
+            && minimumHeight...maximumHeight ~= sample.frame.height
+    }) else {
+        throw VerificationError.failed("窗口动画尺寸越过起点或终点")
     }
-    guard unexpectedSample == nil else {
-        let index = unexpectedSample?.offset ?? 0
-        let size = unexpectedSample?.element.frame.size ?? .zero
-        throw VerificationError.failed(
-            "检测到非目标窗口尺寸 \(Int(size.width))x\(Int(size.height))，"
-                + "约发生在采样开始后 \(String(format: "%.3f", Double(index) * 0.005))s"
-        )
+
+    let hasIntermediateFrame = samples.contains { sample in
+        let differsFromStart = abs(sample.frame.width - startSize.width) > 0.75
+            || abs(sample.frame.height - startSize.height) > 0.75
+        let differsFromEnd = abs(sample.frame.width - endSize.width) > 0.75
+            || abs(sample.frame.height - endSize.height) > 0.75
+        return differsFromStart && differsFromEnd
+    }
+    guard hasIntermediateFrame else {
+        throw VerificationError.failed("窗口没有连续插值，仍在瞬时切换尺寸")
+    }
+}
+
+private func verifyStableWindowSize(
+    _ samples: [WindowSample],
+    expectedSize: CGSize
+) throws {
+    guard samples.allSatisfy({ sample in
+        abs(sample.frame.width - expectedSize.width) <= 0.75
+            && abs(sample.frame.height - expectedSize.height) <= 0.75
+    }) else {
+        throw VerificationError.failed("悬停保持期间窗口尺寸发生变化")
     }
 }
 
@@ -173,9 +193,10 @@ private func run() throws {
         expansion,
         initialSize: initial.frame.size
     )
-    try verifyCanvasDoesNotInterpolate(
+    try verifyWindowSizeInterpolation(
         expansion,
-        allowedSizes: [initial.frame.size, expanded.frame.size]
+        from: initial.frame.size,
+        to: expanded.frame.size
     )
 
     let hoverPersistence = try sampleFrames(duration: hoverPersistenceDuration)
@@ -184,9 +205,9 @@ private func run() throws {
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
     )
-    try verifyCanvasDoesNotInterpolate(
+    try verifyStableWindowSize(
         hoverPersistence,
-        allowedSizes: [expanded.frame.size]
+        expectedSize: expanded.frame.size
     )
 
     postMouseMove(to: outsidePoint)
@@ -197,9 +218,10 @@ private func run() throws {
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
     )
-    try verifyCanvasDoesNotInterpolate(
+    try verifyWindowSizeInterpolation(
         collapse,
-        allowedSizes: [expanded.frame.size, collapsed.frame.size]
+        from: expanded.frame.size,
+        to: collapsed.frame.size
     )
 
     guard abs(collapsed.frame.width - initial.frame.width) <= 0.75,

@@ -127,7 +127,7 @@ bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/verify-release-s
 plutil -lint Packaging/Info.plist
 ```
 
-顶屿运行且已适配音乐正在播放时，可执行 `swift Scripts/verify-island-window-animation.swift` 验证单窗口展开/收回的中心、顶边和目标尺寸。脚本结束后会恢复鼠标位置。
+顶屿运行且已适配音乐正在播放时，可执行 `swift Scripts/verify-island-window-animation.swift` 验证单窗口展开/收回的响应时间、连续中间尺寸、中心、顶边和目标尺寸。脚本结束后会恢复鼠标位置。
 
 项目使用 SwiftUI + AppKit；主要模块说明见 [产品需求](Docs/PRODUCT_REQUIREMENTS.md)、[路线图](Docs/ROADMAP.md) 和 [QA 检查清单](Docs/QA_CHECKLIST.md)。
 
