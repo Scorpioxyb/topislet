@@ -1,7 +1,7 @@
 # GitHub 发布检查清单
 
-目标版本：`v0.1.1-alpha.3`
-App 版本：`0.1.1 (17)`
+目标版本：`v0.1.1-alpha.4`
+App 版本：`0.1.1 (18)`
 目标平台：macOS 26.0+、带刘海的 Apple Silicon MacBook
 
 ## 当前结论
@@ -16,7 +16,7 @@ App 版本：`0.1.1 (17)`
 - [x] 确认稳定 Bundle ID：`io.github.scorpioxyb.topislet`。
 - [x] 保留并纳入 `Scripts/package-app.sh` 的 `.build/package` 输出改动，不再生成旧名重复 App。
 - [x] 记录 Vendor MediaRemote Adapter 的精确源码 commit、项目补丁和可复现构建命令，并完成逐字节重建验证。
-- [x] 在 build 17 最终候选 App 上关闭 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收项。
+- [x] build 17 完成 `Docs/ISSUE_BOARD.md` 中全部 P0 动态验收；build 18 仅包含已验收源码、版本与发布材料更新。
 - [x] 决定二进制分发策略：
   - [ ] Developer ID 签名、hardened runtime、Apple 公证和 staple；或
   - [x] 明确标记为 ad-hoc 签名开发者预览版，并说明 Gatekeeper 限制。
@@ -45,7 +45,7 @@ App 版本：`0.1.1 (17)`
 
 ```bash
 VERSION="0.1.1" \
-BUILD_NUMBER="17" \
+BUILD_NUMBER="18" \
 bash Scripts/build-release.sh
 bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 ```

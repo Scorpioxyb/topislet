@@ -7,7 +7,7 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.1-alpha.3 开发者预览版**，优先验证汽水音乐同步、安全媒体控制、Apple Music Alpha 支持和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.1-alpha.4 开发者预览版**，优先验证汽水音乐同步、安全媒体控制、Apple Music Alpha 支持和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
