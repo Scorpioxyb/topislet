@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 
 struct QishuiSemanticAXControlResult: Sendable {
@@ -9,10 +10,11 @@ struct QishuiSemanticAXControlResult: Sendable {
 
 final class QishuiSemanticAXController: @unchecked Sendable {
     private static let manualAccessibilityAttribute = "AXManualAccessibility"
+    private static let incompleteDiscoveryNodeThreshold = 256
 
     struct CandidateFacts: Equatable {
         let windowIsNormal: Bool
-        let windowIsMainOrFocused: Bool
+        let windowIsPrimary: Bool
         let windowIsVisible: Bool
         let windowIsMinimized: Bool
         let containerIsVisible: Bool
@@ -80,7 +82,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedControls: CachedControls?
 
-    func press(_ command: MusicControlCommand) -> QishuiSemanticAXControlResult {
+    func press(
+        _ command: MusicControlCommand,
+        processIdentifier expectedProcessIdentifier: pid_t? = nil
+    ) -> QishuiSemanticAXControlResult {
         lock.lock()
         defer { lock.unlock() }
         guard AXIsProcessTrusted() else {
@@ -91,13 +96,18 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             )
         }
 
-        guard let app = NSRunningApplication
+        let runningApplications = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first else {
+        let app = expectedProcessIdentifier.flatMap { processIdentifier in
+            runningApplications.first { $0.processIdentifier == processIdentifier }
+        } ?? (expectedProcessIdentifier == nil ? runningApplications.first : nil)
+        guard let app else {
             cachedControls = nil
             return QishuiSemanticAXControlResult(
                 didPress: false,
-                diagnostic: "未检测到汽水音乐进程。"
+                diagnostic: expectedProcessIdentifier == nil
+                    ? "未检测到汽水音乐进程。"
+                    : "岛当前显示的汽水音乐进程已失效，未发送\(command.label)。"
             )
         }
 
@@ -108,6 +118,14 @@ final class QishuiSemanticAXController: @unchecked Sendable {
                 didPress: false,
                 diagnostic: "无法初始化汽水音乐的辅助功能控件树，未发送\(command.label)。"
             )
+        }
+        let temporarilyUnminimizedWindow = temporarilyUnminimizeUniqueWindow(
+            processIdentifier: processIdentifier
+        )
+        defer {
+            if let temporarilyUnminimizedWindow {
+                restoreMinimizedWindow(temporarilyUnminimizedWindow)
+            }
         }
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
@@ -122,7 +140,23 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             self.cachedControls = nil
         }
 
-        let discovery = discoverControls(processIdentifier: processIdentifier)
+        var discovery = discoverControls(processIdentifier: processIdentifier)
+        for attempt in 0..<2 where Self.shouldRetrySparseDiscovery(
+            scannedNodeCount: discovery.scanned,
+            candidateCount: discovery.matches.count,
+            attempt: attempt
+        ) {
+            if attempt == 0 {
+                _ = rebuildManualAccessibility(
+                    processIdentifier: processIdentifier
+                )
+            }
+            usleep(attempt == 0 ? 80_000 : 160_000)
+            discovery = discoverControls(
+                processIdentifier: processIdentifier,
+                timeout: attempt == 0 ? 0.25 : 0.5
+            )
+        }
         guard discovery.matches.count == 1, let match = discovery.matches.first else {
             cachedControls = nil
             let detail = discovery.matches.isEmpty
@@ -154,6 +188,20 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         cachedControls = nil
     }
 
+    func prepareAccessibilityTree() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard AXIsProcessTrusted(),
+              let app = NSRunningApplication
+                .runningApplications(withBundleIdentifier: bundleIdentifier)
+                .first else {
+            return false
+        }
+        return enableManualAccessibility(
+            processIdentifier: app.processIdentifier
+        )
+    }
+
     func diagnostic() -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -161,8 +209,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         guard let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)
             .first else { return "qishuiRunning=false" }
-        let manualAccessibilityEnabled = enableManualAccessibility(
-            processIdentifier: app.processIdentifier
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        let manualAccessibilityEnabled = boolAttribute(
+            application,
+            Self.manualAccessibilityAttribute
         )
 
         let discovery = discoverControls(processIdentifier: app.processIdentifier)
@@ -173,10 +223,43 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             "scanned=\(discovery.scanned)",
             "candidateCount=\(discovery.matches.count)"
         ]
+        lines.append(contentsOf: rootDiagnostics(processIdentifier: app.processIdentifier))
         for (index, match) in discovery.matches.enumerated() {
             lines.append("candidate[\(index)]=\(diagnosticDescription(for: match))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func rootDiagnostics(processIdentifier: pid_t) -> [String] {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        let roots = applicationRoots(of: application)
+        var lines = [
+            "applicationRole=\(stringAttribute(application, kAXRoleAttribute as String))",
+            "applicationChildren=\(children(of: application).count)",
+            "applicationTraversalChildren=\(traversalChildren(of: application).count)",
+            "applicationRoots=\(roots.count)"
+        ]
+        for attribute in [
+            kAXFocusedWindowAttribute as String,
+            "AXMainWindow",
+            kAXWindowsAttribute as String,
+            kAXFocusedUIElementAttribute as String,
+            kAXChildrenAttribute as String
+        ] {
+            guard let value = copyAttribute(application, attribute) else {
+                lines.append("attribute[\(attribute)]=nil")
+                continue
+            }
+            let elements = accessibilityElements(from: value)
+            let roles = elements.map { stringAttribute($0, kAXRoleAttribute as String) }
+            lines.append("attribute[\(attribute)]=count:\(elements.count),roles:\(roles.joined(separator: ","))")
+        }
+        for (index, root) in roots.enumerated() {
+            lines.append(
+                "root[\(index)]=role:\(stringAttribute(root, kAXRoleAttribute as String)),children:\(children(of: root).count),traversal:\(traversalChildren(of: root).count),hash:\(CFHash(root))"
+            )
+        }
+        return lines
     }
 
     static func canProceedAfterManualAccessibility(
@@ -186,9 +269,19 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         setResult == .success || isEnabled
     }
 
+    static func shouldRetrySparseDiscovery(
+        scannedNodeCount: Int,
+        candidateCount: Int,
+        attempt: Int
+    ) -> Bool {
+        candidateCount == 0
+            && scannedNodeCount <= incompleteDiscoveryNodeThreshold
+            && attempt < 2
+    }
+
     static func isEligibleCandidate(_ facts: CandidateFacts) -> Bool {
         guard facts.windowIsNormal,
-              facts.windowIsMainOrFocused,
+              facts.windowIsPrimary,
               facts.windowIsVisible,
               !facts.windowIsMinimized,
               facts.containerIsVisible,
@@ -199,9 +292,20 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return relativeY >= 0.72 && relativeY <= 1.02
     }
 
-    private func discoverControls(processIdentifier: pid_t) -> (matches: [DiscoveredControls], scanned: Int) {
+    static func shouldTemporarilyUnminimize(
+        standardWindowCount: Int,
+        isMinimized: Bool
+    ) -> Bool {
+        standardWindowCount == 1 && isMinimized
+    }
+
+    private func discoverControls(
+        processIdentifier: pid_t,
+        timeout: Float? = nil
+    ) -> (matches: [DiscoveredControls], scanned: Int) {
+        let effectiveTimeout = timeout ?? messagingTimeout
         let application = AXUIElementCreateApplication(processIdentifier)
-        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        AXUIElementSetMessagingTimeout(application, effectiveTimeout)
 
         var queue = [QueueItem(element: application, depth: 0)]
         for root in applicationRoots(of: application) {
@@ -218,7 +322,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
             let identity = ElementIdentity(element: item.element)
             guard visited.insert(identity).inserted else { continue }
-            AXUIElementSetMessagingTimeout(item.element, messagingTimeout)
+            AXUIElementSetMessagingTimeout(item.element, effectiveTimeout)
 
             if let orderedControls = playbackControls(in: item.element),
                hasPlaybackTimeContext(around: item.element) {
@@ -273,6 +377,78 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         )
     }
 
+    private func rebuildManualAccessibility(processIdentifier: pid_t) -> Bool {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.25)
+        _ = AXUIElementSetAttributeValue(
+            application,
+            Self.manualAccessibilityAttribute as CFString,
+            kCFBooleanFalse
+        )
+        usleep(20_000)
+        let result = AXUIElementSetAttributeValue(
+            application,
+            Self.manualAccessibilityAttribute as CFString,
+            kCFBooleanTrue
+        )
+        return Self.canProceedAfterManualAccessibility(
+            setResult: result,
+            isEnabled: boolAttribute(
+                application,
+                Self.manualAccessibilityAttribute
+            )
+        )
+    }
+
+    private func temporarilyUnminimizeUniqueWindow(
+        processIdentifier: pid_t
+    ) -> AXUIElement? {
+        let windows = standardWindows(processIdentifier: processIdentifier)
+        guard let window = windows.first,
+              Self.shouldTemporarilyUnminimize(
+                standardWindowCount: windows.count,
+                isMinimized: boolAttribute(window, kAXMinimizedAttribute as String)
+              ) else {
+            return nil
+        }
+        let result = AXUIElementSetAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanFalse
+        )
+        guard result == .success else { return nil }
+        usleep(80_000)
+        return window
+    }
+
+    private func restoreMinimizedWindow(_ window: AXUIElement) {
+        _ = AXUIElementSetAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanTrue
+        )
+    }
+
+    private func standardWindows(processIdentifier: pid_t) -> [AXUIElement] {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        guard let value = copyAttribute(application, kAXWindowsAttribute as String) else {
+            return []
+        }
+        return accessibilityElements(from: value).filter { window in
+            stringAttribute(window, kAXRoleAttribute as String) == kAXWindowRole as String
+                && stringAttribute(window, kAXSubroleAttribute as String)
+                    == kAXStandardWindowSubrole as String
+        }
+    }
+
+    private func isUniqueStandardWindow(
+        _ window: AXUIElement,
+        processIdentifier: pid_t
+    ) -> Bool {
+        let windows = standardWindows(processIdentifier: processIdentifier)
+        return windows.count == 1 && CFEqual(windows[0], window)
+    }
+
     private func diagnosticDescription(for match: DiscoveredControls) -> String {
         let window = windowAncestor(of: match.container)
         let containerFrame = frame(of: match.container)
@@ -320,9 +496,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         return CandidateFacts(
             windowIsNormal: windowRole == kAXWindowRole as String
                 && windowSubrole == kAXStandardWindowSubrole as String,
-            windowIsMainOrFocused: window.map {
+            windowIsPrimary: window.map {
                 boolAttribute($0, kAXMainAttribute as String)
                     || boolAttribute($0, kAXFocusedAttribute as String)
+                    || isUniqueStandardWindow(
+                        $0,
+                        processIdentifier: controls.processIdentifier
+                    )
             } ?? false,
             windowIsVisible: window.map(isVisible) ?? false,
             windowIsMinimized: window.map {

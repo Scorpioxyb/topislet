@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Combine
 import CoreImage
+import Darwin
 import EventKit
 import QuartzCore
 import SwiftUI
@@ -21,6 +22,65 @@ if CommandLine.arguments.contains("--music-adapters") {
         print("")
     }
     exit(0)
+}
+
+if CommandLine.arguments.contains("--apple-music-status") {
+    let adapter = AppleMusicAppAdapter()
+    Task { @MainActor in
+        let startedAt = Date()
+        var snapshot = await adapter.snapshot(refresh: .metadata)
+        let metadataLatencyMilliseconds = Int(
+            Date().timeIntervalSince(startedAt) * 1_000
+        )
+        if snapshot.track != nil,
+           snapshot.track?.artworkData == nil {
+            for _ in 0..<50 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                let cachedSnapshot = await adapter.snapshot(refresh: .cached)
+                if cachedSnapshot.track?.artworkData != nil {
+                    snapshot = cachedSnapshot
+                    break
+                }
+            }
+        }
+        let availability: String
+        switch snapshot.availability {
+        case .ready:
+            availability = "ready"
+        case .notRunning:
+            availability = "notRunning"
+        case let .degraded(reason):
+            availability = "degraded:\(reason)"
+        case let .permissionRequired(permission):
+            availability = "permissionRequired:\(permission)"
+        case let .unavailable(reason):
+            availability = "unavailable:\(reason)"
+        }
+        let snapshotProcessIdentifier = snapshot.instance?.processIdentifier.description ?? "nil"
+        print("appleMusicRunning=\(AppleMusicAppAdapter.isRunning)")
+        print("appleMusicSnapshotPID=\(snapshotProcessIdentifier)")
+        print("appleMusicRunningPIDs=\(NSRunningApplication.runningApplications(withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier).map(\.processIdentifier))")
+        print("availability=\(availability)")
+        print("track=\(snapshot.track?.title ?? "nil")")
+        print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
+        print("metadataLatencyMilliseconds=\(metadataLatencyMilliseconds)")
+        print("artworkLatencyMilliseconds=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
+        print("diagnostic=\(snapshot.diagnostic)")
+        exit(0)
+    }
+    RunLoop.main.run()
+}
+
+if CommandLine.arguments.contains("--apple-music-request-access") {
+    let permissionApp = NSApplication.shared
+    permissionApp.setActivationPolicy(.regular)
+    permissionApp.activate(ignoringOtherApps: true)
+    DispatchQueue.main.async {
+        let access = AppleMusicAppAdapter.automationAccess(prompt: true)
+        print("automationAccess=\(access.diagnosticCode)")
+        exit(access == .allowed ? 0 : 2)
+    }
+    permissionApp.run()
 }
 
 if let eventIndex = CommandLine.arguments.firstIndex(of: "--post-event") {
@@ -126,6 +186,11 @@ if CommandLine.arguments.contains("--adapter-status") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--qishui-control-diagnostic") {
+    print(QishuiSemanticAXController().diagnostic())
+    exit(0)
+}
+
 if let adapterWatchIndex = CommandLine.arguments.firstIndex(of: "--adapter-watch") {
     let seconds = CommandLine.arguments.indices.contains(adapterWatchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[adapterWatchIndex + 1]) ?? 5)
@@ -216,6 +281,131 @@ enum IslandMode: String {
     case expanded
 }
 
+enum IslandWindowLayout {
+    static func size(
+        for mode: IslandMode,
+        collapsedWidth: CGFloat,
+        compactWidth: CGFloat,
+        expandedWidth: CGFloat,
+        expandedHeight: CGFloat,
+        topBandHeight: CGFloat
+    ) -> NSSize {
+        switch mode {
+        case .collapsed:
+            return NSSize(width: collapsedWidth, height: topBandHeight)
+        case .compact:
+            return NSSize(width: compactWidth, height: topBandHeight)
+        case .expanded:
+            return NSSize(width: expandedWidth, height: expandedHeight)
+        }
+    }
+
+    static func frame(
+        for size: NSSize,
+        in screenFrame: NSRect,
+        yOffset: CGFloat
+    ) -> NSRect {
+        NSRect(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.maxY - size.height - yOffset,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    static func acceptsAnimationCompletion(
+        completedAnimationID: Int,
+        currentAnimationID: Int,
+        targetMode: IslandMode,
+        currentMode: IslandMode
+    ) -> Bool {
+        completedAnimationID == currentAnimationID && targetMode == currentMode
+    }
+}
+
+struct IslandAnimationCompletionGate {
+    private(set) var currentAnimationID = 0
+    private var completedAnimationID: Int?
+
+    mutating func beginAnimation() -> Int {
+        currentAnimationID &+= 1
+        completedAnimationID = nil
+        return currentAnimationID
+    }
+
+    mutating func claimCompletion(
+        animationID: Int,
+        targetMode: IslandMode,
+        currentMode: IslandMode
+    ) -> Bool {
+        guard completedAnimationID != animationID,
+              IslandWindowLayout.acceptsAnimationCompletion(
+                completedAnimationID: animationID,
+                currentAnimationID: currentAnimationID,
+                targetMode: targetMode,
+                currentMode: currentMode
+              ) else {
+            return false
+        }
+        completedAnimationID = animationID
+        return true
+    }
+}
+
+struct IslandInteractionRegions: Equatable {
+    let header: NSRect
+    let body: NSRect?
+    let bridge: NSRect?
+
+    static func make(
+        panelFrame: NSRect,
+        mode: IslandMode,
+        headerWidth: CGFloat,
+        topBandHeight: CGFloat,
+        expandedBodyHeight: CGFloat,
+        expandedPanelTopGap: CGFloat
+    ) -> IslandInteractionRegions {
+        let header = NSRect(
+            x: panelFrame.midX - headerWidth / 2,
+            y: panelFrame.maxY - topBandHeight,
+            width: headerWidth,
+            height: topBandHeight
+        )
+        guard mode == .expanded else {
+            return IslandInteractionRegions(header: header, body: nil, bridge: nil)
+        }
+
+        let body = NSRect(
+            x: panelFrame.minX,
+            y: panelFrame.minY,
+            width: panelFrame.width,
+            height: expandedBodyHeight
+        )
+        let bridgeHeight = max(
+            0,
+            min(expandedPanelTopGap, header.minY - body.maxY)
+        )
+        let bridge = bridgeHeight > 0
+            ? NSRect(
+                x: header.minX,
+                y: body.maxY,
+                width: header.width,
+                height: bridgeHeight
+            )
+            : nil
+        return IslandInteractionRegions(header: header, body: body, bridge: bridge)
+    }
+
+    func contains(_ point: CGPoint, tolerance: CGFloat = 0) -> Bool {
+        let expandedHeader = header.insetBy(dx: -tolerance, dy: -tolerance)
+        let expandedBody = body?.insetBy(dx: -tolerance, dy: -tolerance)
+        let expandedBridge = bridge?.insetBy(dx: -tolerance, dy: -tolerance)
+        return expandedHeader.contains(point)
+            || expandedBody?.contains(point) == true
+            || expandedBridge?.contains(point) == true
+    }
+}
+
 private enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
         mode == .expanded ? 0.24 : 0.18
@@ -265,6 +455,53 @@ enum IslandFeature: String, Hashable {
 
 }
 
+enum IslandHoverExpansionPolicy {
+    static func allowsExpansion(
+        activeFeature: IslandFeature,
+        hasCurrentMusicTrack: Bool,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        switch activeFeature {
+        case .music:
+            return hasCurrentMusicTrack
+        case .timer:
+            return true
+        case .notification:
+            return hasPendingNotification
+        }
+    }
+}
+
+enum MusicPresentationTransitionPolicy {
+    static func shouldPromoteToCompact(
+        activeFeature: IslandFeature,
+        currentMode: IslandMode,
+        isArmed: Bool,
+        hadCurrentTrack: Bool,
+        hasCurrentTrack: Bool,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        activeFeature == .music
+            && currentMode == .collapsed
+            && isArmed
+            && !hadCurrentTrack
+            && hasCurrentTrack
+            && !hasPendingNotification
+    }
+
+    static func shouldDisarmForUserRequest(_ targetMode: IslandMode) -> Bool {
+        targetMode == .collapsed
+    }
+
+    static func shouldArmAfterSourceExit(
+        currentMode: IslandMode,
+        isUserExpanded: Bool
+    ) -> Bool {
+        currentMode == .compact
+            || (currentMode == .expanded && !isUserExpanded)
+    }
+}
+
 struct MusicTrack: Equatable {
     let title: String
     let artist: String
@@ -285,6 +522,43 @@ struct MusicState: Equatable {
     var duration: TimeInterval? = nil
     var canSeek: Bool = false
     var isPlaybackPending: Bool = false
+    var hasCurrentTrack: Bool
+}
+
+enum MusicUpdatePolicy {
+    static func shouldIgnoreUntrustedProgressReset(
+        current: MusicState,
+        candidate: MusicState,
+        sourceAvailability: MusicSourceAvailability?
+    ) -> Bool {
+        if sourceAvailability == .qishuiNotRunning {
+            return false
+        }
+        guard current.track.sourceBundleIdentifier
+            == candidate.track.sourceBundleIdentifier else {
+            return false
+        }
+        guard candidate.hasCurrentTrack else {
+            return false
+        }
+        guard current.duration != nil,
+              current.elapsedTime != nil,
+              current.progress > 0.01 else {
+            return false
+        }
+
+        let candidateHasTrustedTiming = candidate.duration != nil
+            && candidate.elapsedTime != nil
+        guard !candidateHasTrustedTiming,
+              candidate.progress <= 0.0001,
+              !candidate.canSeek else {
+            return false
+        }
+
+        return !candidate.track.title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
 }
 
 struct TimerState: Equatable {
@@ -431,6 +705,7 @@ final class IslandModel: ObservableObject {
     @Published var musicAccentColor = Color.white
     @Published var pendingTrackControl: MusicControlCommand?
     @Published private(set) var trackControlFeedbackGeneration: UInt64 = 0
+    @Published private(set) var playPauseFeedbackGeneration: UInt64 = 0
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -438,6 +713,14 @@ final class IslandModel: ObservableObject {
         detail: "当前不显示假歌曲；主线正在直接读取汽水音乐本地状态，系统播放信息仅保留为手动诊断。",
         checkedAt: Date()
     )
+    @Published private(set) var qishuiIsRunning = false
+    @Published private(set) var accessibilityTrusted = false
+    @Published private(set) var appleMusicAutomationAccess: AppleMusicAutomationAccess = .unavailable(status: -1)
+    @Published private(set) var appleMusicIsRunning = false
+    @Published private(set) var appleMusicSnapshotAvailability: MusicAppAvailability?
+    @Published private(set) var appleMusicConnectionStatus = "尚未检查"
+    @Published private(set) var appleMusicAvailableControls = "无"
+    @Published private(set) var appleMusicResponseLatencyMilliseconds: Int?
     @Published var timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
     @Published var notification = IslandNotification(
         title: "",
@@ -460,11 +743,16 @@ final class IslandModel: ObservableObject {
     private var pendingTrackControlGeneration: UInt64?
     private var pendingTrackControlChainCount = 0
     private var layoutCancellable: AnyCancellable?
+    private var appleMusicSettingsCancellable: AnyCancellable?
     private var eventKitSettingsCancellable: AnyCancellable?
+    private var appleMusicObservedProcessIdentifier: pid_t?
+    private var appleMusicSettingsRequestGeneration: UInt64 = 0
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
     private var lastMusicProgressPublishAt: Date = .distantPast
+    private var autoCompactOnNextMusicTrack = true
+    private var isUserExpandedMusicPresentation = false
     private var musicSeekRequestID = 0
     private var pendingMusicSeek: PendingMusicSeek?
     private var isMusicScrubbing = false
@@ -487,6 +775,14 @@ final class IslandModel: ObservableObject {
         activeIslandEvent != nil || !pendingIslandEvents.isEmpty
     }
 
+    var canExpandOnHover: Bool {
+        IslandHoverExpansionPolicy.allowsExpansion(
+            activeFeature: activeFeature,
+            hasCurrentMusicTrack: music.hasCurrentTrack,
+            hasPendingNotification: hasPendingNotification
+        )
+    }
+
     var collapsedWidth: CGFloat {
         notchWidth + collapsedWingWidth * 2
     }
@@ -505,11 +801,22 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedHeight: CGFloat {
-        topBandHeight + expandedBodyHeight - expandedPanelTopGap
+        topBandHeight + expandedPanelTopGap + expandedBodyHeight
     }
 
     var expandedHeaderWidth: CGFloat {
         notchWidth + expandedHeaderWingWidth * 2
+    }
+
+    var currentHeaderWidth: CGFloat {
+        switch mode {
+        case .collapsed:
+            return collapsedWidth
+        case .compact:
+            return compactWidth
+        case .expanded:
+            return expandedHeaderWidth
+        }
     }
 
     var statusWaveIsActive: Bool {
@@ -546,8 +853,10 @@ final class IslandModel: ObservableObject {
 
     init() {
         isVisible = appSettings.showIslandOnLaunch
+        musicAdapter.setAppleMusicEnabled(appSettings.appleMusicEnabled)
         music = musicAdapter.initialState
         pendingTrackControl = nil
+        refreshMusicIntegrationStatus()
         if let previewModeIndex = CommandLine.arguments.firstIndex(of: "--preview-mode"),
            CommandLine.arguments.indices.contains(previewModeIndex + 1),
            let previewMode = IslandMode(rawValue: CommandLine.arguments[previewModeIndex + 1]) {
@@ -586,6 +895,20 @@ final class IslandModel: ObservableObject {
                 remindersEnabled: remindersEnabled
             )
         }
+        appleMusicSettingsCancellable = appSettings.$appleMusicEnabled
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                self.musicAdapter.setAppleMusicEnabled(enabled)
+                self.refreshMusicIntegrationStatus()
+                guard enabled,
+                      self.appleMusicIsRunning,
+                      self.appleMusicAutomationAccess == .allowed else { return }
+                Task { [weak self] in
+                    await self?.refreshAppleMusicSnapshot()
+                }
+            }
         layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -600,6 +923,12 @@ final class IslandModel: ObservableObject {
         if activeFeature == .notification, feature != .notification {
             clearNotificationPresentation()
         }
+        if feature == .music {
+            isUserExpandedMusicPresentation = newMode == .expanded
+            if MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(newMode) {
+                autoCompactOnNextMusicTrack = false
+            }
+        }
         activeFeature = feature
         mode = newMode
     }
@@ -612,11 +941,21 @@ final class IslandModel: ObservableObject {
         requestIslandMode(mode == .expanded ? .compact : .expanded)
     }
 
-    func requestIslandMode(_ targetMode: IslandMode, bypassCooldown: Bool = false) {
+    func requestIslandMode(
+        _ targetMode: IslandMode,
+        bypassCooldown: Bool = false,
+        userInitiated: Bool = true
+    ) {
         let now = Date()
         if !bypassCooldown {
             guard now.timeIntervalSince(lastDirectControlAt) > directControlSuppressionWindow else { return }
             guard now.timeIntervalSince(lastIslandModeTapAt) > islandModeTapCooldown else { return }
+        }
+        if userInitiated, activeFeature == .music {
+            isUserExpandedMusicPresentation = targetMode == .expanded
+            if MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(targetMode) {
+                autoCompactOnNextMusicTrack = false
+            }
         }
         guard mode != targetMode else { return }
         lastIslandModeTapAt = now
@@ -676,14 +1015,21 @@ final class IslandModel: ObservableObject {
 
     func playPause() {
         noteDirectControlInteraction()
+        playPauseFeedbackGeneration &+= 1
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         activeFeature = .music
         if mode == .collapsed {
             mode = .compact
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.playPause)
+            let outcome = await musicAdapter.performControl(
+                .playPause,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else { return }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
                 applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
@@ -698,6 +1044,7 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
             .nextTrack,
             baselineSignature: previousSignature
@@ -708,10 +1055,21 @@ final class IslandModel: ObservableObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.nextTrack)
+            let outcome = await musicAdapter.performControl(
+                .nextTrack,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else {
+                finishTrackControlFeedback(.nextTrack, generation: feedbackGeneration)
+                return
+            }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
-                musicAdapter.invalidateQishuiCache()
+                if displayedSourceBundleIdentifier
+                    == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+                    musicAdapter.invalidateQishuiCache()
+                }
                 startMusicControlRefreshBurst(
                     previousSignature: previousSignature,
                     requireTrackChange: true,
@@ -730,6 +1088,7 @@ final class IslandModel: ObservableObject {
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
             .previousTrack,
             baselineSignature: previousSignature
@@ -740,10 +1099,21 @@ final class IslandModel: ObservableObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let outcome = await musicAdapter.performControl(.previousTrack)
+            let outcome = await musicAdapter.performControl(
+                .previousTrack,
+                displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+            )
+            guard music.track.sourceBundleIdentifier
+                == displayedSourceBundleIdentifier else {
+                finishTrackControlFeedback(.previousTrack, generation: feedbackGeneration)
+                return
+            }
             musicSourceStatus = outcome.status
             if outcome.didSendCommand {
-                musicAdapter.invalidateQishuiCache()
+                if displayedSourceBundleIdentifier
+                    == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+                    musicAdapter.invalidateQishuiCache()
+                }
                 startMusicControlRefreshBurst(
                     previousSignature: previousSignature,
                     requireTrackChange: true,
@@ -759,8 +1129,8 @@ final class IslandModel: ObservableObject {
     }
 
     func showMusicSourceStatus() {
-        let status = musicAdapter.refreshSourceStatus()
-        applyMusicUpdate(musicAdapter.currentState(), status: status, forceMusic: true)
+        let update = musicAdapter.refreshPlaybackPositionNow()
+        applyMusicUpdate(update.music, status: update.status, forceMusic: true)
     }
 
     func showAccessibilityStatus() {
@@ -774,9 +1144,172 @@ final class IslandModel: ObservableObject {
         )
     }
 
+    func refreshMusicIntegrationStatus() {
+        qishuiIsRunning = !NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
+        ).isEmpty
+        accessibilityTrusted = AXIsProcessTrusted()
+        refreshAppleMusicStatus()
+    }
+
+    func refreshAppleMusicStatus() {
+        guard appSettings.appleMusicEnabled else {
+            appleMusicIsRunning = false
+            appleMusicAutomationAccess = .targetNotRunning
+            appleMusicObservedProcessIdentifier = nil
+            resetAppleMusicConnection(status: "已关闭")
+            return
+        }
+
+        let runningApplication = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first
+        let processIdentifier = runningApplication?.processIdentifier
+        if processIdentifier != appleMusicObservedProcessIdentifier {
+            appleMusicObservedProcessIdentifier = processIdentifier
+            resetAppleMusicConnection(status: processIdentifier == nil ? "未运行" : "等待同步")
+        }
+        appleMusicIsRunning = runningApplication != nil
+        let previousAutomationAccess = appleMusicAutomationAccess
+        let currentAutomationAccess: AppleMusicAutomationAccess = appleMusicIsRunning
+            ? AppleMusicAppAdapter.automationAccess(prompt: false)
+            : .targetNotRunning
+        appleMusicAutomationAccess = currentAutomationAccess
+        if appleMusicIsRunning,
+           previousAutomationAccess == .allowed,
+           currentAutomationAccess != .allowed {
+            musicAdapter.invalidateAppleMusicAccess()
+        }
+
+        guard appleMusicIsRunning else {
+            resetAppleMusicConnection(status: "未运行")
+            return
+        }
+        guard appleMusicAutomationAccess == .allowed else {
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
+            return
+        }
+        if appleMusicSnapshotAvailability == nil {
+            appleMusicConnectionStatus = "已授权，等待同步"
+        }
+    }
+
+    func requestAppleMusicAutomationAccess() {
+        guard appSettings.appleMusicEnabled,
+              AppleMusicAppAdapter.isRunning else {
+            refreshAppleMusicStatus()
+            return
+        }
+        appleMusicAutomationAccess = AppleMusicAppAdapter.automationAccess(prompt: true)
+        appleMusicIsRunning = AppleMusicAppAdapter.isRunning
+        if appleMusicAutomationAccess == .allowed {
+            Task { [weak self] in
+                await self?.refreshAppleMusicSnapshot()
+            }
+        } else {
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
+        }
+    }
+
+    func refreshAppleMusicSnapshot() async {
+        refreshAppleMusicStatus()
+        guard appSettings.appleMusicEnabled else {
+            resetAppleMusicConnection(status: "已关闭")
+            return
+        }
+        guard appleMusicIsRunning else {
+            resetAppleMusicConnection(status: "未运行")
+            return
+        }
+        guard appleMusicAutomationAccess == .allowed else {
+            resetAppleMusicConnection(status: appleMusicAutomationAccess.displayName)
+            return
+        }
+
+        appleMusicSettingsRequestGeneration &+= 1
+        let requestGeneration = appleMusicSettingsRequestGeneration
+        let expectedProcessIdentifier = appleMusicObservedProcessIdentifier
+        let requestStartedAt = Date()
+        guard let snapshot = await musicAdapter.appleMusicSnapshotForSettings() else {
+            refreshAppleMusicStatus()
+            if appSettings.appleMusicEnabled,
+               appleMusicIsRunning,
+               appleMusicAutomationAccess == .allowed {
+                appleMusicConnectionStatus = "连接超时"
+            }
+            return
+        }
+        let currentApplication = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier
+        ).first
+        let currentAccess = currentApplication.map { _ in
+            AppleMusicAppAdapter.automationAccess(prompt: false)
+        } ?? .targetNotRunning
+        guard requestGeneration == appleMusicSettingsRequestGeneration,
+              appSettings.appleMusicEnabled,
+              currentApplication?.processIdentifier == expectedProcessIdentifier,
+              snapshot.instance?.processIdentifier == expectedProcessIdentifier,
+              currentAccess == .allowed else {
+            refreshAppleMusicStatus()
+            return
+        }
+        appleMusicResponseLatencyMilliseconds = max(
+            0,
+            Int((Date().timeIntervalSince(requestStartedAt) * 1_000).rounded())
+        )
+        appleMusicSnapshotAvailability = snapshot.availability
+        appleMusicObservedProcessIdentifier = snapshot.instance?.processIdentifier
+        switch snapshot.availability {
+        case .ready:
+            appleMusicConnectionStatus = "连接正常"
+        case .notRunning:
+            appleMusicConnectionStatus = "未运行"
+        case let .degraded(reason):
+            appleMusicConnectionStatus = "读取失败：\(reason)"
+        case let .permissionRequired(permission):
+            appleMusicConnectionStatus = "需要权限：\(permission)"
+        case let .unavailable(reason):
+            appleMusicConnectionStatus = "不可用：\(reason)"
+        }
+
+        appleMusicAvailableControls = [
+            snapshot.controls.supports(.playPause) ? "播放暂停" : nil,
+            snapshot.controls.supports(.previousTrack) ? "上一首" : nil,
+            snapshot.controls.supports(.nextTrack) ? "下一首" : nil,
+            snapshot.controls.supports(.absoluteSeek) ? "进度跳转" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: "、")
+        if appleMusicAvailableControls.isEmpty {
+            appleMusicAvailableControls = "无"
+        }
+    }
+
+    private func resetAppleMusicConnection(status: String) {
+        appleMusicSettingsRequestGeneration &+= 1
+        appleMusicSnapshotAvailability = nil
+        appleMusicConnectionStatus = status
+        appleMusicAvailableControls = "无"
+        appleMusicResponseLatencyMilliseconds = nil
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openAppleMusicAutomationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func forceRefreshNowPlaying() {
         activeFeature = .music
-        mode = .expanded
+        requestIslandMode(.expanded, bypassCooldown: true)
         let result = musicAdapter.forceRefreshNowPlaying()
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
     }
@@ -790,9 +1323,17 @@ final class IslandModel: ObservableObject {
         musicSeekRequestID += 1
         let requestID = musicSeekRequestID
         let previousSignature = musicSignature(music)
-        let result = await musicAdapter.seek(to: progress, interaction: interaction)
+        let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
+        let result = await musicAdapter.seek(
+            to: progress,
+            interaction: interaction,
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        )
         guard requestID == musicSeekRequestID else { return true }
+        guard music.track.sourceBundleIdentifier
+            == displayedSourceBundleIdentifier else { return true }
         let didSeek = result.status.availability == .qishuiControlSent
+            || result.status.availability == .appleMusicControlSent
         pendingMusicSeek = nil
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
         if didSeek {
@@ -1250,6 +1791,9 @@ final class IslandModel: ObservableObject {
         forceMusic: Bool = false,
         trackControlConfirmationGeneration: UInt64? = nil
     ) {
+        if newStatus?.availability == .qishuiNotRunning {
+            resetMusicPresentationAfterSourceExit()
+        }
         if isMusicScrubbing, !forceMusic {
             if let newStatus,
                shouldPublishMusicStatus(newStatus) {
@@ -1259,10 +1803,26 @@ final class IslandModel: ObservableObject {
         }
 
         let reconciledMusic = reconcilePendingSeek(newMusic)
-        if shouldIgnoreUntrustedProgressReset(reconciledMusic) {
+        let becameAvailable = !music.hasCurrentTrack
+            && reconciledMusic.hasCurrentTrack
+        let shouldPromoteToCompact = MusicPresentationTransitionPolicy
+            .shouldPromoteToCompact(
+                activeFeature: activeFeature,
+                currentMode: mode,
+                isArmed: autoCompactOnNextMusicTrack,
+                hadCurrentTrack: music.hasCurrentTrack,
+                hasCurrentTrack: reconciledMusic.hasCurrentTrack,
+                hasPendingNotification: hasPendingNotification
+            )
+        if MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
+            current: music,
+            candidate: reconciledMusic,
+            sourceAvailability: newStatus?.availability
+        ) {
             var timelinePreservingUpdate = music
             timelinePreservingUpdate.isPlaying = reconciledMusic.isPlaying
             timelinePreservingUpdate.isPlaybackPending = reconciledMusic.isPlaybackPending
+            timelinePreservingUpdate.hasCurrentTrack = reconciledMusic.hasCurrentTrack
             if timelinePreservingUpdate != music {
                 music = timelinePreservingUpdate
             }
@@ -1275,6 +1835,13 @@ final class IslandModel: ObservableObject {
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
+            if becameAvailable {
+                autoCompactOnNextMusicTrack = false
+            }
+            if shouldPromoteToCompact {
+                isUserExpandedMusicPresentation = false
+                mode = .compact
+            }
             refreshMusicAccent(for: reconciledMusic.track)
             confirmTrackControlFeedbackIfNeeded(
                 with: reconciledMusic,
@@ -1285,6 +1852,30 @@ final class IslandModel: ObservableObject {
         if let newStatus,
            shouldPublishMusicStatus(newStatus) {
             musicSourceStatus = newStatus
+        }
+    }
+
+    private func resetMusicPresentationAfterSourceExit() {
+        musicRefreshBurstTask?.cancel()
+        musicRefreshBurstTask = nil
+        trackControlFeedbackTask?.cancel()
+        trackControlFeedbackTask = nil
+        pendingTrackControl = nil
+        pendingTrackControlBaselineSignature = nil
+        pendingTrackControlGeneration = nil
+        pendingTrackControlChainCount = 0
+        pendingMusicSeek = nil
+        musicSeekRequestID += 1
+        isMusicScrubbing = false
+        if activeFeature == .music,
+           !hasPendingNotification,
+           MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+            currentMode: mode,
+            isUserExpanded: isUserExpandedMusicPresentation
+           ) {
+            autoCompactOnNextMusicTrack = true
+            isUserExpandedMusicPresentation = false
+            mode = .collapsed
         }
     }
 
@@ -1401,35 +1992,14 @@ final class IslandModel: ObservableObject {
         return heldMusic
     }
 
-    private func shouldIgnoreUntrustedProgressReset(_ newMusic: MusicState) -> Bool {
-        guard music.duration != nil,
-              music.elapsedTime != nil,
-              music.progress > 0.01 else {
-            return false
-        }
-
-        let newHasTrustedTiming = newMusic.duration != nil && newMusic.elapsedTime != nil
-        guard !newHasTrustedTiming,
-              newMusic.progress <= 0.0001,
-              !newMusic.canSeek else {
-            return false
-        }
-
-        let newTitle = newMusic.track.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newTitle.isEmpty else { return true }
-
-        // AX fallback can briefly emit current-looking metadata without a trusted timeline.
-        // Do not let that reset an already trusted MediaRemote progress bar to zero.
-        return true
-    }
-
     private func shouldPublishMusicUpdate(_ newMusic: MusicState) -> Bool {
         if hasTrackDisplayChange(newMusic.track, music.track)
             || newMusic.isPlaying != music.isPlaying
             || newMusic.lyricIndex != music.lyricIndex
             || newMusic.duration != music.duration
             || newMusic.canSeek != music.canSeek
-            || newMusic.isPlaybackPending != music.isPlaybackPending {
+            || newMusic.isPlaybackPending != music.isPlaybackPending
+            || newMusic.hasCurrentTrack != music.hasCurrentTrack {
             lastMusicProgressPublishAt = Date()
             return true
         }
@@ -1455,6 +2025,7 @@ final class IslandModel: ObservableObject {
             || lhs.hasArtwork != rhs.hasArtwork
             || lhs.artworkData != rhs.artworkData
             || lhs.artworkURL != rhs.artworkURL
+            || lhs.sourceBundleIdentifier != rhs.sourceBundleIdentifier
     }
 
     private func shouldPublishMusicStatus(_ newStatus: MusicSourceStatus) -> Bool {
@@ -1514,7 +2085,6 @@ final class IslandHostingView<Content: View>: NSHostingView<Content> {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = IslandModel()
     private var panel: IslandPanel?
-    private var expandedPanel: IslandPanel?
     private var statusItem: NSStatusItem?
     private var calibrationWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -1525,7 +2095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverLocalMouseMonitor: Any?
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
-    private var panelAnimationID = 0
+    private var panelAnimationGate = IslandAnimationCompletionGate()
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
     private var isPointerInsideHoverZone = false
@@ -1560,6 +2130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        model.refreshMusicIntegrationStatus()
         Task {
             await model.refreshEventKitNow()
         }
@@ -1624,19 +2195,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureIslandHostingView(host, size: size)
         panel.contentView = host
 
-        let expandedSize = expandedPanelSize()
-        let expandedPanel = makeIslandPanel(size: expandedSize, level: .floating)
-        let expandedRoot = ExpandedIslandBodyPanel(model: model)
-        let expandedHost = IslandHostingView(rootView: expandedRoot)
-        configureIslandHostingView(expandedHost, size: expandedSize)
-        expandedPanel.contentView = expandedHost
-        expandedPanel.ignoresMouseEvents = true
-
         self.panel = panel
-        self.expandedPanel = expandedPanel
         repositionPanel(animated: false)
         panel.orderFrontRegardless()
-        expandedPanel.orderOut(nil)
     }
 
     private func makeIslandPanel(size: NSSize, level: NSWindow.Level) -> IslandPanel {
@@ -1670,7 +2231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.layer?.isOpaque = false
-        hostingView.layer?.masksToBounds = false
+        hostingView.layer?.masksToBounds = true
     }
 
     private func createStatusItem() {
@@ -1705,7 +2266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] mode in
                 guard let self else { return }
                 handleObservedModeChange(mode)
-                repositionPanel(animated: true, targetMode: mode, modeTransition: true)
+                repositionPanel(animated: true, targetMode: mode)
             }
             .store(in: &cancellables)
 
@@ -1721,6 +2282,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 repositionPanel(animated: true)
             }
             .store(in: &cancellables)
+
+        Publishers.CombineLatest3(
+            model.$activeFeature.removeDuplicates(),
+            model.$music
+                .map(\.hasCurrentTrack)
+                .removeDuplicates(),
+            model.$notification
+                .map { $0.count > 0 }
+                .removeDuplicates()
+        )
+        .map { feature, hasCurrentTrack, hasPendingNotification in
+            IslandHoverExpansionPolicy.allowsExpansion(
+                activeFeature: feature,
+                hasCurrentMusicTrack: hasCurrentTrack,
+                hasPendingNotification: hasPendingNotification
+            )
+        }
+        .removeDuplicates()
+        .dropFirst()
+        .sink { [weak self] _ in
+            self?.updateIslandHover(at: NSEvent.mouseLocation)
+        }
+        .store(in: &cancellables)
 
         model.layout.objectWillChange
             .sink { [weak self] _ in
@@ -1803,7 +2387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateIslandHover(at point: CGPoint) {
-        let isInside = isInsideIslandHoverZone(point)
+        let isInside = model.canExpandOnHover && isInsideIslandHoverZone(point)
         guard isInside != isPointerInsideHoverZone else { return }
         isPointerInsideHoverZone = isInside
         hoverGeneration += 1
@@ -1816,16 +2400,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let returnMode: IslandMode = model.mode == .collapsed ? .collapsed : .compact
             hoverEnterTask?.cancel()
             hoverEnterTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 160_000_000)
+                try? await Task.sleep(nanoseconds: 45_000_000)
                 guard !Task.isCancelled,
                       let self,
                       hoverGeneration == generation,
                       isPointerInsideHoverZone,
+                      model.canExpandOnHover,
                       model.mode != .expanded else { return }
                 didExpandFromHover = true
                 hoverReturnMode = returnMode
                 hoverExpectedModeChange = .expanded
-                model.requestIslandMode(.expanded, bypassCooldown: true)
+                model.requestIslandMode(
+                    .expanded,
+                    bypassCooldown: true,
+                    userInitiated: false
+                )
                 hoverEnterTask = nil
             }
             return
@@ -1846,14 +2435,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let returnMode = hoverReturnMode ?? .compact
             hoverReturnMode = nil
             hoverExpectedModeChange = returnMode
-            model.requestIslandMode(returnMode, bypassCooldown: true)
+            model.requestIslandMode(
+                returnMode,
+                bypassCooldown: true,
+                userInitiated: false
+            )
             hoverExitTask = nil
         }
     }
 
     private func isInsideIslandHoverZone(_ point: CGPoint) -> Bool {
         guard model.isVisible, let panel, panel.isVisible else { return false }
-        let headerZone = panel.frame.insetBy(dx: -3, dy: -3)
         if model.mode == .compact,
            model.activeFeature != .music {
             let compactControlZone = CGRect(
@@ -1866,31 +2458,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return false
             }
         }
-        guard model.mode == .expanded,
-              let expandedPanel,
-              expandedPanel.isVisible else {
-            return headerZone.contains(point)
-        }
-
-        let bodyZone = expandedPanel.frame.insetBy(dx: -3, dy: -3)
-        if headerZone.contains(point) || bodyZone.contains(point) {
-            return true
-        }
-
-        let bridgeMinX = max(panel.frame.minX, expandedPanel.frame.minX)
-        let bridgeMaxX = min(panel.frame.maxX, expandedPanel.frame.maxX)
-        let bridgeMinY = min(panel.frame.minY, expandedPanel.frame.maxY)
-        let bridgeMaxY = max(panel.frame.minY, expandedPanel.frame.maxY)
-        guard bridgeMaxX > bridgeMinX, bridgeMaxY > bridgeMinY else {
-            return false
-        }
-        let bridge = CGRect(
-            x: bridgeMinX,
-            y: bridgeMinY,
-            width: bridgeMaxX - bridgeMinX,
-            height: bridgeMaxY - bridgeMinY
-        )
-        return bridge.contains(point)
+        return interactionRegions(for: panel.frame, mode: model.mode)
+            .contains(point, tolerance: 3)
     }
 
     private func handleObservedModeChange(_ mode: IslandMode) {
@@ -1941,13 +2510,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            settingsWindow.frame.contains(clickPoint) {
             return
         }
-        let headerFrame = panel.frame.insetBy(dx: -2, dy: -2)
-        let bodyFrame = expandedPanel?.isVisible == true
-            ? expandedPanel?.frame.insetBy(dx: -2, dy: -2)
-            : nil
-        guard !headerFrame.contains(clickPoint),
-              bodyFrame?.contains(clickPoint) != true else { return }
-        model.mode = .compact
+        let regions = interactionRegions(for: panel.frame, mode: model.mode)
+        guard !regions.contains(clickPoint, tolerance: 2) else { return }
+        model.requestIslandMode(.compact, bypassCooldown: true)
     }
 
     private func updateScreenMetrics() {
@@ -1989,24 +2554,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func panelSize(for mode: IslandMode) -> NSSize {
-        switch mode {
-        case .collapsed:
-            return NSSize(width: model.collapsedWidth, height: model.topBandHeight)
-        case .compact:
-            return NSSize(width: model.compactWidth, height: model.topBandHeight)
-        case .expanded:
-            return NSSize(width: model.expandedHeaderWidth, height: model.topBandHeight)
-        }
+        IslandWindowLayout.size(
+            for: mode,
+            collapsedWidth: model.collapsedWidth,
+            compactWidth: model.compactWidth,
+            expandedWidth: model.expandedWidth,
+            expandedHeight: model.expandedHeight,
+            topBandHeight: model.topBandHeight
+        )
     }
 
-    private func expandedPanelSize() -> NSSize {
-        NSSize(width: model.expandedWidth, height: model.expandedBodyHeight)
+    private func interactionRegions(
+        for panelFrame: NSRect,
+        mode: IslandMode
+    ) -> IslandInteractionRegions {
+        let headerWidth: CGFloat
+        switch mode {
+        case .collapsed:
+            headerWidth = model.collapsedWidth
+        case .compact:
+            headerWidth = model.compactWidth
+        case .expanded:
+            headerWidth = model.expandedHeaderWidth
+        }
+        return IslandInteractionRegions.make(
+            panelFrame: panelFrame,
+            mode: mode,
+            headerWidth: headerWidth,
+            topBandHeight: model.topBandHeight,
+            expandedBodyHeight: model.expandedBodyHeight,
+            expandedPanelTopGap: model.expandedPanelTopGap
+        )
     }
 
     private func repositionPanel(
         animated: Bool,
-        targetMode: IslandMode? = nil,
-        modeTransition: Bool = false
+        targetMode: IslandMode? = nil
     ) {
         guard let panel else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
@@ -2015,37 +2598,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = targetMode ?? model.mode
         let size = panelSize(for: mode)
         let frame = panelFrame(for: size, on: screen)
-        let bodySize = expandedPanelSize()
-        let bodyFrame = expandedPanelFrame(for: bodySize, on: screen)
 
         guard animated else {
-            panelAnimationID += 1
+            _ = panelAnimationGate.beginAnimation()
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
-
-            expandedPanel?.setFrame(bodyFrame, display: true)
-            expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-            expandedPanel?.alphaValue = 1
-            expandedPanel?.ignoresMouseEvents = mode != .expanded
             updatePanelVisibility()
             return
         }
 
-        panelAnimationID += 1
-        let animationID = panelAnimationID
+        let animationID = panelAnimationGate.beginAnimation()
         let animationDuration = IslandMotion.duration(for: mode)
-        // The body is already at its final frame when expanding. Accept clicks
-        // immediately so a visible control cannot be inert during the animation.
-        expandedPanel?.ignoresMouseEvents = mode != .expanded
 
         if model.isVisible {
             panel.orderFrontRegardless()
-            if mode == .expanded, let expandedPanel {
-                expandedPanel.setFrame(bodyFrame, display: true)
-                expandedPanel.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-                expandedPanel.alphaValue = 1
-                expandedPanel.orderFrontRegardless()
-            }
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -2053,49 +2619,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             context.timingFunction = IslandMotion.timingFunction(for: mode)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
-
-            if let expandedPanel,
-               !modeTransition,
-               mode == .expanded,
-               expandedPanel.isVisible {
-                expandedPanel.animator().setFrame(bodyFrame, display: true)
-            }
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                guard let self,
-                      self.panelAnimationID == animationID,
-                      self.model.mode == mode else { return }
-                self.finishAnimatedReposition(targetMode: mode, bodySize: bodySize)
+                guard let self else { return }
+                self.finishAnimatedReposition(
+                    animationID: animationID,
+                    targetMode: mode,
+                    frame: frame,
+                    size: size
+                )
             }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
+            guard let self else { return }
+            finishAnimatedReposition(
+                animationID: animationID,
+                targetMode: mode,
+                frame: frame,
+                size: size
+            )
         }
     }
 
-    private func finishAnimatedReposition(targetMode: IslandMode, bodySize: NSSize) {
-        if targetMode != .expanded {
-            expandedPanel?.orderOut(nil)
-        }
-        panel?.contentView?.frame = NSRect(origin: .zero, size: panel?.frame.size ?? .zero)
-        expandedPanel?.contentView?.frame = NSRect(origin: .zero, size: bodySize)
-        expandedPanel?.alphaValue = 1
-        expandedPanel?.ignoresMouseEvents = targetMode != .expanded
+    private func finishAnimatedReposition(
+        animationID: Int,
+        targetMode: IslandMode,
+        frame: NSRect,
+        size: NSSize
+    ) {
+        guard panelAnimationGate.claimCompletion(
+            animationID: animationID,
+            targetMode: targetMode,
+            currentMode: model.mode
+        ) else { return }
+        panel?.setFrame(frame, display: true)
+        panel?.contentView?.frame = NSRect(origin: .zero, size: size)
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height - CGFloat(model.layout.islandYOffset),
-            width: size.width,
-            height: size.height
-        )
-    }
-
-    private func expandedPanelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        let headerMinY = screen.frame.maxY - model.topBandHeight - CGFloat(model.layout.islandYOffset)
-        return NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: headerMinY - model.expandedPanelTopGap - size.height,
-            width: size.width,
-            height: size.height
+        IslandWindowLayout.frame(
+            for: size,
+            in: screen.frame,
+            yOffset: CGFloat(model.layout.islandYOffset)
         )
     }
 
@@ -2103,14 +2669,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let panel else { return }
         if model.isVisible {
             panel.orderFrontRegardless()
-            if model.mode == .expanded {
-                expandedPanel?.orderFrontRegardless()
-            } else {
-                expandedPanel?.orderOut(nil)
-            }
         } else {
             panel.orderOut(nil)
-            expandedPanel?.orderOut(nil)
         }
     }
 
@@ -2179,7 +2739,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if model.mode == .collapsed,
            !CommandLine.arguments.contains("--preview-mode") {
-            model.mode = .compact
+            model.requestIslandMode(.compact, bypassCooldown: true)
         }
         repositionPanel(animated: true)
         if shouldShowSettings {
@@ -2189,7 +2749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showCalibration() {
         model.isVisible = true
-        model.mode = .expanded
+        model.requestIslandMode(.expanded, bypassCooldown: true)
         repositionPanel(animated: false)
 
         let window: NSWindow
@@ -2225,6 +2785,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+private final class AppTerminationSignalBridge {
+    private var sources: [DispatchSourceSignal] = []
+
+    init() {
+        for signalNumber in [SIGINT, SIGTERM] {
+            Darwin.signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(
+                signal: signalNumber,
+                queue: .main
+            )
+            source.setEventHandler {
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            sources.append(source)
+        }
+    }
+}
+
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
@@ -2248,7 +2828,7 @@ struct IslandSettingsView: View {
                     Label("常规", systemImage: "switch.2")
                 }
 
-            MusicSettingsPane(model: model)
+            MusicSettingsPane(model: model, settings: model.appSettings)
                 .tabItem {
                     Label("音乐", systemImage: "music.note")
                 }
@@ -2288,9 +2868,14 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("音乐控制", value: "汽水语义控件直控")
+                LabeledContent(
+                    "音乐控制",
+                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
+                        ? "Apple Event 定向"
+                        : "汽水语义控件定向"
+                )
 
-                Text("播放、暂停和切歌只触发汽水音乐窗口内经过结构校验的唯一语义控件；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
+                Text("控制只发送给当前选中的已适配音乐应用；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2301,7 +2886,7 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
-                LabeledContent("默认主活动", value: "汽水音乐")
+                LabeledContent("默认主活动", value: "前台音乐应用优先")
 
                 Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
                     .font(.system(size: 12))
@@ -2310,12 +2895,12 @@ private struct GeneralSettingsPane: View {
                 HStack {
                     Button("折叠") {
                         model.isVisible = true
-                        model.mode = .compact
+                        model.requestIslandMode(.compact, bypassCooldown: true)
                     }
 
                     Button("展开预览") {
                         model.isVisible = true
-                        model.mode = .expanded
+                        model.requestIslandMode(.expanded, bypassCooldown: true)
                     }
 
                     Button("隐藏") {
@@ -2349,6 +2934,27 @@ private struct GeneralSettingsPane: View {
 
 private struct MusicSettingsPane: View {
     @ObservedObject var model: IslandModel
+    @ObservedObject var settings: AppSettings
+    @State private var isCheckingAppleMusic = false
+
+    private var appleMusicLatencyText: String {
+        guard let milliseconds = model.appleMusicResponseLatencyMilliseconds else {
+            return "--"
+        }
+        return "\(milliseconds) ms"
+    }
+
+    private var artworkStatusText: String {
+        if model.music.track.artworkData != nil || model.music.track.artworkURL != nil {
+            return "已获取"
+        }
+        switch model.musicSourceStatus.availability {
+        case .qishuiNotRunning, .preview:
+            return "无当前封面"
+        default:
+            return "等待获取"
+        }
+    }
 
     private var diagnosticText: String {
         [
@@ -2372,29 +2978,109 @@ private struct MusicSettingsPane: View {
         Form {
             Section("音乐应用") {
                 ForEach(MusicAdapterRegistry.registrations) { registration in
-                    MusicAdapterSettingsRow(registration: registration)
+                    MusicAdapterSettingsRow(registration: registration, model: model)
                 }
             }
 
-            Section {
+            Section("汽水音乐控制") {
+                LabeledContent("应用状态", value: model.qishuiIsRunning ? "运行中" : "未运行")
+                LabeledContent(
+                    "辅助功能",
+                    value: model.accessibilityTrusted ? "已授权" : "控制待授权"
+                )
+                if !model.accessibilityTrusted {
+                    Button {
+                        model.openAccessibilitySettings()
+                    } label: {
+                        Label("打开辅助功能设置", systemImage: "gear")
+                    }
+                }
+            }
+
+            Section("Apple Music Alpha 支持") {
+                Toggle("启用 Apple Music 适配", isOn: $settings.appleMusicEnabled)
+
+                if settings.appleMusicEnabled {
+                    LabeledContent(
+                        "运行状态",
+                        value: model.appleMusicIsRunning ? "运行中" : "未运行"
+                    )
+                    LabeledContent(
+                        "自动化权限",
+                        value: model.appleMusicAutomationAccess.displayName
+                    )
+                    LabeledContent("连接状态", value: model.appleMusicConnectionStatus)
+                    LabeledContent("响应耗时", value: appleMusicLatencyText)
+                    LabeledContent("可用控制", value: model.appleMusicAvailableControls)
+
+                    HStack {
+                        switch model.appleMusicAutomationAccess {
+                        case .denied:
+                            Button {
+                                model.openAppleMusicAutomationSettings()
+                            } label: {
+                                Label("打开自动化设置", systemImage: "gear")
+                            }
+                        case .consentRequired:
+                            Button {
+                                model.requestAppleMusicAutomationAccess()
+                            } label: {
+                                Label("请求授权", systemImage: "lock.open")
+                            }
+                        case .allowed, .targetNotRunning, .unavailable:
+                            EmptyView()
+                        }
+
+                        Button {
+                            isCheckingAppleMusic = true
+                            Task {
+                                await model.refreshAppleMusicSnapshot()
+                                isCheckingAppleMusic = false
+                            }
+                        } label: {
+                            Label("刷新连接", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(
+                            isCheckingAppleMusic
+                                || !model.appleMusicIsRunning
+                                || model.appleMusicAutomationAccess != .allowed
+                        )
+                    }
+
+                    if !model.appleMusicIsRunning {
+                        Text("请先打开 Apple Music；顶屿不会主动启动它。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("电台未提供封面时，仅向 Apple 公共搜索发送当前歌名与歌手。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Section("当前活动") {
                 LabeledContent("当前歌曲", value: "\(model.music.track.title) - \(model.music.track.artist)")
                 LabeledContent("同步来源", value: model.musicSourceStatus.sourceName)
+                LabeledContent("同步状态", value: model.musicSourceStatus.compactLabel)
+                LabeledContent("最近更新", value: musicStatusAgeText(model.musicSourceStatus.checkedAt))
                 LabeledContent("播放进度", value: playbackPositionText(model.music))
-                LabeledContent("封面状态", value: model.music.track.artworkData == nil && model.music.track.artworkURL == nil ? "补充中" : "已获取")
-                LabeledContent("控制策略", value: "汽水唯一语义 AX")
-            }
-
-            Section {
-                Button("立即刷新汽水状态") {
+                LabeledContent("封面状态", value: artworkStatusText)
+                LabeledContent(
+                    "控制策略",
+                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
+                        ? "Apple Event 定向"
+                        : "汽水唯一语义 AX"
+                )
+                Button {
                     model.showMusicSourceStatus()
-                }
-
-                Button("重新读取当前播放") {
-                    model.forceRefreshNowPlaying()
+                } label: {
+                    Label("刷新当前活动", systemImage: "arrow.clockwise")
                 }
             }
 
-            if model.appSettings.showMusicDiagnostics {
+            if settings.showMusicDiagnostics {
                 Section {
                     LabeledContent("最近检查", value: model.musicSourceStatus.checkedAt.formatted(date: .omitted, time: .standard))
                     LabeledContent("UI Progress", value: String(format: "%.4f", model.music.progress))
@@ -2420,18 +3106,76 @@ private struct MusicSettingsPane: View {
         }
         .formStyle(.grouped)
         .padding(16)
+        .task {
+            model.refreshMusicIntegrationStatus()
+            guard settings.appleMusicEnabled,
+                  model.appleMusicIsRunning,
+                  model.appleMusicAutomationAccess == .allowed else { return }
+            isCheckingAppleMusic = true
+            await model.refreshAppleMusicSnapshot()
+            isCheckingAppleMusic = false
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didLaunchApplicationNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didTerminateApplicationNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            model.refreshMusicIntegrationStatus()
+        }
     }
 }
 
 private struct MusicAdapterSettingsRow: View {
     let registration: MusicAdapterRegistration
+    @ObservedObject var model: IslandModel
 
-    private var statusColor: Color {
+    private var supportColor: Color {
         switch registration.implementationStatus {
         case .active:
             return .green
+        case .alpha:
+            return .orange
         case .planned:
             return .secondary
+        }
+    }
+
+    private var runtime: MusicAdapterRuntimePresentation {
+        if registration.descriptor.bundleIdentifier
+            == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
+            return MusicAdapterRuntimePresenter.qishui(
+                isRunning: model.qishuiIsRunning,
+                accessibilityTrusted: model.accessibilityTrusted
+            )
+        }
+        return MusicAdapterRuntimePresenter.appleMusic(
+            isEnabled: model.appSettings.appleMusicEnabled,
+            isRunning: model.appleMusicIsRunning,
+            automationAccess: model.appleMusicAutomationAccess,
+            snapshotAvailability: model.appleMusicSnapshotAvailability
+        )
+    }
+
+    private var runtimeColor: Color {
+        switch runtime.level {
+        case .connected:
+            return .green
+        case .limited:
+            return .blue
+        case .actionRequired:
+            return .orange
+        case .inactive:
+            return .secondary
+        case .error:
+            return .red
         }
     }
 
@@ -2460,17 +3204,42 @@ private struct MusicAdapterSettingsRow: View {
                 Text(registration.capabilitySummary)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(runtime.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
             Spacer(minLength: 12)
 
-            Text(registration.implementationStatus.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(statusColor)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(registration.implementationStatus.displayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(supportColor)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(runtimeColor)
+                        .frame(width: 6, height: 6)
+                    Text(runtime.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(runtimeColor)
+                }
+            }
         }
-        .frame(minHeight: 34)
+        .frame(minHeight: 52)
     }
+}
+
+private func musicStatusAgeText(_ date: Date) -> String {
+    let age = max(Date().timeIntervalSince(date), 0)
+    if age < 1 {
+        return "刚刚"
+    }
+    if age < 60 {
+        return "\(Int(age)) 秒前"
+    }
+    return date.formatted(date: .omitted, time: .standard)
 }
 
 private struct EventKitSettingsPane: View {
@@ -2621,8 +3390,11 @@ struct IslandRootView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .top) {
+                ExpandedIslandBodyPanel(model: model)
+                    .offset(y: model.topBandHeight + model.expandedPanelTopGap)
+
                 IslandShell(
-                    width: proxy.size.width,
+                    width: model.currentHeaderWidth,
                     height: model.topBandHeight,
                     cornerRadius: model.topBandHeight / 2,
                     fillOpacity: 1,
@@ -2631,6 +3403,7 @@ struct IslandRootView: View {
                 ) {
                     Color.clear
                 }
+                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
 
                 ZStack {
                     CollapsedIsland(model: model)
@@ -2648,9 +3421,11 @@ struct IslandRootView: View {
                         .allowsHitTesting(model.mode == .expanded)
                         .accessibilityHidden(model.mode != .expanded)
                 }
+                .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
+                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
                 .animation(IslandMotion.headerContentAnimation(for: model.mode), value: model.mode)
             }
-            .frame(width: proxy.size.width, height: model.topBandHeight, alignment: .top)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
@@ -3165,7 +3940,11 @@ struct ExpandedMusic: View {
                     }
                     .help("上一首")
 
-                    ControlButton(icon: model.music.isPlaying ? "pause.fill" : "play.fill", prominent: true) {
+                    ControlButton(
+                        icon: model.music.isPlaying ? "pause.fill" : "play.fill",
+                        prominent: true,
+                        feedbackToken: model.playPauseFeedbackGeneration
+                    ) {
                         model.playPause()
                     }
                     .help(model.music.isPlaying ? "暂停" : "播放")
@@ -3354,21 +4133,6 @@ struct AlbumArt: View {
     let track: MusicTrack
     let size: CGFloat
 
-    private var artworkIdentity: String {
-        let artworkKey: String
-        if let artworkData = track.artworkData {
-            let prefix = artworkData.prefix(16)
-                .map { String(format: "%02x", $0) }
-                .joined()
-            artworkKey = "data:\(artworkData.count):\(prefix)"
-        } else if let artworkURL = track.artworkURL {
-            artworkKey = "url:\(artworkURL.absoluteString)"
-        } else {
-            artworkKey = "none"
-        }
-        return "\(track.title)\u{1f}\(track.artist)\u{1f}\(artworkKey)"
-    }
-
     var body: some View {
         ZStack {
             if let artworkData = track.artworkData,
@@ -3399,7 +4163,6 @@ struct AlbumArt: View {
                     .offset(x: 3, y: 3)
             }
         }
-        .animation(.easeInOut(duration: 0.16), value: artworkIdentity)
     }
 
     private var fallbackArtwork: some View {
@@ -3517,18 +4280,40 @@ struct ControlButton: View {
                     .scaleEffect(
                         feedbackPulse && !reduceMotion && !prominent ? 1.1 : 1
                     )
+                    .id(icon)
+                    .transition(iconTransition)
             }
             .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
+            .scaleEffect(
+                feedbackPulse && prominent && !reduceMotion ? 0.96 : 1
+            )
         }
         .buttonStyle(IslandControlButtonStyle())
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.08)
+                : prominent
+                    ? .easeOut(duration: 0.1)
+                    : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
+            value: icon
+        )
         .onChange(of: feedbackToken) { _, token in
-            guard token > 0, !prominent else { return }
+            guard token > 0 else { return }
             triggerFeedbackPulse(token: token)
         }
         .onDisappear {
             feedbackTask?.cancel()
             feedbackTask = nil
+            feedbackPulse = false
         }
+    }
+
+    private var iconTransition: AnyTransition {
+        guard !reduceMotion, !prominent else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.76)),
+            removal: .opacity.combined(with: .scale(scale: 1.08))
+        )
     }
 
     private func triggerFeedbackPulse(token: UInt64) {
@@ -3825,5 +4610,6 @@ func mediaTimeText(_ seconds: TimeInterval) -> String {
 
 private let appDelegate = AppDelegate()
 let app = NSApplication.shared
+private let terminationSignalBridge = AppTerminationSignalBridge()
 app.delegate = appDelegate
 app.run()

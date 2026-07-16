@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DMG="${1:?usage: verify-release-dmg.sh PATH_TO_DMG}"
 DMG="$(cd "$(dirname "$DMG")" && pwd)/$(basename "$DMG")"
+EXPECTED_VERSION="${VERSION:-$(plutil -extract CFBundleShortVersionString raw "$ROOT/Packaging/Info.plist")}"
+EXPECTED_BUILD_NUMBER="${BUILD_NUMBER:-$(plutil -extract CFBundleVersion raw "$ROOT/Packaging/Info.plist")}"
 CHECKSUM="$DMG.sha256"
 VERIFY_ROOT="$ROOT/.build/dmg-verify-$$"
 MOUNT_POINT="$VERIFY_ROOT/volume"
@@ -19,6 +21,10 @@ trap cleanup EXIT
 
 test -f "$DMG"
 test -f "$CHECKSUM"
+if [[ "$(basename "$DMG")" != "TopIslet-v${EXPECTED_VERSION}-arm64.dmg" ]]; then
+  echo "error: DMG filename does not match version $EXPECTED_VERSION: $(basename "$DMG")" >&2
+  exit 1
+fi
 hdiutil verify "$DMG" >/dev/null
 (
   cd "$(dirname "$DMG")"
@@ -60,6 +66,8 @@ test "$(sips -g pixelHeight "$MOUNT_POINT/.background/background.png" | awk '/pi
 PLIST="$APP/Contents/Info.plist"
 test "$(plutil -extract CFBundleIdentifier raw "$PLIST")" = "io.github.scorpioxyb.topislet"
 test "$(plutil -extract CFBundleDisplayName raw "$PLIST")" = "顶屿"
+test "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$EXPECTED_VERSION"
+test "$(plutil -extract CFBundleVersion raw "$PLIST")" = "$EXPECTED_BUILD_NUMBER"
 test "$(plutil -extract LSMinimumSystemVersion raw "$PLIST")" = "26.0"
 EXECUTABLE="$(plutil -extract CFBundleExecutable raw "$PLIST")"
 MAIN_BINARY="$APP/Contents/MacOS/$EXECUTABLE"

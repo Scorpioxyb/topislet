@@ -32,8 +32,10 @@ struct MusicControlCapabilities: Equatable, Sendable {
     }
 }
 
-enum MusicControlAction: Sendable {
+enum MusicControlAction: Sendable, Equatable {
     case playPause
+    case play
+    case pause
     case previousTrack
     case nextTrack
     case seekNormalized(Double)

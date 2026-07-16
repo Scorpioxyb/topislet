@@ -30,6 +30,8 @@
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>用于读取即将开始的日程，并在顶屿中提供低打扰提醒。</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>用于读取并控制 Apple Music 播放状态；可在顶屿的音乐设置中关闭该适配。</string>
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>用于读取刚到期的提醒事项，并在顶屿中提供低打扰提醒。</string>
 </dict>

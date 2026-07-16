@@ -570,7 +570,7 @@ index e23de3a..49204d2 100644
 +    const void *client, const void *origin, dispatch_queue_t queue,
 +    MRMediaRemoteGetNowPlayingPlayerForClientCompletion_t completion);
 +typedef void (^MRMediaRemoteGetSupportedCommandsForClientCompletion_t)(
-+    CFArrayRef commands, const void *error);
++    CFArrayRef commands);
 +typedef void (*MRMediaRemoteGetSupportedCommandsForClient_t)(
 +    const void *client, const void *origin, dispatch_queue_t queue,
 +    MRMediaRemoteGetSupportedCommandsForClientCompletion_t completion);
