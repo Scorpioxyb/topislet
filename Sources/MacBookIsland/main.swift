@@ -2403,7 +2403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let returnMode: IslandMode = model.mode == .collapsed ? .collapsed : .compact
             hoverEnterTask?.cancel()
             hoverEnterTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 160_000_000)
+                try? await Task.sleep(nanoseconds: 45_000_000)
                 guard !Task.isCancelled,
                       let self,
                       hoverGeneration == generation,

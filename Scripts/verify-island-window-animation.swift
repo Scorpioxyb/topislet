@@ -5,6 +5,7 @@ import Foundation
 
 private let ownerName = "顶屿"
 private let hoverPersistenceDuration: TimeInterval = 12
+private let maximumHoverResponseDuration: TimeInterval = 0.12
 
 private struct WindowSample {
     let frame: CGRect
@@ -113,6 +114,25 @@ private func verifyCanvasDoesNotInterpolate(
     }
 }
 
+private func verifyHoverResponse(
+    _ samples: [WindowSample],
+    initialSize: CGSize
+) throws -> TimeInterval {
+    guard let firstChangedIndex = samples.firstIndex(where: { sample in
+        abs(sample.frame.width - initialSize.width) > 0.75
+            || abs(sample.frame.height - initialSize.height) > 0.75
+    }) else {
+        throw VerificationError.failed("悬停后岛没有开始展开")
+    }
+    let responseDuration = Double(firstChangedIndex) * 0.005
+    guard responseDuration <= maximumHoverResponseDuration else {
+        throw VerificationError.failed(
+            "悬停展开响应过慢：\(Int(responseDuration * 1_000))ms"
+        )
+    }
+    return responseDuration
+}
+
 private func run() throws {
     let originalPointer = CGEvent(source: nil)?.location ?? .zero
     defer {
@@ -148,6 +168,10 @@ private func run() throws {
         expansion,
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
+    )
+    let hoverResponseDuration = try verifyHoverResponse(
+        expansion,
+        initialSize: initial.frame.size
     )
     try verifyCanvasDoesNotInterpolate(
         expansion,
@@ -187,6 +211,7 @@ private func run() throws {
     print("窗口数量: 1")
     print("紧凑尺寸: \(Int(initial.frame.width))x\(Int(initial.frame.height))")
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")
+    print("悬停响应: \(Int(hoverResponseDuration * 1_000))ms")
     print("悬停保持: \(String(format: "%.1f", hoverPersistenceDuration))s")
 }
 
