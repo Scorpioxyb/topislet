@@ -7,7 +7,7 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.1-alpha.4 开发者预览版**，优先验证汽水音乐同步、安全媒体控制、Apple Music Alpha 支持和顶部交互。它不是 Apple 或汽水音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.1-alpha.4 开发者预览版**，开发分支正在验证汽水音乐同步、安全媒体控制、Apple Music 与网易云音乐 Alpha 支持和顶部交互。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
 
@@ -20,6 +20,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 - 汽水播放 / 暂停、上一首、下一首只触发汽水窗口内经过结构校验的唯一语义控件，不发送全局媒体键。
 - 进度条显示汽水专属可信进度；当前保持只读，不发送系统全局跳转命令。
 - Apple Music Alpha 支持可读取歌曲、专辑封面、播放状态与进度，并通过定向 Apple Event 控制播放、切歌和绝对进度；电台曲目没有内嵌封面时，会在后台通过 Apple 公共目录精确匹配封面，不阻塞播放状态响应。前台切换到汽水或 Apple Music 时岛立即跟随，离开音乐应用后再按真实播放状态自动选择。
+- 网易云音乐 Alpha 支持按 `com.netease.163music` 当前 PID 定向读取歌曲、歌手、封面、播放状态和进度，并通过网易云进程内原生“控制”菜单执行播放 / 暂停、上一首和下一首；不使用系统当前媒体，也不会误控视频播放器。当前进度只读。
 - 音乐设置页分别显示支持等级、应用运行状态、权限、连接结果和最近同步状态；Apple Music 适配默认开启，也可随时关闭。
 - 计时器按需接管灵动岛，结束后恢复音乐活动。
 - 日历和提醒事项经过用户单独授权后，可提供低打扰临近提醒。
@@ -31,7 +32,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 | --- | --- |
 | macOS | **macOS 26.0 或更高版本** |
 | 设备 | 优先支持带刘海的 Apple Silicon MacBook |
-| 音乐来源 | 汽水音乐主适配；Apple Music Alpha 支持 |
+| 音乐来源 | 汽水音乐主适配；Apple Music、网易云音乐 Alpha 支持 |
 | 源码构建 | Xcode Command Line Tools、Swift 6 |
 
 > MediaRemote Adapter 当前二进制的最低系统版本为 macOS 26.0，因此项目不再宣称兼容 macOS 14。其他系统版本需要重新构建并单独验证该依赖。
@@ -80,6 +81,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 5. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
 6. 日历和提醒事项仅在“设置 → 日程”中按需单独授权。
 7. 使用 Apple Music Alpha 支持时，在“设置 → 音乐”中检查并授权“自动化 - Apple Music”。顶屿不会自动启动 Apple Music；不需要时可关闭该适配。
+8. 使用网易云音乐 Alpha 支持时，打开网易云音乐并播放歌曲；状态读取无需额外权限，三个播放按钮需要辅助功能权限。
 
 > 从旧版“MacBook 灵动岛”升级：先退出旧版并将旧 `.app` 移到废纸篓，避免两个进程同时显示顶部岛。由于 App 显示名和 Bundle ID 已更改，macOS 会把顶屿识别为新的 App；首次启动后需要重新授予辅助功能权限，如启用日程功能，也需要重新授予日历和提醒事项权限。旧版布局和设置可能不会自动迁移。
 
@@ -87,7 +89,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 
 | 权限 | 是否必需 | 用途 |
 | --- | --- | --- |
-| 辅助功能 | 音乐控制必需 | 识别并触发汽水进程内经过结构校验的唯一语义控件 |
+| 辅助功能 | 汽水、网易云音乐控制必需 | 识别并触发目标音乐进程内经过结构校验的语义控件 |
 | 自动化 - Apple Music | 使用 Apple Music 时必需 | 按具体 Apple Music 进程读取播放状态并发送定向控制 |
 | 日历 | 可选 | 读取临近开始的定时日程 |
 | 提醒事项 | 可选 | 读取刚到期且具有具体时间的提醒 |
@@ -97,8 +99,9 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 
 ## 已知限制
 
-- 汽水音乐是当前产品级主适配；Apple Music 为 Alpha 支持，普通歌曲和可唯一匹配的电台曲目已支持专辑封面，暂不提供歌词，稳定性仍需更多设备与账号环境验证。
-- 除汽水和 Apple Music 外，其他媒体应用不会自动获得完整控制能力。
+- 汽水音乐是当前产品级主适配；Apple Music 与网易云音乐为 Alpha 支持，暂不提供歌词，稳定性仍需更多设备、账号和音乐类型验证。
+- 网易云音乐当前不提供定向进度跳转；不同封面切歌本机实测约 `0.76s` 原子更新，同专辑同封面仍会保守执行双快照确认。
+- 除汽水、Apple Music 和网易云音乐外，其他媒体应用不会自动获得完整控制能力。
 - 项目依赖 macOS 非公开 MediaRemote 能力，系统更新可能导致兼容性变化。
 - 当前没有汽水专属定向 seek 接口，因此进度条保持只读。
 - Developer ID 签名与 Apple 公证尚未完成，当前本机包只是 ad-hoc 签名开发包。
@@ -109,6 +112,8 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 ```bash
 .build/debug/MacBookIsland --music-adapters
 .build/debug/MacBookIsland --apple-music-status
+.build/debug/MacBookIsland --netease-music-status
+.build/debug/MacBookIsland --netease-music-adapter-control next
 .build/debug/MacBookIsland --adapter-status
 .build/debug/MacBookIsland --qishui-status
 .build/debug/MacBookIsland --qishui-control-availability
@@ -149,4 +154,4 @@ MediaRemote Adapter 使用 BSD 3-Clause License。完整归属与当前供应链
 
 ## 免责声明
 
-MacBook、macOS、Dynamic Island 和 Apple 是 Apple Inc. 的商标或产品名称；汽水音乐属于其权利人。本项目与 Apple、汽水音乐及其关联公司不存在隶属、赞助或官方合作关系。
+MacBook、macOS、Dynamic Island 和 Apple 是 Apple Inc. 的商标或产品名称；汽水音乐和网易云音乐属于各自权利人。本项目与上述公司及其关联方不存在隶属、赞助或官方合作关系。

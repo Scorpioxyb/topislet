@@ -18,6 +18,79 @@ private func candidate(
     )
 }
 
+@Test("三来源同时播放时优先级为汽水、网易云、Apple Music")
+func threeSourcePlaybackPriorityIsStable() {
+    let selector = MusicSourceSelector()
+    let allPlaying = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        neteaseMusic: candidate(.neteaseMusic, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .playing)
+    )
+    #expect(allPlaying.source == .qishui)
+
+    let afterQishuiExit = selector.update(
+        qishui: candidate(
+            .qishui,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        neteaseMusic: candidate(.neteaseMusic, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .playing)
+    )
+    #expect(afterQishuiExit.source == .neteaseMusic)
+}
+
+@Test("前台网易云立即成为显示和控制来源")
+func foregroundNeteaseMusicSwitchesImmediately() {
+    let selector = MusicSourceSelector()
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        neteaseMusic: candidate(.neteaseMusic, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing)
+    )
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        neteaseMusic: candidate(.neteaseMusic, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        foregroundSource: .neteaseMusic
+    )
+
+    #expect(selection.source == .neteaseMusic)
+}
+
+@Test("网易云退出后立即回退到 Apple Music")
+func neteaseMusicExitFallsBackImmediately() {
+    let selector = MusicSourceSelector()
+    _ = selector.update(
+        qishui: candidate(
+            .qishui,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        neteaseMusic: candidate(.neteaseMusic, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .paused)
+    )
+    let selection = selector.update(
+        qishui: candidate(
+            .qishui,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        neteaseMusic: candidate(
+            .neteaseMusic,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        ),
+        appleMusic: candidate(.appleMusic, playback: .paused)
+    )
+
+    #expect(selection.source == .appleMusic)
+}
+
 @Test("两者同时播放时汽水优先")
 func qishuiWinsWhenBothArePlaying() {
     let selector = MusicSourceSelector()

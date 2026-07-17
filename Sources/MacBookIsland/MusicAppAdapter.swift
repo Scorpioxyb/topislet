@@ -184,6 +184,65 @@ enum MusicAdapterRuntimePresenter {
             )
         }
     }
+
+    static func neteaseMusic(
+        isRunning: Bool,
+        accessibilityTrusted: Bool,
+        snapshotAvailability: MusicAppAvailability?
+    ) -> MusicAdapterRuntimePresentation {
+        guard isRunning else {
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开网易云音乐后自动连接"
+            )
+        }
+        guard accessibilityTrusted else {
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "控制待授权",
+                detail: "状态可同步，播放控制需要辅助功能"
+            )
+        }
+        switch snapshotAvailability {
+        case .ready:
+            return MusicAdapterRuntimePresentation(
+                level: .connected,
+                title: "已连接",
+                detail: "歌曲、封面、进度与定向控制可用"
+            )
+        case let .degraded(reason):
+            return MusicAdapterRuntimePresentation(
+                level: .limited,
+                title: "正在连接",
+                detail: reason
+            )
+        case .notRunning:
+            return MusicAdapterRuntimePresentation(
+                level: .inactive,
+                title: "未运行",
+                detail: "打开网易云音乐后自动连接"
+            )
+        case let .permissionRequired(permission):
+            return MusicAdapterRuntimePresentation(
+                level: .actionRequired,
+                title: "需要权限",
+                detail: permission
+            )
+        case let .unavailable(reason):
+            return MusicAdapterRuntimePresentation(
+                level: .error,
+                title: "当前不可用",
+                detail: reason
+            )
+        case nil:
+            return MusicAdapterRuntimePresentation(
+                level: .limited,
+                title: "等待同步",
+                detail: "正在读取网易云音乐专属状态"
+            )
+        }
+    }
 }
 
 enum MusicAdapterCapability: String, CaseIterable, Hashable, Sendable {
@@ -274,7 +333,24 @@ enum MusicAdapterRegistry {
         ]
     )
 
-    static let registrations = [qishui, appleMusic]
+    static let neteaseMusic = MusicAdapterRegistration(
+        descriptor: MusicAppDescriptor(
+            bundleIdentifier: "com.netease.163music",
+            displayName: "网易云音乐"
+        ),
+        implementationStatus: .alpha,
+        capabilities: [
+            .metadata,
+            .artwork,
+            .playbackState,
+            .progress,
+            .playPause,
+            .previousTrack,
+            .nextTrack
+        ]
+    )
+
+    static let registrations = [qishui, neteaseMusic, appleMusic]
 
     static var activeRegistrations: [MusicAdapterRegistration] {
         registrations.filter { $0.implementationStatus == .active }

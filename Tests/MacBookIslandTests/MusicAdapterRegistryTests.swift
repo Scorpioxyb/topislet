@@ -36,6 +36,38 @@ func appleMusicIsRegisteredAsAlpha() throws {
     #expect(appleMusic.capabilities.contains(.absoluteSeek))
 }
 
+@Test("网易云音乐登记为 Alpha 且不声明全局进度跳转")
+func neteaseMusicIsRegisteredAsAlpha() throws {
+    let neteaseMusic = try #require(
+        MusicAdapterRegistry.registration(forBundleIdentifier: "com.netease.163music")
+    )
+
+    #expect(neteaseMusic.implementationStatus == .alpha)
+    #expect(neteaseMusic.capabilities.contains(.metadata))
+    #expect(neteaseMusic.capabilities.contains(.artwork))
+    #expect(neteaseMusic.capabilities.contains(.playPause))
+    #expect(!neteaseMusic.capabilities.contains(.absoluteSeek))
+}
+
+@Test("网易云运行状态区分未运行、待授权与已连接")
+func neteaseMusicRuntimePresentationReflectsConnection() {
+    #expect(MusicAdapterRuntimePresenter.neteaseMusic(
+        isRunning: false,
+        accessibilityTrusted: true,
+        snapshotAvailability: nil
+    ).level == .inactive)
+    #expect(MusicAdapterRuntimePresenter.neteaseMusic(
+        isRunning: true,
+        accessibilityTrusted: false,
+        snapshotAvailability: .ready
+    ).level == .actionRequired)
+    #expect(MusicAdapterRuntimePresenter.neteaseMusic(
+        isRunning: true,
+        accessibilityTrusted: true,
+        snapshotAvailability: .ready
+    ).level == .connected)
+}
+
 @Test("汽水运行状态区分未运行与辅助功能待授权")
 func qishuiRuntimePresentationExplainsControlPermission() {
     #expect(MusicAdapterRuntimePresenter.qishui(
