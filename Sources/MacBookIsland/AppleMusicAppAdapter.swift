@@ -60,6 +60,10 @@ struct AppleMusicObservation: Equatable, Sendable {
         )
     }
 
+    var artworkReuseIdentity: AppleMusicArtworkReuseIdentity? {
+        AppleMusicArtworkReuseIdentity(artist: artist, album: album)
+    }
+
     static func decode(
         fields: [String],
         artworkData: Data? = nil
@@ -113,6 +117,51 @@ struct AppleMusicObservation: Equatable, Sendable {
     private static func nonnegativeFiniteDouble(_ rawValue: String) -> Double? {
         guard let value = Double(rawValue), value.isFinite, value >= 0 else { return nil }
         return value
+    }
+}
+
+struct AppleMusicArtworkReuseIdentity: Equatable, Sendable {
+    let artist: String
+    let album: String
+
+    init?(artist: String?, album: String?) {
+        guard let artist = artist?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !artist.isEmpty,
+              let album = album?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !album.isEmpty else {
+            return nil
+        }
+        self.artist = artist
+        self.album = album
+    }
+}
+
+struct AppleMusicArtworkReuseCache: Sendable {
+    private var entry: (identity: AppleMusicArtworkReuseIdentity, data: Data)?
+    let maximumArtworkBytes: Int
+
+    init(maximumArtworkBytes: Int = 8 * 1024 * 1024) {
+        self.maximumArtworkBytes = maximumArtworkBytes
+    }
+
+    func data(for observation: AppleMusicObservation) -> Data? {
+        guard let identity = observation.artworkReuseIdentity,
+              entry?.identity == identity else { return nil }
+        return entry?.data
+    }
+
+    mutating func remember(
+        _ data: Data,
+        for observation: AppleMusicObservation
+    ) {
+        guard !data.isEmpty,
+              data.count <= maximumArtworkBytes,
+              let identity = observation.artworkReuseIdentity else { return }
+        entry = (identity: identity, data: data)
+    }
+
+    mutating func reset() {
+        entry = nil
     }
 }
 
@@ -559,6 +608,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private var lastSnapshot: MusicAppSnapshot?
     private var revision: UInt64 = 0
     private var artworkCache = AppleMusicArtworkCache()
+    private var artworkReuseCache = AppleMusicArtworkReuseCache()
     private let artworkLoader: AppleMusicArtworkLoading
     private let transitionTimeline: AppleMusicTransitionTimeline
     private let controlQueue = DispatchQueue(
@@ -677,6 +727,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         cancelNativeArtworkPrefetch(clearPending: true)
         cancelCatalogPrefetch(clearPending: true)
         cancelArtworkFetch()
+        artworkReuseCache.reset()
         lastObservation = nil
         lastInstance = nil
         lastSnapshot = nil
@@ -793,8 +844,12 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             )
         case let .success(observation):
             var resolvedObservation = observation
+            if observation.artworkData == nil,
+               let reusedArtwork = artworkReuseCache.data(for: observation) {
+                resolvedObservation = observation.withArtworkData(reusedArtwork)
+            }
             if let identity = observation.trackIdentity {
-                if let artworkData = observation.artworkData {
+                if let artworkData = resolvedObservation.artworkData {
                     _ = artworkCache.store(
                         artworkData,
                         for: identity,
@@ -829,6 +884,12 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 } else if let artworkData = artworkCache.data(for: identity) {
                     resolvedObservation = observation.withArtworkData(artworkData)
                 }
+            }
+            if let artworkData = resolvedObservation.artworkData {
+                artworkReuseCache.remember(
+                    artworkData,
+                    for: resolvedObservation
+                )
             }
             guard runningApplication()?.processIdentifier == processIdentifier else {
                 return unavailableSnapshot(
@@ -1275,6 +1336,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             return false
         }
         self.lastObservation = lastObservation.withArtworkData(data)
+        artworkReuseCache.remember(data, for: lastObservation)
         revision &+= 1
         self.lastSnapshot = updatedSnapshot
         invalidationHandler?(.cachedDataChanged)
@@ -1411,6 +1473,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             return
         }
         self.lastObservation = lastObservation.withArtworkData(artworkData)
+        artworkReuseCache.remember(artworkData, for: lastObservation)
         revision &+= 1
         self.lastSnapshot = updatedSnapshot
         invalidationHandler?(.cachedDataChanged)

@@ -75,6 +75,44 @@ func appleMusicArtworkMergePreservesObservation() throws {
     #expect(merged.state == observation.state)
 }
 
+@Test("Apple Music 同艺人同专辑切歌立即复用封面")
+func appleMusicArtworkReuseMatchesArtistAndAlbum() throws {
+    let firstTrack = try #require(AppleMusicObservation.decode(fields: [
+        "FIRST", "First Song", "Artist", "Album", "240", "42", "playing"
+    ]))
+    let secondTrack = try #require(AppleMusicObservation.decode(fields: [
+        "SECOND", "Second Song", "Artist", "Album", "180", "0", "playing"
+    ]))
+    let artworkData = Data([0xFF, 0xD8, 0xFF, 0xE0])
+    var cache = AppleMusicArtworkReuseCache()
+
+    cache.remember(artworkData, for: firstTrack)
+
+    #expect(cache.data(for: secondTrack) == artworkData)
+}
+
+@Test("Apple Music 封面复用拒绝不同艺人专辑和不完整身份")
+func appleMusicArtworkReuseRejectsAmbiguousTracks() throws {
+    let source = try #require(AppleMusicObservation.decode(fields: [
+        "FIRST", "First Song", "Artist", "Album", "240", "42", "playing"
+    ]))
+    let differentArtist = try #require(AppleMusicObservation.decode(fields: [
+        "SECOND", "Second Song", "Guest", "Album", "180", "0", "playing"
+    ]))
+    let differentAlbum = try #require(AppleMusicObservation.decode(fields: [
+        "THIRD", "Third Song", "Artist", "Other Album", "180", "0", "playing"
+    ]))
+    let missingAlbum = try #require(AppleMusicObservation.decode(fields: [
+        "FOURTH", "Fourth Song", "Artist", "", "180", "0", "playing"
+    ]))
+    var cache = AppleMusicArtworkReuseCache()
+    cache.remember(Data([0x01, 0x02, 0x03]), for: source)
+
+    #expect(cache.data(for: differentArtist) == nil)
+    #expect(cache.data(for: differentAlbum) == nil)
+    #expect(cache.data(for: missingAlbum) == nil)
+}
+
 @Test("Apple Music 封面正负缓存遵守 TTL")
 func appleMusicArtworkCacheRespectsRetryTTL() {
     let identity = MusicTrackIdentity(

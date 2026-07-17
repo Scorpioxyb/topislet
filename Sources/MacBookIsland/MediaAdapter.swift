@@ -1567,7 +1567,7 @@ final class MusicAdapterCoordinator {
                     await self.refreshForegroundQishuiState()
                     return
                 case .neteaseMusic:
-                    self.scheduleNeteaseMusicRefresh(refresh: .metadata)
+                    self.scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
                 case .appleMusic:
                     guard self.appleMusicEnabled else { return }
                     self.scheduleAppleMusicRefresh(force: true)
@@ -1599,7 +1599,7 @@ final class MusicAdapterCoordinator {
                     await self.refreshForegroundQishuiState()
                     return
                 case .neteaseMusic:
-                    self.scheduleNeteaseMusicRefresh(refresh: .metadata)
+                    self.scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
                 case .appleMusic:
                     self.scheduleAppleMusicRefresh(force: true)
                 case nil:
@@ -1627,7 +1627,7 @@ final class MusicAdapterCoordinator {
         neteaseMusicAdapter.start { [weak self] _ in
             self?.scheduleNeteaseMusicRefresh(refresh: .cached)
         }
-        scheduleNeteaseMusicRefresh(refresh: .metadata)
+        scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
     }
 
     private func stopNeteaseMusicObservation() {
@@ -1640,7 +1640,8 @@ final class MusicAdapterCoordinator {
 
     private func scheduleNeteaseMusicRefresh(
         refresh: MusicSnapshotRefresh,
-        delayNanoseconds: UInt64 = 0
+        delayNanoseconds: UInt64 = 0,
+        retryAttempt: Int? = nil
     ) {
         neteaseMusicRefreshGeneration &+= 1
         let generation = neteaseMusicRefreshGeneration
@@ -1654,6 +1655,22 @@ final class MusicAdapterCoordinator {
             guard !Task.isCancelled,
                   generation == self.neteaseMusicRefreshGeneration else { return }
             self.neteaseMusicRefreshTask = nil
+            if let retryAttempt,
+               let retryDelay = NeteaseMusicRefreshRetryPolicy.nextDelay(
+                afterFailedAttempt: retryAttempt,
+                appIsRunning: !NSRunningApplication.runningApplications(
+                    withBundleIdentifier: MusicAdapterRegistry.neteaseMusic
+                        .descriptor.bundleIdentifier
+                ).isEmpty,
+                availability: snapshot.availability
+               ) {
+                self.scheduleNeteaseMusicRefresh(
+                    refresh: .metadata,
+                    delayNanoseconds: retryDelay,
+                    retryAttempt: retryAttempt + 1
+                )
+                return
+            }
             if case .notRunning = snapshot.availability {
                 self.latestNeteaseMusicSnapshot = nil
             } else {

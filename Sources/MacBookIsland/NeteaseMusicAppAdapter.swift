@@ -2,6 +2,28 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+enum NeteaseMusicRefreshRetryPolicy {
+    static let delaysNanoseconds: [UInt64] = [
+        350_000_000,
+        700_000_000,
+        1_200_000_000
+    ]
+
+    static func nextDelay(
+        afterFailedAttempt attempt: Int,
+        appIsRunning: Bool,
+        availability: MusicAppAvailability
+    ) -> UInt64? {
+        guard appIsRunning, delaysNanoseconds.indices.contains(attempt) else { return nil }
+        switch availability {
+        case .notRunning, .degraded:
+            return delaysNanoseconds[attempt]
+        case .ready, .permissionRequired, .unavailable:
+            return nil
+        }
+    }
+}
+
 @MainActor
 final class NeteaseMusicAppAdapter: MusicAppAdapter {
     private struct PendingTrackTransition {
@@ -210,7 +232,10 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         if currentIdentity == identity {
             _ = apply(payload, existingArtwork: cachedArtwork(for: payload))
             invalidationHandler?(.sourceChanged)
-            if latestSnapshot?.track?.artworkData == nil {
+            if latestSnapshot?.track?.artworkData == nil
+                || payload.elapsedTime == nil
+                || payload.duration == nil
+                || payload.isPlaying == nil {
                 scheduleMetadataRefresh(candidate: payload)
             }
             return
@@ -339,14 +364,21 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
             providerIdentifier: nil,
             fallbackSignature: payload.stableTrackSignature
         )
+        let previousSnapshot = latestSnapshot
+        let isSameTrack = previousSnapshot?.track?.identity == trackIdentity
+        let hasCompleteTimeline = payload.elapsedTime != nil && payload.duration != nil
         var playbackState: MusicPlaybackState
-        switch payload.isPlaying {
-        case true:
-            playbackState = .playing
-        case false:
-            playbackState = .paused
-        case nil:
-            playbackState = .unknown
+        if isSameTrack, !hasCompleteTimeline, let previousSnapshot {
+            playbackState = previousSnapshot.playbackState
+        } else {
+            switch payload.isPlaying {
+            case true:
+                playbackState = .playing
+            case false:
+                playbackState = .paused
+            case nil:
+                playbackState = .unknown
+            }
         }
         var timeline: MusicTimelineSnapshot?
         if let elapsedTime = payload.elapsedTime,
@@ -357,6 +389,17 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                 duration: duration,
                 playbackRate: playbackState == .playing
                     ? max(payload.playbackRate ?? 1, 0)
+                    : 0,
+                observedAt: payload.observedAt
+            )
+        } else if isSameTrack,
+                  let previousTimeline = previousSnapshot?.timeline {
+            let elapsed = projectedElapsedTime(from: previousTimeline, at: payload.observedAt)
+            timeline = MusicTimelineSnapshot(
+                elapsedTime: elapsed,
+                duration: previousTimeline.duration,
+                playbackRate: playbackState == .playing
+                    ? max(previousTimeline.playbackRate, 1)
                     : 0,
                 observedAt: payload.observedAt
             )

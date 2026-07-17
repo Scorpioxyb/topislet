@@ -2,6 +2,40 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("网易云启动阶段只对运行中的瞬时不可用状态执行有界重试")
+func neteaseStartupRefreshRetryIsBounded() {
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 0,
+        appIsRunning: true,
+        availability: .notRunning
+    ) == 350_000_000)
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 1,
+        appIsRunning: true,
+        availability: .degraded(reason: "client starting")
+    ) == 700_000_000)
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 2,
+        appIsRunning: true,
+        availability: .notRunning
+    ) == 1_200_000_000)
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 3,
+        appIsRunning: true,
+        availability: .notRunning
+    ) == nil)
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 0,
+        appIsRunning: false,
+        availability: .notRunning
+    ) == nil)
+    #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
+        afterFailedAttempt: 0,
+        appIsRunning: true,
+        availability: .ready
+    ) == nil)
+}
+
 private func neteaseJSONData(
     bundleIdentifier: String = "com.netease.163music",
     processIdentifier: Int = 62598,
@@ -24,6 +58,23 @@ private func neteaseJSONData(
     ]
     if let artworkData {
         payload["artworkData"] = artworkData.base64EncodedString()
+    }
+    return try JSONSerialization.data(withJSONObject: payload)
+}
+
+private func neteaseSparseTimelineJSONData(playing: Bool?) throws -> Data {
+    var payload: [String: Any] = [
+        "bundleIdentifier": "com.netease.163music",
+        "processIdentifier": 62598,
+        "contentItemIdentifier": "focus-change-uuid",
+        "title": "Sweet Boy",
+        "artist": "Malcolm Todd",
+        "album": "Sweet Boy",
+        "duration": 180.072
+    ]
+    if let playing {
+        payload["playing"] = playing
+        payload["playbackRate"] = playing ? 1 : 0
     }
     return try JSONSerialization.data(withJSONObject: payload)
 }
@@ -248,4 +299,36 @@ func neteasePausePreservesArtworkAndFreezesTimeline() throws {
     #expect(second.playbackState == .paused)
     #expect(second.timeline?.playbackRate == 0)
     #expect(second.instance?.processIdentifier == 62598)
+}
+
+@MainActor
+@Test("网易云同曲稀疏媒体焦点事件不能清空可信播放态和时间线")
+func neteaseSparseFocusEventPreservesAuthoritativeTimeline() throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let adapter = NeteaseMusicAppAdapter(runningInstancesProvider: { [instance] })
+    let complete = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: true),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let focusEvent = try MediaRemoteClientBridge.decode(
+        neteaseSparseTimelineJSONData(playing: false),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_005)
+    )
+
+    _ = adapter.applyPayloadForTesting(complete)
+    let preserved = adapter.applyPayloadForTesting(focusEvent)
+
+    #expect(preserved.playbackState == .playing)
+    #expect(preserved.timeline?.elapsedTime == 11.125)
+    #expect(preserved.timeline?.duration == 180.072)
+    #expect(preserved.timeline?.playbackRate == 1)
+    #expect(preserved.track?.artworkData == Data([0xFF, 0xD8, 0xFF]))
 }
