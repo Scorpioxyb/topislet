@@ -26,6 +26,7 @@ enum NeteaseMusicRefreshRetryPolicy {
 
 @MainActor
 final class NeteaseMusicAppAdapter: MusicAppAdapter {
+    nonisolated private static let transitionPlaybackConfirmationInterval: TimeInterval = 2.2
     private static let postRebindVerificationDelays: [UInt64] = [
         200_000_000,
         500_000_000,
@@ -36,6 +37,7 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         let baselineIdentity: String
         let baselineDescriptiveIdentity: String
         let baselineArtworkData: Data?
+        let expectedPlaybackState: MusicPlaybackState
         let issuedAt: Date
     }
 
@@ -208,6 +210,7 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                     baselineIdentity: track.identity.fallbackSignature,
                     baselineDescriptiveIdentity: Self.descriptiveIdentity(for: track),
                     baselineArtworkData: track.artworkData,
+                    expectedPlaybackState: snapshot.playbackState,
                     issuedAt: Date()
                 )
             }
@@ -255,6 +258,10 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         apply(payload, existingArtwork: cachedArtwork(for: payload))
     }
 
+    func receiveStreamPayloadForTesting(_ payload: MediaRemoteClientPayload) {
+        receiveStreamPayload(payload)
+    }
+
     private func receiveStreamPayload(_ payload: MediaRemoteClientPayload) {
         guard currentInstance()?.processIdentifier == payload.processIdentifier else { return }
         let identity = payload.stableTrackSignature
@@ -276,6 +283,17 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                 scheduleMetadataRefresh(candidate: payload)
             }
             return
+        }
+        if let snapshot = latestSnapshot,
+           let track = snapshot.track,
+           payload.descriptiveTrackSignature != Self.descriptiveIdentity(for: track) {
+            pendingTrackTransition = PendingTrackTransition(
+                baselineIdentity: track.identity.fallbackSignature,
+                baselineDescriptiveIdentity: Self.descriptiveIdentity(for: track),
+                baselineArtworkData: track.artworkData,
+                expectedPlaybackState: snapshot.playbackState,
+                issuedAt: Date()
+            )
         }
         scheduleMetadataRefresh(candidate: payload)
     }
@@ -316,7 +334,9 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
             }
 
             var previousCandidateFingerprint: MediaRemoteClientTransitionFingerprint?
-            let deadline = Date().addingTimeInterval(2.0)
+            let deadline = Date().addingTimeInterval(
+                self.pendingTrackTransition == nil ? 2.0 : 2.8
+            )
             while !Task.isCancelled,
                   generation == self.metadataRefreshGeneration,
                   Date() < deadline {
@@ -353,6 +373,19 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                     continue
                 }
 
+                if let transition = self.pendingTrackTransition,
+                   Self.shouldAwaitPlaybackConfirmation(
+                    expectedState: transition.expectedPlaybackState,
+                    candidateIsPlaying: payload.isPlaying,
+                    issuedAt: transition.issuedAt,
+                    now: Date()
+                   ) {
+                    // 网易云会先发新曲 paused + 临时时长，再补 playing + 真实时长。
+                    previousCandidateFingerprint = nil
+                    try? await Task.sleep(nanoseconds: 70_000_000)
+                    continue
+                }
+
                 let fingerprint = payload.transitionFingerprint
                 let artworkConfirmsTransition = self.pendingTrackTransition.map {
                     Self.artworkConfirmsTransition(
@@ -373,6 +406,9 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                 }
                 previousCandidateFingerprint = fingerprint
                 try? await Task.sleep(nanoseconds: 70_000_000)
+            }
+            if generation == self.metadataRefreshGeneration {
+                self.pendingTrackTransition = nil
             }
             self.finishMetadataRefresh(generation: generation)
         }
@@ -607,6 +643,17 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
     ) -> Bool {
         guard let candidate else { return false }
         return candidate != baseline
+    }
+
+    nonisolated static func shouldAwaitPlaybackConfirmation(
+        expectedState: MusicPlaybackState,
+        candidateIsPlaying: Bool?,
+        issuedAt: Date,
+        now: Date
+    ) -> Bool {
+        expectedState == .playing
+            && candidateIsPlaying != true
+            && now.timeIntervalSince(issuedAt) < transitionPlaybackConfirmationInterval
     }
 
     private func controlCapabilities(
