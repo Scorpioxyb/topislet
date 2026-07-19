@@ -2,12 +2,15 @@ import Foundation
 
 enum MusicSourceID: Equatable, Sendable {
     case qishui
+    case neteaseMusic
     case appleMusic
 
     init?(bundleIdentifier: String?) {
         switch bundleIdentifier {
         case "com.soda.music":
             self = .qishui
+        case "com.netease.163music":
+            self = .neteaseMusic
         case "com.apple.Music":
             self = .appleMusic
         default:
@@ -56,6 +59,7 @@ struct MusicSourceSelection: Equatable, Sendable {
 
 final class MusicSourceSelector {
     static let qishuiSwitchDelay: TimeInterval = 0.2
+    static let neteaseMusicSwitchDelay: TimeInterval = 0.25
     static let appleMusicSwitchDelay: TimeInterval = 0.4
 
     private(set) var selection = MusicSourceSelection(source: nil, generation: 0)
@@ -64,6 +68,13 @@ final class MusicSourceSelector {
 
     func update(
         qishui: MusicSourceCandidate,
+        neteaseMusic: MusicSourceCandidate = MusicSourceCandidate(
+            source: .neteaseMusic,
+            isAvailable: false,
+            hasTrack: false,
+            playback: .unknown,
+            isCached: false
+        ),
         appleMusic: MusicSourceCandidate,
         foregroundSource: MusicSourceID? = nil,
         at now: Date = Date()
@@ -71,11 +82,13 @@ final class MusicSourceSelector {
         let currentCandidate = candidate(
             for: selection.source,
             qishui: qishui,
+            neteaseMusic: neteaseMusic,
             appleMusic: appleMusic
         )
         let preferred = preferredSource(
             current: selection.source,
             qishui: qishui,
+            neteaseMusic: neteaseMusic,
             appleMusic: appleMusic,
             foregroundSource: foregroundSource
         )
@@ -99,9 +112,15 @@ final class MusicSourceSelector {
             pendingSince = now
             return selection
         }
-        let delay = preferred == .qishui
-            ? Self.qishuiSwitchDelay
-            : Self.appleMusicSwitchDelay
+        let delay: TimeInterval
+        switch preferred {
+        case .qishui:
+            delay = Self.qishuiSwitchDelay
+        case .neteaseMusic:
+            delay = Self.neteaseMusicSwitchDelay
+        case .appleMusic:
+            delay = Self.appleMusicSwitchDelay
+        }
         guard let pendingSince,
               now.timeIntervalSince(pendingSince) >= delay else {
             return selection
@@ -112,6 +131,7 @@ final class MusicSourceSelector {
     private func preferredSource(
         current: MusicSourceID?,
         qishui: MusicSourceCandidate,
+        neteaseMusic: MusicSourceCandidate,
         appleMusic: MusicSourceCandidate,
         foregroundSource: MusicSourceID?
     ) -> MusicSourceID? {
@@ -119,6 +139,7 @@ final class MusicSourceSelector {
            candidate(
                for: foregroundSource,
                qishui: qishui,
+               neteaseMusic: neteaseMusic,
                appleMusic: appleMusic
            )?.isAvailable == true {
             return foregroundSource
@@ -129,9 +150,14 @@ final class MusicSourceSelector {
             && !qishui.isCached
         let appleMusicPlaying = appleMusic.isSelectable
             && appleMusic.playback == .playing
+        let neteaseMusicPlaying = neteaseMusic.isSelectable
+            && neteaseMusic.playback == .playing
 
         if qishuiPlaying {
             return .qishui
+        }
+        if neteaseMusicPlaying {
+            return .neteaseMusic
         }
         if appleMusicPlaying {
             return .appleMusic
@@ -141,12 +167,16 @@ final class MusicSourceSelector {
            candidate(
                for: current,
                qishui: qishui,
+               neteaseMusic: neteaseMusic,
                appleMusic: appleMusic
            )?.isSelectable == true {
             return current
         }
         if qishui.isSelectable {
             return .qishui
+        }
+        if neteaseMusic.isSelectable {
+            return .neteaseMusic
         }
         if appleMusic.isSelectable {
             return .appleMusic
@@ -157,11 +187,14 @@ final class MusicSourceSelector {
     private func candidate(
         for source: MusicSourceID?,
         qishui: MusicSourceCandidate,
+        neteaseMusic: MusicSourceCandidate,
         appleMusic: MusicSourceCandidate
     ) -> MusicSourceCandidate? {
         switch source {
         case .qishui:
             return qishui
+        case .neteaseMusic:
+            return neteaseMusic
         case .appleMusic:
             return appleMusic
         case nil:

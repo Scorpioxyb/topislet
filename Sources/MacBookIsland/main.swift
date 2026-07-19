@@ -243,6 +243,143 @@ if let semanticControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-sem
     exit(result.didPress ? 0 : 2)
 }
 
+if CommandLine.arguments.contains("--netease-music-status") {
+    let adapter = NeteaseMusicAppAdapter()
+    Task { @MainActor in
+        let startedAt = Date()
+        let snapshot = await adapter.snapshot(refresh: .metadata)
+        let availability: String
+        switch snapshot.availability {
+        case .ready:
+            availability = "ready"
+        case .notRunning:
+            availability = "notRunning"
+        case let .degraded(reason):
+            availability = "degraded:\(reason)"
+        case let .permissionRequired(permission):
+            availability = "permissionRequired:\(permission)"
+        case let .unavailable(reason):
+            availability = "unavailable:\(reason)"
+        }
+        print("neteaseMusicSnapshotPID=\(snapshot.instance?.processIdentifier.description ?? "nil")")
+        print("neteaseMusicRunningPIDs=\(NSRunningApplication.runningApplications(withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier).map(\.processIdentifier))")
+        print("availability=\(availability)")
+        print("track=\(snapshot.track?.title ?? "nil")")
+        print("artist=\(snapshot.track?.artist ?? "nil")")
+        print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
+        print("elapsedTime=\(snapshot.timeline?.elapsedTime.description ?? "nil")")
+        print("duration=\(snapshot.timeline?.duration.description ?? "nil")")
+        print("playbackState=\(snapshot.playbackState)")
+        print("playPause=\(snapshot.controls.supports(.playPause))")
+        print("previousTrack=\(snapshot.controls.supports(.previousTrack))")
+        print("nextTrack=\(snapshot.controls.supports(.nextTrack))")
+        print("latencyMilliseconds=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
+        print("diagnostic=\(snapshot.diagnostic)")
+        exit(0)
+    }
+    RunLoop.main.run()
+}
+
+if let controlIndex = CommandLine.arguments.firstIndex(of: "--netease-music-semantic-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(controlIndex + 1)
+        ? CommandLine.arguments[controlIndex + 1]
+        : "playPause"
+    guard let musicCommand = command(named: rawCommand) else {
+        print("error=unsupported_control_command")
+        print("supported=playPause,next,previous")
+        exit(64)
+    }
+    guard let processIdentifier = NSRunningApplication.runningApplications(
+        withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+    ).first(where: { !$0.isTerminated })?.processIdentifier else {
+        print("didPress=false")
+        print("diagnostic=网易云音乐当前未运行。")
+        exit(2)
+    }
+    let action: MusicControlAction
+    switch musicCommand {
+    case .playPause:
+        action = .playPause
+    case .previousTrack:
+        action = .previousTrack
+    case .nextTrack:
+        action = .nextTrack
+    }
+    let result = NeteaseMusicSemanticAXController().perform(
+        action,
+        processIdentifier: processIdentifier
+    )
+    print("targetPID=\(processIdentifier)")
+    print("didPress=\(result.didPress)")
+    print("diagnostic=\(result.diagnostic)")
+    exit(result.didPress ? 0 : 2)
+}
+
+if let controlIndex = CommandLine.arguments.firstIndex(of: "--netease-music-adapter-control") {
+    let rawCommand = CommandLine.arguments.indices.contains(controlIndex + 1)
+        ? CommandLine.arguments[controlIndex + 1]
+        : "playPause"
+    guard let musicCommand = command(named: rawCommand) else {
+        print("error=unsupported_control_command")
+        print("supported=playPause,next,previous")
+        exit(64)
+    }
+    let adapter = NeteaseMusicAppAdapter()
+    Task { @MainActor in
+        adapter.start { _ in }
+        let baseline = await adapter.snapshot(refresh: .metadata)
+        guard let instance = baseline.instance,
+              let track = baseline.track else {
+            print("error=netease_snapshot_unavailable")
+            print("diagnostic=\(baseline.diagnostic)")
+            adapter.stop()
+            exit(2)
+        }
+        let action: MusicControlAction
+        switch musicCommand {
+        case .playPause:
+            action = .playPause
+        case .previousTrack:
+            action = .previousTrack
+        case .nextTrack:
+            action = .nextTrack
+        }
+        let startedAt = Date()
+        let result = await adapter.perform(MusicControlRequest(
+            id: 1,
+            target: instance,
+            expectedTrack: track.identity,
+            action: action
+        ))
+        print("controlDisposition=\(result.disposition)")
+        print("controlDiagnostic=\(result.diagnostic)")
+        var lastFingerprint = ""
+        for _ in 0..<35 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let snapshot = await adapter.snapshot(refresh: .cached)
+            let fingerprint = [
+                snapshot.track?.title ?? "nil",
+                snapshot.track?.artist ?? "nil",
+                snapshot.track?.artworkData?.count.description ?? "0",
+                snapshot.timeline?.duration.description ?? "nil",
+                String(describing: snapshot.playbackState)
+            ].joined(separator: "\u{1f}")
+            guard fingerprint != lastFingerprint else { continue }
+            lastFingerprint = fingerprint
+            print("t=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))")
+            print("track=\(snapshot.track?.title ?? "nil")")
+            print("artist=\(snapshot.track?.artist ?? "nil")")
+            print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
+            print("duration=\(snapshot.timeline?.duration.description ?? "nil")")
+            print("playbackState=\(snapshot.playbackState)")
+            fflush(stdout)
+        }
+        adapter.stop()
+        exit(result.disposition == .accepted ? 0 : 2)
+    }
+    RunLoop.main.run()
+}
+
 if let watchIndex = CommandLine.arguments.firstIndex(of: "--mediaremote-watch") {
     let seconds = CommandLine.arguments.indices.contains(watchIndex + 1)
         ? (TimeInterval(CommandLine.arguments[watchIndex + 1]) ?? 20)
@@ -732,6 +869,10 @@ final class IslandModel: ObservableObject {
     )
     @Published private(set) var qishuiIsRunning = false
     @Published private(set) var accessibilityTrusted = false
+    @Published private(set) var neteaseMusicIsRunning = false
+    @Published private(set) var neteaseMusicSnapshotAvailability: MusicAppAvailability?
+    @Published private(set) var neteaseMusicConnectionStatus = "尚未检查"
+    @Published private(set) var neteaseMusicAvailableControls = "无"
     @Published private(set) var appleMusicAutomationAccess: AppleMusicAutomationAccess = .unavailable(status: -1)
     @Published private(set) var appleMusicIsRunning = false
     @Published private(set) var appleMusicSnapshotAvailability: MusicAppAvailability?
@@ -772,6 +913,8 @@ final class IslandModel: ObservableObject {
     private var eventKitSettingsCancellable: AnyCancellable?
     private var appleMusicObservedProcessIdentifier: pid_t?
     private var appleMusicSettingsRequestGeneration: UInt64 = 0
+    private var neteaseMusicObservedProcessIdentifier: pid_t?
+    private var neteaseMusicSettingsRequestGeneration: UInt64 = 0
     private var lastTimerUpdateAt: Date?
     private var lastIslandModeTapAt: Date = .distantPast
     private var lastDirectControlAt: Date = .distantPast
@@ -1177,7 +1320,77 @@ final class IslandModel: ObservableObject {
             withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
         ).isEmpty
         accessibilityTrusted = AXIsProcessTrusted()
+        refreshNeteaseMusicStatus()
         refreshAppleMusicStatus()
+    }
+
+    func refreshNeteaseMusicStatus() {
+        let runningApplication = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+        ).first
+        let processIdentifier = runningApplication?.processIdentifier
+        if processIdentifier != neteaseMusicObservedProcessIdentifier {
+            neteaseMusicObservedProcessIdentifier = processIdentifier
+            resetNeteaseMusicConnection(
+                status: processIdentifier == nil ? "未运行" : "等待同步"
+            )
+        }
+        neteaseMusicIsRunning = runningApplication != nil
+        if !neteaseMusicIsRunning {
+            resetNeteaseMusicConnection(status: "未运行")
+        }
+    }
+
+    func refreshNeteaseMusicSnapshot() async {
+        refreshNeteaseMusicStatus()
+        guard neteaseMusicIsRunning else { return }
+        neteaseMusicSettingsRequestGeneration &+= 1
+        let generation = neteaseMusicSettingsRequestGeneration
+        let expectedProcessIdentifier = neteaseMusicObservedProcessIdentifier
+        guard let snapshot = await musicAdapter.neteaseMusicSnapshotForSettings() else {
+            guard generation == neteaseMusicSettingsRequestGeneration else { return }
+            neteaseMusicConnectionStatus = "连接超时"
+            return
+        }
+        let currentProcessIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+        ).first?.processIdentifier
+        guard generation == neteaseMusicSettingsRequestGeneration,
+              currentProcessIdentifier == expectedProcessIdentifier,
+              snapshot.instance?.processIdentifier == expectedProcessIdentifier else {
+            refreshNeteaseMusicStatus()
+            return
+        }
+        neteaseMusicSnapshotAvailability = snapshot.availability
+        switch snapshot.availability {
+        case .ready:
+            neteaseMusicConnectionStatus = "连接正常"
+        case .notRunning:
+            neteaseMusicConnectionStatus = "未运行"
+        case let .degraded(reason):
+            neteaseMusicConnectionStatus = "读取失败：\(reason)"
+        case let .permissionRequired(permission):
+            neteaseMusicConnectionStatus = "需要权限：\(permission)"
+        case let .unavailable(reason):
+            neteaseMusicConnectionStatus = "不可用：\(reason)"
+        }
+        neteaseMusicAvailableControls = [
+            snapshot.controls.supports(.playPause) ? "播放暂停" : nil,
+            snapshot.controls.supports(.previousTrack) ? "上一首" : nil,
+            snapshot.controls.supports(.nextTrack) ? "下一首" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: "、")
+        if neteaseMusicAvailableControls.isEmpty {
+            neteaseMusicAvailableControls = accessibilityTrusted ? "无" : "等待辅助功能授权"
+        }
+    }
+
+    private func resetNeteaseMusicConnection(status: String) {
+        neteaseMusicSettingsRequestGeneration &+= 1
+        neteaseMusicSnapshotAvailability = nil
+        neteaseMusicConnectionStatus = status
+        neteaseMusicAvailableControls = "无"
     }
 
     func refreshAppleMusicStatus() {
@@ -2891,6 +3104,17 @@ struct IslandSettingsView: View {
     }
 }
 
+private func musicControlStrategyText(_ bundleIdentifier: String?) -> String {
+    switch bundleIdentifier {
+    case MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier:
+        return "Apple Event 定向"
+    case MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier:
+        return "网易云 PID 语义 AX"
+    default:
+        return "汽水唯一语义 AX"
+    }
+}
+
 private struct GeneralSettingsPane: View {
     @ObservedObject var model: IslandModel
     @ObservedObject var settings: AppSettings
@@ -2908,9 +3132,9 @@ private struct GeneralSettingsPane: View {
             Section {
                 LabeledContent(
                     "音乐控制",
-                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
-                        ? "Apple Event 定向"
-                        : "汽水语义控件定向"
+                    value: musicControlStrategyText(
+                        model.music.track.sourceBundleIdentifier
+                    )
                 )
 
                 Text("控制只发送给当前选中的已适配音乐应用；不切换前台 App、不移动鼠标，也不发送全局媒体键。")
@@ -3005,6 +3229,10 @@ private struct MusicSettingsPane: View {
             : controls.joined(separator: "、")
     }
 
+    private var controlStrategyText: String {
+        musicControlStrategyText(model.music.track.sourceBundleIdentifier)
+    }
+
     private var diagnosticText: String {
         [
             "track=\(model.music.track.title) - \(model.music.track.artist)",
@@ -3049,6 +3277,41 @@ private struct MusicSettingsPane: View {
                     } label: {
                         Label("打开辅助功能设置", systemImage: "gear")
                     }
+                }
+            }
+
+            Section("网易云音乐 Alpha 支持") {
+                LabeledContent(
+                    "运行状态",
+                    value: model.neteaseMusicIsRunning ? "运行中" : "未运行"
+                )
+                LabeledContent(
+                    "辅助功能",
+                    value: model.accessibilityTrusted ? "已授权" : "控制待授权"
+                )
+                LabeledContent("连接状态", value: model.neteaseMusicConnectionStatus)
+                LabeledContent("可用控制", value: model.neteaseMusicAvailableControls)
+                HStack {
+                    if !model.accessibilityTrusted {
+                        Button {
+                            model.openAccessibilitySettings()
+                        } label: {
+                            Label("打开辅助功能设置", systemImage: "gear")
+                        }
+                    }
+                    Button {
+                        Task {
+                            await model.refreshNeteaseMusicSnapshot()
+                        }
+                    } label: {
+                        Label("刷新连接", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!model.neteaseMusicIsRunning)
+                }
+                if !model.neteaseMusicIsRunning {
+                    Text("请先打开网易云音乐；顶屿不会主动启动它。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -3125,9 +3388,7 @@ private struct MusicSettingsPane: View {
                 LabeledContent("可用控制", value: availableControlText)
                 LabeledContent(
                     "控制策略",
-                    value: model.music.track.sourceBundleIdentifier == "com.apple.Music"
-                        ? "Apple Event 定向"
-                        : "汽水唯一语义 AX"
+                    value: controlStrategyText
                 )
                 Button {
                     model.showMusicSourceStatus()
@@ -3170,6 +3431,9 @@ private struct MusicSettingsPane: View {
         .padding(16)
         .task {
             model.refreshMusicIntegrationStatus()
+            if model.neteaseMusicIsRunning {
+                await model.refreshNeteaseMusicSnapshot()
+            }
             guard settings.appleMusicEnabled,
                   model.appleMusicIsRunning,
                   model.appleMusicAutomationAccess == .allowed else { return }
@@ -3216,6 +3480,14 @@ private struct MusicAdapterSettingsRow: View {
             return MusicAdapterRuntimePresenter.qishui(
                 isRunning: model.qishuiIsRunning,
                 accessibilityTrusted: model.accessibilityTrusted
+            )
+        }
+        if registration.descriptor.bundleIdentifier
+            == MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier {
+            return MusicAdapterRuntimePresenter.neteaseMusic(
+                isRunning: model.neteaseMusicIsRunning,
+                accessibilityTrusted: model.accessibilityTrusted,
+                snapshotAvailability: model.neteaseMusicSnapshotAvailability
             )
         }
         return MusicAdapterRuntimePresenter.appleMusic(

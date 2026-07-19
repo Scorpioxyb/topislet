@@ -12,6 +12,8 @@ enum MusicSourceAvailability: String, Equatable {
     case systemNowPlayingRecognized
     case systemNowPlayingUnavailable
     case qishuiControlSent
+    case neteaseMusicSynced
+    case neteaseMusicControlSent
     case appleMusicSynced
     case appleMusicControlSent
     case appleMusicPermissionRequired
@@ -81,6 +83,10 @@ struct MusicSourceStatus: Equatable {
             return "播放中不可读"
         case .qishuiControlSent:
             return "已发送控制"
+        case .neteaseMusicSynced:
+            return "网易云音乐"
+        case .neteaseMusicControlSent:
+            return "网易云音乐控制"
         case .appleMusicSynced:
             return "Apple Music"
         case .appleMusicControlSent:
@@ -110,6 +116,10 @@ struct MusicSourceStatus: Equatable {
             return .orange.opacity(0.9)
         case .qishuiControlSent:
             return .cyan.opacity(0.9)
+        case .neteaseMusicSynced:
+            return .red.opacity(0.92)
+        case .neteaseMusicControlSent:
+            return .red.opacity(0.92)
         case .appleMusicSynced:
             return .pink.opacity(0.95)
         case .appleMusicControlSent:
@@ -301,6 +311,7 @@ final class MusicAdapterCoordinator {
     ]
 
     private let qishuiAdapter = QishuiAdapter()
+    private let neteaseMusicAdapter = NeteaseMusicAppAdapter()
     private let appleMusicTransitionTimeline = AppleMusicTransitionTimeline()
     private lazy var appleMusicAdapter = AppleMusicAppAdapter(
         transitionTimeline: appleMusicTransitionTimeline
@@ -340,6 +351,10 @@ final class MusicAdapterCoordinator {
     private var realtimeUpdateHandler: ((MusicState, MusicSourceStatus) -> Void)?
     private var qishuiLifecycleObservers: [NSObjectProtocol] = []
     private var foregroundMusicSource: MusicSourceID?
+    private var latestNeteaseMusicSnapshot: MusicAppSnapshot?
+    private var neteaseMusicRefreshTask: Task<Void, Never>?
+    private var neteaseMusicRefreshGeneration: UInt64 = 0
+    private var neteaseMusicControlRequestID: UInt64 = 0
     private var latestAppleMusicSnapshot: MusicAppSnapshot?
     private var appleMusicEnabled = true
     private var isRealtimeObservationRunning = false
@@ -382,6 +397,7 @@ final class MusicAdapterCoordinator {
         isRealtimeObservationRunning = true
         realtimeUpdateHandler = onUpdate
         startQishuiLifecycleObservation()
+        startNeteaseMusicObservation()
         if appleMusicEnabled {
             startAppleMusicObservation()
         }
@@ -405,6 +421,7 @@ final class MusicAdapterCoordinator {
         isRealtimeObservationRunning = false
         realtimeUpdateHandler = nil
         stopQishuiLifecycleObservation()
+        stopNeteaseMusicObservation()
         stopAppleMusicObservation()
         foregroundMusicSource = nil
         mediaRemoteAdapterStreamSource.stop()
@@ -446,6 +463,17 @@ final class MusicAdapterCoordinator {
               !Task.isCancelled,
               appleMusicRefreshTask == nil else { return nil }
         return latestAppleMusicSnapshot
+    }
+
+    func neteaseMusicSnapshotForSettings() async -> MusicAppSnapshot? {
+        let snapshot = await neteaseMusicAdapter.snapshot(refresh: .metadata)
+        if case .notRunning = snapshot.availability {
+            latestNeteaseMusicSnapshot = nil
+            return nil
+        }
+        latestNeteaseMusicSnapshot = snapshot
+        publishCurrentState()
+        return snapshot
     }
 
     func invalidateAppleMusicAccess() {
@@ -513,6 +541,9 @@ final class MusicAdapterCoordinator {
                 )
             }
             return await performAppleMusicControl(command)
+        }
+        if binding.source == .neteaseMusic {
+            return await performNeteaseMusicControl(command)
         }
         let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
         guard canAttemptControl else {
@@ -766,6 +797,69 @@ final class MusicAdapterCoordinator {
         )
     }
 
+    private func performNeteaseMusicControl(
+        _ command: MusicControlCommand
+    ) async -> MusicControlOutcome {
+        guard let snapshot = neteaseMusicSnapshotForRunningInstance(),
+              let instance = snapshot.instance,
+              let track = snapshot.track else {
+            return MusicControlOutcome(
+                status: neteaseMusicControlStatus(
+                    command: command,
+                    succeeded: false,
+                    diagnostic: "网易云音乐当前控制目标不可用。"
+                ),
+                didSendCommand: false
+            )
+        }
+        let controlKind: MusicControlKind
+        let action: MusicControlAction
+        switch command {
+        case .playPause:
+            controlKind = .playPause
+            action = .playPause
+        case .previousTrack:
+            controlKind = .previousTrack
+            action = .previousTrack
+        case .nextTrack:
+            controlKind = .nextTrack
+            action = .nextTrack
+        }
+        guard case let .ready(target, mechanism, _) = snapshot.controls.values[controlKind],
+              target == instance,
+              mechanism == .semanticAccessibility else {
+            return MusicControlOutcome(
+                status: neteaseMusicControlStatus(
+                    command: command,
+                    succeeded: false,
+                    diagnostic: "网易云音乐未提供匹配当前进程的语义控制能力。"
+                ),
+                didSendCommand: false
+            )
+        }
+
+        neteaseMusicControlRequestID &+= 1
+        let result = await neteaseMusicAdapter.perform(MusicControlRequest(
+            id: neteaseMusicControlRequestID,
+            target: instance,
+            expectedTrack: track.identity,
+            action: action
+        ))
+        let succeeded = result.disposition == .accepted
+        if succeeded {
+            latestNeteaseMusicSnapshot = await neteaseMusicAdapter.snapshot(refresh: .cached)
+            publishCurrentState()
+        }
+        return MusicControlOutcome(
+            status: neteaseMusicControlStatus(
+                command: command,
+                succeeded: succeeded,
+                diagnostic: result.diagnostic
+            ),
+            didSendCommand: succeeded
+        )
+    }
+
     private func invalidDisplayedSourceStatus(
         command: MusicControlCommand
     ) -> MusicSourceStatus {
@@ -786,6 +880,20 @@ final class MusicAdapterCoordinator {
         MusicSourceStatus(
             sourceName: "Apple Music",
             availability: succeeded ? .appleMusicControlSent : .appleMusicSynced,
+            headline: succeeded ? "已执行\(command.label)" : "未执行\(command.label)",
+            detail: diagnostic,
+            checkedAt: Date()
+        )
+    }
+
+    private func neteaseMusicControlStatus(
+        command: MusicControlCommand,
+        succeeded: Bool,
+        diagnostic: String
+    ) -> MusicSourceStatus {
+        MusicSourceStatus(
+            sourceName: "网易云音乐",
+            availability: succeeded ? .neteaseMusicControlSent : .neteaseMusicSynced,
             headline: succeeded ? "已执行\(command.label)" : "未执行\(command.label)",
             detail: diagnostic,
             checkedAt: Date()
@@ -927,8 +1035,13 @@ final class MusicAdapterCoordinator {
     }
 
     func refreshPlaybackPositionNow() -> (music: MusicState, status: MusicSourceStatus) {
-        if selectedMusicSource() == .appleMusic {
+        let source = selectedMusicSource()
+        if source == .appleMusic {
             scheduleAppleMusicRefresh(force: true)
+            return (selectedMusicState(), selectedMusicStatus())
+        }
+        if source == .neteaseMusic {
+            scheduleNeteaseMusicRefresh(refresh: .timeline)
             return (selectedMusicState(), selectedMusicStatus())
         }
         let status = refreshPlaybackPositionStatus()
@@ -964,6 +1077,16 @@ final class MusicAdapterCoordinator {
                 to: progress,
                 interaction: interaction
             )
+        }
+        if binding?.source == .neteaseMusic {
+            let status = MusicSourceStatus(
+                sourceName: "网易云音乐",
+                availability: .neteaseMusicSynced,
+                headline: "当前不能拖动进度",
+                detail: "网易云音乐 Alpha 尚未暴露 PID 定向进度跳转；顶屿不会使用可能误控其他媒体的全局跳转。",
+                checkedAt: Date()
+            )
+            return (neteaseMusicState(), status)
         }
         _ = progress
         _ = interaction
@@ -1061,7 +1184,8 @@ final class MusicAdapterCoordinator {
     func refreshControlFollowUp(
         forcePositionRefresh: Bool = false
     ) async -> (music: MusicState, status: MusicSourceStatus) {
-        if selectedMusicSource() == .appleMusic {
+        let selectedSource = selectedMusicSource()
+        if selectedSource == .appleMusic {
             let route = musicSourceSelector.selection
             if let inFlightRefresh = appleMusicRefreshTask {
                 await inFlightRefresh.value
@@ -1077,6 +1201,13 @@ final class MusicAdapterCoordinator {
             _ = admitAppleMusicSnapshot(snapshot)
             return (selectedMusicState(), selectedMusicStatus())
         }
+        if selectedSource == .neteaseMusic {
+            let snapshot = await neteaseMusicAdapter.snapshot(refresh: .timeline)
+            if snapshot.instance != nil {
+                latestNeteaseMusicSnapshot = snapshot
+            }
+            return (selectedMusicState(), selectedMusicStatus())
+        }
         if (forcePositionRefresh
             || pendingPlaybackOperation != nil
             || mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
@@ -1090,8 +1221,13 @@ final class MusicAdapterCoordinator {
     }
 
     func invalidateQishuiCache() {
-        if selectedMusicSource() == .appleMusic {
+        let source = selectedMusicSource()
+        if source == .appleMusic {
             scheduleAppleMusicRefresh(force: true)
+            return
+        }
+        if source == .neteaseMusic {
+            scheduleNeteaseMusicRefresh(refresh: .metadata)
             return
         }
         qishuiAdapter.invalidateAXCache()
@@ -1375,6 +1511,14 @@ final class MusicAdapterCoordinator {
                 switch source {
                 case .qishui:
                     self.markQishuiNotRunning()
+                case .neteaseMusic:
+                    self.neteaseMusicRefreshGeneration &+= 1
+                    self.neteaseMusicRefreshTask?.cancel()
+                    self.neteaseMusicRefreshTask = nil
+                    self.neteaseMusicAdapter.invalidateRunningInstance(
+                        processIdentifier: terminatedApplication?.processIdentifier
+                    )
+                    self.latestNeteaseMusicSnapshot = nil
                 case .appleMusic:
                     self.appleMusicRefreshGeneration &+= 1
                     self.appleMusicRefreshTask?.cancel()
@@ -1407,6 +1551,10 @@ final class MusicAdapterCoordinator {
                     self.qishuiAdapter.invalidateAXCache()
                     self.qishuiSemanticAXController.invalidateCache()
                     self.scheduleQishuiControlAvailabilityRefresh()
+                case .neteaseMusic:
+                    self.neteaseMusicRefreshGeneration &+= 1
+                    self.neteaseMusicRefreshTask?.cancel()
+                    self.neteaseMusicRefreshTask = nil
                 case .appleMusic:
                     self.cancelAppleMusicTransientRetry(resetAttempt: true)
                     self.lastAppleMusicRefreshCompletedAt = nil
@@ -1418,6 +1566,8 @@ final class MusicAdapterCoordinator {
                     self.scheduleQishuiControlAvailabilityRefresh()
                     await self.refreshForegroundQishuiState()
                     return
+                case .neteaseMusic:
+                    self.scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
                 case .appleMusic:
                     guard self.appleMusicEnabled else { return }
                     self.scheduleAppleMusicRefresh(force: true)
@@ -1448,6 +1598,8 @@ final class MusicAdapterCoordinator {
                     self.scheduleQishuiControlAvailabilityRefresh()
                     await self.refreshForegroundQishuiState()
                     return
+                case .neteaseMusic:
+                    self.scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
                 case .appleMusic:
                     self.scheduleAppleMusicRefresh(force: true)
                 case nil:
@@ -1469,6 +1621,63 @@ final class MusicAdapterCoordinator {
             notificationCenter.removeObserver(observer)
         }
         qishuiLifecycleObservers.removeAll()
+    }
+
+    private func startNeteaseMusicObservation() {
+        neteaseMusicAdapter.start { [weak self] _ in
+            self?.scheduleNeteaseMusicRefresh(refresh: .cached)
+        }
+        scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
+    }
+
+    private func stopNeteaseMusicObservation() {
+        neteaseMusicRefreshGeneration &+= 1
+        neteaseMusicRefreshTask?.cancel()
+        neteaseMusicRefreshTask = nil
+        neteaseMusicAdapter.stop()
+        latestNeteaseMusicSnapshot = nil
+    }
+
+    private func scheduleNeteaseMusicRefresh(
+        refresh: MusicSnapshotRefresh,
+        delayNanoseconds: UInt64 = 0,
+        retryAttempt: Int? = nil
+    ) {
+        neteaseMusicRefreshGeneration &+= 1
+        let generation = neteaseMusicRefreshGeneration
+        neteaseMusicRefreshTask?.cancel()
+        neteaseMusicRefreshTask = Task { [weak self] in
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled, let self else { return }
+            let snapshot = await self.neteaseMusicAdapter.snapshot(refresh: refresh)
+            guard !Task.isCancelled,
+                  generation == self.neteaseMusicRefreshGeneration else { return }
+            self.neteaseMusicRefreshTask = nil
+            if let retryAttempt,
+               let retryDelay = NeteaseMusicRefreshRetryPolicy.nextDelay(
+                afterFailedAttempt: retryAttempt,
+                appIsRunning: !NSRunningApplication.runningApplications(
+                    withBundleIdentifier: MusicAdapterRegistry.neteaseMusic
+                        .descriptor.bundleIdentifier
+                ).isEmpty,
+                availability: snapshot.availability
+               ) {
+                self.scheduleNeteaseMusicRefresh(
+                    refresh: .metadata,
+                    delayNanoseconds: retryDelay,
+                    retryAttempt: retryAttempt + 1
+                )
+                return
+            }
+            if case .notRunning = snapshot.availability {
+                self.latestNeteaseMusicSnapshot = nil
+            } else {
+                self.latestNeteaseMusicSnapshot = snapshot
+            }
+            self.publishCurrentState()
+        }
     }
 
     nonisolated private static func musicSourceID(
@@ -1886,9 +2095,35 @@ final class MusicAdapterCoordinator {
         reconcileForegroundMusicSource()
         return musicSourceSelector.update(
             qishui: qishuiSourceCandidate(),
+            neteaseMusic: neteaseMusicSourceCandidate(),
             appleMusic: appleMusicSourceCandidate(),
             foregroundSource: foregroundMusicSource
         ).source
+    }
+
+    private func neteaseMusicSourceCandidate() -> MusicSourceCandidate {
+        let runningProcessIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+        ).first?.processIdentifier
+        let snapshot = latestNeteaseMusicSnapshot
+        let snapshotMatchesRunningInstance = runningProcessIdentifier != nil
+            && snapshot?.instance?.processIdentifier == runningProcessIdentifier
+        let playback: MusicSourcePlaybackLevel
+        switch snapshotMatchesRunningInstance ? snapshot?.playbackState : nil {
+        case .playing:
+            playback = .playing
+        case .paused:
+            playback = .paused
+        case .stopped, .unknown, nil:
+            playback = .unknown
+        }
+        return MusicSourceCandidate(
+            source: .neteaseMusic,
+            isAvailable: runningProcessIdentifier != nil,
+            hasTrack: snapshotMatchesRunningInstance && snapshot?.track != nil,
+            playback: playback,
+            isCached: false
+        )
     }
 
     private func qishuiSourceCandidate() -> MusicSourceCandidate {
@@ -1990,6 +2225,8 @@ final class MusicAdapterCoordinator {
             Task { [weak self] in
                 await self?.refreshForegroundQishuiState()
             }
+        case .neteaseMusic:
+            scheduleNeteaseMusicRefresh(refresh: .metadata)
         case .appleMusic:
             scheduleAppleMusicRefresh(force: true)
         case nil:
@@ -2015,12 +2252,17 @@ final class MusicAdapterCoordinator {
         switch source {
         case .appleMusic:
             return appleMusicState()
+        case .neteaseMusic:
+            return neteaseMusicState()
         case .qishui, nil:
             return currentQishuiMusicState()
         }
     }
 
     private func musicStatus(for source: MusicSourceID?) -> MusicSourceStatus {
+        if source == .neteaseMusic {
+            return neteaseMusicStatus()
+        }
         guard source == .appleMusic else {
             return cachedStatus
         }
@@ -2046,6 +2288,123 @@ final class MusicAdapterCoordinator {
             detail: "\(trackText)。通过 PID 定向 Apple Event 读取，不使用系统当前媒体。",
             checkedAt: snapshot.checkedAt
         )
+    }
+
+    private func neteaseMusicStatus() -> MusicSourceStatus {
+        guard let snapshot = neteaseMusicSnapshotForRunningInstance() else {
+            return MusicSourceStatus(
+                sourceName: "网易云音乐",
+                availability: .neteaseMusicSynced,
+                headline: "等待网易云音乐同步",
+                detail: "已检测到网易云音乐，正在读取当前进程的专属播放状态。",
+                checkedAt: Date()
+            )
+        }
+        let trackText = snapshot.track.map { track in
+            [track.title, track.artist]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " - ")
+        } ?? "无当前歌曲"
+        return MusicSourceStatus(
+            sourceName: "网易云音乐",
+            availability: .neteaseMusicSynced,
+            headline: "已接入网易云音乐",
+            detail: "\(trackText)。状态与控制均绑定 com.netease.163music 当前 PID。",
+            checkedAt: snapshot.checkedAt
+        )
+    }
+
+    private func neteaseMusicState() -> MusicState {
+        guard let snapshot = neteaseMusicSnapshotForRunningInstance(),
+              let track = snapshot.track else {
+            return neteaseMusicIdleState()
+        }
+        let elapsedTime: TimeInterval?
+        let duration: TimeInterval?
+        let progress: Double
+        if let timeline = snapshot.timeline {
+            duration = timeline.duration
+            let projected = timeline.elapsedTime
+                + max(Date().timeIntervalSince(timeline.observedAt), 0) * timeline.playbackRate
+            let clamped = min(max(projected, 0), timeline.duration)
+            elapsedTime = clamped
+            progress = timeline.duration > 0 ? clamped / timeline.duration : 0
+        } else {
+            duration = nil
+            elapsedTime = nil
+            progress = 0
+        }
+        return MusicState(
+            track: MusicTrack(
+                title: track.title,
+                artist: track.artist ?? "网易云音乐",
+                palette: [
+                    Color(red: 0.90, green: 0.12, blue: 0.14),
+                    Color(red: 0.18, green: 0.03, blue: 0.04)
+                ],
+                lyrics: track.lyrics,
+                hasArtwork: track.artworkData != nil,
+                artworkData: track.artworkData,
+                artworkURL: nil,
+                sourceBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+            ),
+            isPlaying: snapshot.playbackState == .playing,
+            progress: min(max(progress, 0), 1),
+            lyricIndex: 0,
+            elapsedTime: elapsedTime,
+            duration: duration,
+            canSeek: false,
+            isPlaybackPending: false,
+            canPlayPause: snapshot.controls.supports(.playPause),
+            canPreviousTrack: snapshot.controls.supports(.previousTrack),
+            canNextTrack: snapshot.controls.supports(.nextTrack),
+            controlUnavailableReason: AXIsProcessTrusted()
+                ? "网易云音乐当前没有提供这个控制。"
+                : "需要辅助功能权限才能控制网易云音乐。",
+            hasCurrentTrack: true
+        )
+    }
+
+    private func neteaseMusicIdleState() -> MusicState {
+        MusicState(
+            track: MusicTrack(
+                title: "网易云音乐",
+                artist: "等待播放",
+                palette: [
+                    Color(red: 0.90, green: 0.12, blue: 0.14),
+                    Color(red: 0.18, green: 0.03, blue: 0.04)
+                ],
+                lyrics: [],
+                hasArtwork: false,
+                artworkData: nil,
+                artworkURL: nil,
+                sourceBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+            ),
+            isPlaying: false,
+            progress: 0,
+            lyricIndex: 0,
+            elapsedTime: nil,
+            duration: nil,
+            canSeek: false,
+            isPlaybackPending: false,
+            canPlayPause: false,
+            canPreviousTrack: false,
+            canNextTrack: false,
+            controlUnavailableReason: "网易云音乐当前没有可控制的歌曲。",
+            hasCurrentTrack: false
+        )
+    }
+
+    private func neteaseMusicSnapshotForRunningInstance() -> MusicAppSnapshot? {
+        let runningProcessIdentifier = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier
+        ).first?.processIdentifier
+        guard let snapshot = latestNeteaseMusicSnapshot,
+              snapshot.instance?.processIdentifier == runningProcessIdentifier else {
+            return nil
+        }
+        return snapshot
     }
 
     private func appleMusicState() -> MusicState {
@@ -2596,6 +2955,10 @@ final class MusicAdapterCoordinator {
             return "手动系统诊断暂不可读"
         case .qishuiControlSent:
             return "已触发汽水语义控制，等待真实状态回读"
+        case .neteaseMusicSynced:
+            return "已接入网易云音乐专属状态"
+        case .neteaseMusicControlSent:
+            return "已向网易云音乐当前 PID 发送语义控制"
         case .appleMusicSynced:
             return "已接入 Apple Music"
         case .appleMusicControlSent:
