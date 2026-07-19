@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import OSLog
 import SwiftUI
 
 enum MusicSourceAvailability: String, Equatable {
@@ -56,6 +57,17 @@ enum QishuiSeekSafety {
     // Even MRMediaRemoteSendCommandToPlayer routes seek through the system media
     // focus on macOS 26.5.2. Keep Qishui read-only until it exposes targeted seek.
     static let supportsTargetedSeek = false
+}
+
+enum NeteaseMusicVerificationPolicy {
+    static func shouldVerify(
+        isSelected: Bool,
+        isRunning: Bool,
+        hasTrack: Bool,
+        isRebindVerificationActive: Bool
+    ) -> Bool {
+        isRunning && (isSelected || !hasTrack || isRebindVerificationActive)
+    }
 }
 
 struct MusicSourceStatus: Equatable {
@@ -322,8 +334,14 @@ final class MusicAdapterCoordinator {
     private let qishuiControlQueue = DispatchQueue(label: "MacBookIsland.QishuiSemanticControl")
     private let mediaRemoteAdapterStreamSource = MediaRemoteAdapterStreamSource()
     private let nowPlayingBridge = NowPlayingAXBridge()
+    private let logger = Logger(
+        subsystem: "io.github.scorpioxyb.topislet",
+        category: "MusicAdapter"
+    )
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
+    private let neteaseMusicVerificationInterval: TimeInterval = 1.0
+    private let neteaseMusicRebindVerificationInterval: TimeInterval = 5.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestQishuiControlAvailability: QishuiControlAvailability = .unknown
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
@@ -354,6 +372,8 @@ final class MusicAdapterCoordinator {
     private var latestNeteaseMusicSnapshot: MusicAppSnapshot?
     private var neteaseMusicRefreshTask: Task<Void, Never>?
     private var neteaseMusicRefreshGeneration: UInt64 = 0
+    private var lastNeteaseMusicRefreshStartedAt: Date?
+    private var neteaseMusicRebindVerificationDeadline: Date?
     private var neteaseMusicControlRequestID: UInt64 = 0
     private var latestAppleMusicSnapshot: MusicAppSnapshot?
     private var appleMusicEnabled = true
@@ -992,6 +1012,21 @@ final class MusicAdapterCoordinator {
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
         reconcileForegroundMusicSource()
         scheduleAppleMusicRefresh(force: false)
+        let selectedSource = selectedMusicSource()
+        let neteaseMusicCandidate = neteaseMusicSourceCandidate()
+        let isRebindVerificationActive = neteaseMusicRebindVerificationDeadline
+            .map { Date() < $0 } ?? false
+        if !isRebindVerificationActive {
+            neteaseMusicRebindVerificationDeadline = nil
+        }
+        if NeteaseMusicVerificationPolicy.shouldVerify(
+            isSelected: selectedSource == .neteaseMusic,
+            isRunning: neteaseMusicCandidate.isAvailable,
+            hasTrack: neteaseMusicCandidate.hasTrack,
+            isRebindVerificationActive: isRebindVerificationActive
+        ) {
+            scheduleNeteaseMusicVerificationIfNeeded()
+        }
         if pendingPlaybackOperation != nil
             || shouldRefreshCachedPlaybackState()
             || shouldRefreshPlaybackPosition(state) {
@@ -1515,6 +1550,8 @@ final class MusicAdapterCoordinator {
                     self.neteaseMusicRefreshGeneration &+= 1
                     self.neteaseMusicRefreshTask?.cancel()
                     self.neteaseMusicRefreshTask = nil
+                    self.lastNeteaseMusicRefreshStartedAt = nil
+                    self.neteaseMusicRebindVerificationDeadline = nil
                     self.neteaseMusicAdapter.invalidateRunningInstance(
                         processIdentifier: terminatedApplication?.processIdentifier
                     )
@@ -1555,6 +1592,8 @@ final class MusicAdapterCoordinator {
                     self.neteaseMusicRefreshGeneration &+= 1
                     self.neteaseMusicRefreshTask?.cancel()
                     self.neteaseMusicRefreshTask = nil
+                    self.lastNeteaseMusicRefreshStartedAt = nil
+                    self.neteaseMusicRebindVerificationDeadline = nil
                 case .appleMusic:
                     self.cancelAppleMusicTransientRetry(resetAttempt: true)
                     self.lastAppleMusicRefreshCompletedAt = nil
@@ -1567,6 +1606,7 @@ final class MusicAdapterCoordinator {
                     await self.refreshForegroundQishuiState()
                     return
                 case .neteaseMusic:
+                    self.neteaseMusicAdapter.rebindObservationToRunningInstance()
                     self.scheduleNeteaseMusicRefresh(refresh: .metadata, retryAttempt: 0)
                 case .appleMusic:
                     guard self.appleMusicEnabled else { return }
@@ -1634,6 +1674,8 @@ final class MusicAdapterCoordinator {
         neteaseMusicRefreshGeneration &+= 1
         neteaseMusicRefreshTask?.cancel()
         neteaseMusicRefreshTask = nil
+        lastNeteaseMusicRefreshStartedAt = nil
+        neteaseMusicRebindVerificationDeadline = nil
         neteaseMusicAdapter.stop()
         latestNeteaseMusicSnapshot = nil
     }
@@ -1643,6 +1685,7 @@ final class MusicAdapterCoordinator {
         delayNanoseconds: UInt64 = 0,
         retryAttempt: Int? = nil
     ) {
+        lastNeteaseMusicRefreshStartedAt = Date()
         neteaseMusicRefreshGeneration &+= 1
         let generation = neteaseMusicRefreshGeneration
         neteaseMusicRefreshTask?.cancel()
@@ -1674,10 +1717,39 @@ final class MusicAdapterCoordinator {
             if case .notRunning = snapshot.availability {
                 self.latestNeteaseMusicSnapshot = nil
             } else {
+                let hadTrackForCurrentInstance = self.latestNeteaseMusicSnapshot?
+                    .instance == snapshot.instance
+                    && self.latestNeteaseMusicSnapshot?.track != nil
+                let previousTrackIdentity = self.latestNeteaseMusicSnapshot?
+                    .track?.identity
                 self.latestNeteaseMusicSnapshot = snapshot
+                if snapshot.track != nil, !hadTrackForCurrentInstance {
+                    self.neteaseMusicRebindVerificationDeadline = Date()
+                        .addingTimeInterval(
+                            self.neteaseMusicRebindVerificationInterval
+                        )
+                }
+                if snapshot.track?.identity != previousTrackIdentity {
+                    let processIdentifier = snapshot.instance?.processIdentifier ?? 0
+                    let trackTitle = snapshot.track?.title ?? "nil"
+                    let playbackState = Self.playbackStateLabel(snapshot.playbackState)
+                    self.logger.notice(
+                        "Netease snapshot changed pid=\(processIdentifier) track=\(trackTitle, privacy: .public) state=\(playbackState, privacy: .public)"
+                    )
+                }
             }
             self.publishCurrentState()
         }
+    }
+
+    private func scheduleNeteaseMusicVerificationIfNeeded(now: Date = Date()) {
+        guard neteaseMusicRefreshTask == nil else { return }
+        if let lastNeteaseMusicRefreshStartedAt,
+           now.timeIntervalSince(lastNeteaseMusicRefreshStartedAt)
+            < neteaseMusicVerificationInterval {
+            return
+        }
+        scheduleNeteaseMusicRefresh(refresh: .timeline)
     }
 
     nonisolated private static func musicSourceID(
@@ -2093,12 +2165,47 @@ final class MusicAdapterCoordinator {
 
     private func selectedMusicSource() -> MusicSourceID? {
         reconcileForegroundMusicSource()
-        return musicSourceSelector.update(
+        let previousSelection = musicSourceSelector.selection
+        let selection = musicSourceSelector.update(
             qishui: qishuiSourceCandidate(),
             neteaseMusic: neteaseMusicSourceCandidate(),
             appleMusic: appleMusicSourceCandidate(),
             foregroundSource: foregroundMusicSource
-        ).source
+        )
+        if selection.generation != previousSelection.generation {
+            logger.notice(
+                "Music source changed from=\(Self.sourceLabel(previousSelection.source), privacy: .public) to=\(Self.sourceLabel(selection.source), privacy: .public) foreground=\(Self.sourceLabel(self.foregroundMusicSource), privacy: .public)"
+            )
+        }
+        return selection.source
+    }
+
+    nonisolated private static func sourceLabel(_ source: MusicSourceID?) -> String {
+        switch source {
+        case .qishui:
+            return "qishui"
+        case .neteaseMusic:
+            return "netease"
+        case .appleMusic:
+            return "apple-music"
+        case nil:
+            return "none"
+        }
+    }
+
+    nonisolated private static func playbackStateLabel(
+        _ state: MusicPlaybackState
+    ) -> String {
+        switch state {
+        case .playing:
+            return "playing"
+        case .paused:
+            return "paused"
+        case .stopped:
+            return "stopped"
+        case .unknown:
+            return "unknown"
+        }
     }
 
     private func neteaseMusicSourceCandidate() -> MusicSourceCandidate {

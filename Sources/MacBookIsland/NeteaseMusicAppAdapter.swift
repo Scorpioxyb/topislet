@@ -26,6 +26,12 @@ enum NeteaseMusicRefreshRetryPolicy {
 
 @MainActor
 final class NeteaseMusicAppAdapter: MusicAppAdapter {
+    private static let postRebindVerificationDelays: [UInt64] = [
+        200_000_000,
+        500_000_000,
+        1_000_000_000
+    ]
+
     private struct PendingTrackTransition {
         let baselineIdentity: String
         let baselineDescriptiveIdentity: String
@@ -44,6 +50,9 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
 
     private let runningInstancesProvider: @Sendable () -> [MusicAppInstance]
     private let bridge: MediaRemoteClientBridge
+    private let payloadReaderForTesting: (
+        @MainActor @Sendable (Bool) async -> MediaRemoteClientPayload?
+    )?
     private let semanticController = NeteaseMusicSemanticAXController()
     private var invalidationHandler: (@MainActor @Sendable (MusicAdapterInvalidation) -> Void)?
     private var latestSnapshot: MusicAppSnapshot?
@@ -52,6 +61,8 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
     private var pendingMetadataIdentity: String?
     private var pendingTrackTransition: PendingTrackTransition?
     private var pendingPlaybackExpectation: PendingPlaybackExpectation?
+    private var bridgeNeedsRunningInstanceRebind = false
+    private var postRebindVerificationAttempt: Int?
     private var revision: UInt64 = 0
     private var artworkCache: [String: Data] = [:]
     private var artworkCacheOrder: [String] = []
@@ -69,9 +80,13 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                     launchedAt: $0.launchDate
                 )
             }
-        }
+        },
+        payloadReaderForTesting: (
+            @MainActor @Sendable (Bool) async -> MediaRemoteClientPayload?
+        )? = nil
     ) {
         self.runningInstancesProvider = runningInstancesProvider
+        self.payloadReaderForTesting = payloadReaderForTesting
         bridge = MediaRemoteClientBridge(
             bundleIdentifier: MusicAdapterRegistry.neteaseMusic.descriptor.bundleIdentifier,
             runningProcessIdentifiersProvider: {
@@ -86,15 +101,10 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         ) -> Void
     ) {
         invalidationHandler = onInvalidation
-        bridge.start(
-            onPayload: { [weak self] payload in
-                self?.receiveStreamPayload(payload)
-            },
-            onFailure: { [weak self] diagnostic in
-                self?.publishDegradedIfNeeded(diagnostic: diagnostic)
-            }
-        )
-        scheduleMetadataRefresh(candidate: nil)
+        if payloadReaderForTesting == nil {
+            startBridge()
+            scheduleMetadataRefresh(candidate: nil)
+        }
     }
 
     func stop() {
@@ -104,6 +114,8 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         pendingMetadataIdentity = nil
         pendingTrackTransition = nil
         pendingPlaybackExpectation = nil
+        bridgeNeedsRunningInstanceRebind = false
+        postRebindVerificationAttempt = nil
         bridge.stop()
         invalidationHandler = nil
         latestSnapshot = nil
@@ -123,7 +135,7 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
            latestSnapshot.instance == instance {
             return latestSnapshot
         }
-        let payload = await bridge.readOnce(includeArtwork: refresh == .metadata)
+        let payload = await readPayload(includeArtwork: refresh == .metadata)
         guard let payload,
               payload.processIdentifier == instance.processIdentifier else {
             if let latestSnapshot, latestSnapshot.instance == instance {
@@ -134,7 +146,19 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                 diagnostic: "网易云音乐专属状态暂未返回。"
             )
         }
-        return apply(payload, existingArtwork: cachedArtwork(for: payload))
+        let didRebindBridge = completeBridgeRebindIfNeeded()
+        if refresh == .timeline,
+           let latestSnapshot,
+           latestSnapshot.instance == instance,
+           latestSnapshot.track?.identity.fallbackSignature != payload.stableTrackSignature {
+            scheduleMetadataRefresh(candidate: payload)
+            return latestSnapshot
+        }
+        let snapshot = apply(payload, existingArtwork: cachedArtwork(for: payload))
+        if didRebindBridge {
+            scheduleNextPostRebindVerification()
+        }
+        return snapshot
     }
 
     func perform(_ request: MusicControlRequest) async -> MusicControlResult {
@@ -210,8 +234,21 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         pendingMetadataIdentity = nil
         pendingTrackTransition = nil
         pendingPlaybackExpectation = nil
+        bridgeNeedsRunningInstanceRebind = false
+        postRebindVerificationAttempt = nil
         latestSnapshot = nil
         invalidationHandler?(.sourceChanged)
+    }
+
+    func rebindObservationToRunningInstance() {
+        metadataRefreshGeneration &+= 1
+        metadataRefreshTask?.cancel()
+        metadataRefreshTask = nil
+        pendingMetadataIdentity = nil
+        pendingTrackTransition = nil
+        pendingPlaybackExpectation = nil
+        bridgeNeedsRunningInstanceRebind = true
+        postRebindVerificationAttempt = nil
     }
 
     func applyPayloadForTesting(_ payload: MediaRemoteClientPayload) -> MusicAppSnapshot {
@@ -283,11 +320,12 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
             while !Task.isCancelled,
                   generation == self.metadataRefreshGeneration,
                   Date() < deadline {
-                guard let payload = await self.bridge.readOnce(includeArtwork: true) else {
+                guard let payload = await self.readPayload(includeArtwork: true) else {
                     try? await Task.sleep(nanoseconds: 90_000_000)
                     continue
                 }
                 guard generation == self.metadataRefreshGeneration else { return }
+                _ = self.completeBridgeRebindIfNeeded()
 
                 if baselineIdentity == nil
                     || payload.stableTrackSignature == baselineIdentity {
@@ -298,6 +336,7 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                             existingArtwork: self.cachedArtwork(for: payload)
                         )
                         self.finishMetadataRefresh(generation: generation)
+                        self.scheduleNextPostRebindVerification()
                         self.invalidationHandler?(.sourceChanged)
                         return
                     }
@@ -328,6 +367,7 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
                         existingArtwork: self.cachedArtwork(for: payload)
                     )
                     self.finishMetadataRefresh(generation: generation)
+                    self.scheduleNextPostRebindVerification()
                     self.invalidationHandler?(.sourceChanged)
                     return
                 }
@@ -342,6 +382,48 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
         guard generation == metadataRefreshGeneration else { return }
         metadataRefreshTask = nil
         pendingMetadataIdentity = nil
+    }
+
+    private func startBridge() {
+        bridge.start(
+            onPayload: { [weak self] payload in
+                self?.receiveStreamPayload(payload)
+            },
+            onFailure: { [weak self] diagnostic in
+                self?.publishDegradedIfNeeded(diagnostic: diagnostic)
+            }
+        )
+    }
+
+    private func readPayload(includeArtwork: Bool) async -> MediaRemoteClientPayload? {
+        if let payloadReaderForTesting {
+            return await payloadReaderForTesting(includeArtwork)
+        }
+        return await bridge.readOnce(includeArtwork: includeArtwork)
+    }
+
+    private func scheduleNextPostRebindVerification() {
+        guard let attempt = postRebindVerificationAttempt,
+              Self.postRebindVerificationDelays.indices.contains(attempt) else {
+            postRebindVerificationAttempt = nil
+            return
+        }
+        postRebindVerificationAttempt = attempt + 1
+        scheduleMetadataRefresh(
+            candidate: nil,
+            delayNanoseconds: Self.postRebindVerificationDelays[attempt]
+        )
+    }
+
+    @discardableResult
+    private func completeBridgeRebindIfNeeded() -> Bool {
+        guard bridgeNeedsRunningInstanceRebind else { return false }
+        bridgeNeedsRunningInstanceRebind = false
+        if payloadReaderForTesting == nil {
+            bridge.restart()
+        }
+        postRebindVerificationAttempt = 0
+        return true
     }
 
     @discardableResult
