@@ -143,7 +143,8 @@ private func neteaseJSONData(
     artist: String,
     album: String,
     duration: TimeInterval,
-    artworkData: Data?
+    artworkData: Data?,
+    playing: Bool = true
 ) throws -> Data {
     var payload: [String: Any] = [
         "bundleIdentifier": "com.netease.163music",
@@ -153,8 +154,8 @@ private func neteaseJSONData(
         "album": album,
         "elapsedTime": 0,
         "duration": duration,
-        "playbackRate": 1,
-        "playing": true
+        "playbackRate": playing ? 1 : 0,
+        "playing": playing
     ]
     if let artworkData {
         payload["artworkData"] = artworkData.base64EncodedString()
@@ -324,6 +325,42 @@ func neteaseChangedArtworkConfirmsTransition() {
     ))
 }
 
+@Test("网易云播放中切歌等待短暂 paused 占位状态收敛")
+func neteasePlayingTransitionWaitsForPlaybackConfirmation() {
+    let issuedAt = Date(timeIntervalSince1970: 1_000)
+
+    #expect(NeteaseMusicAppAdapter.shouldAwaitPlaybackConfirmation(
+        expectedState: .playing,
+        candidateIsPlaying: false,
+        issuedAt: issuedAt,
+        now: issuedAt.addingTimeInterval(1.5)
+    ))
+    #expect(NeteaseMusicAppAdapter.shouldAwaitPlaybackConfirmation(
+        expectedState: .playing,
+        candidateIsPlaying: nil,
+        issuedAt: issuedAt,
+        now: issuedAt.addingTimeInterval(1.5)
+    ))
+    #expect(!NeteaseMusicAppAdapter.shouldAwaitPlaybackConfirmation(
+        expectedState: .playing,
+        candidateIsPlaying: true,
+        issuedAt: issuedAt,
+        now: issuedAt.addingTimeInterval(1.5)
+    ))
+    #expect(!NeteaseMusicAppAdapter.shouldAwaitPlaybackConfirmation(
+        expectedState: .playing,
+        candidateIsPlaying: false,
+        issuedAt: issuedAt,
+        now: issuedAt.addingTimeInterval(2.3)
+    ))
+    #expect(!NeteaseMusicAppAdapter.shouldAwaitPlaybackConfirmation(
+        expectedState: .paused,
+        candidateIsPlaying: false,
+        issuedAt: issuedAt,
+        now: issuedAt.addingTimeInterval(1.5)
+    ))
+}
+
 @MainActor
 @Test("网易云同曲暂停更新保留封面并冻结时间线")
 func neteasePausePreservesArtworkAndFreezesTimeline() throws {
@@ -390,6 +427,88 @@ func neteaseSparseFocusEventPreservesAuthoritativeTimeline() throws {
     #expect(preserved.timeline?.duration == 180.072)
     #expect(preserved.timeline?.playbackRate == 1)
     #expect(preserved.track?.artworkData == Data([0xFF, 0xD8, 0xFF]))
+}
+
+@MainActor
+@Test("网易云自然切歌不发布 paused 临时时长占位快照")
+func neteaseNaturalTransitionWaitsForCompletePlayingSnapshot() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let oldArtwork = Data([0x01, 0x02])
+    let newArtwork = Data([0x03, 0x04])
+    let oldPayload = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Giftig",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 188.309,
+            artworkData: oldArtwork
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let pausedPlaceholder = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Zeit",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 30.041,
+            artworkData: newArtwork,
+            playing: false
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    let completePlaying = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Zeit",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 321.749,
+            artworkData: newArtwork,
+            playing: true
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_002)
+    )
+    let reader = NeteasePayloadReaderStub(payloads: [
+        pausedPlaceholder,
+        completePlaying
+    ])
+    let recorder = NeteaseInvalidationRecorder()
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { includeArtwork in
+            reader.read(includeArtwork: includeArtwork)
+        }
+    )
+    _ = adapter.applyPayloadForTesting(oldPayload)
+    adapter.start { invalidation in
+        recorder.record(invalidation)
+    }
+
+    adapter.receiveStreamPayloadForTesting(pausedPlaceholder)
+    let immediate = await adapter.snapshot(refresh: .cached)
+    #expect(immediate.track?.title == "Giftig")
+    #expect(immediate.playbackState == .playing)
+
+    try await Task.sleep(nanoseconds: 250_000_000)
+    let committed = await adapter.snapshot(refresh: .cached)
+
+    #expect(committed.track?.title == "Zeit")
+    #expect(committed.track?.artworkData == newArtwork)
+    #expect(committed.timeline?.duration == 321.749)
+    #expect(committed.playbackState == .playing)
+    #expect(committed.timeline?.playbackRate == 1)
+    #expect(reader.artworkRequests == [true, true])
+    #expect(recorder.values == [.sourceChanged])
+    adapter.stop()
 }
 
 @MainActor
