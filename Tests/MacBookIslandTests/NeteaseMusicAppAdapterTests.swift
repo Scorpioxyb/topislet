@@ -2,6 +2,65 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@MainActor
+private final class NeteasePayloadReaderStub {
+    private var payloads: [MediaRemoteClientPayload]
+    private(set) var artworkRequests: [Bool] = []
+
+    init(payloads: [MediaRemoteClientPayload]) {
+        self.payloads = payloads
+    }
+
+    func read(includeArtwork: Bool) -> MediaRemoteClientPayload? {
+        artworkRequests.append(includeArtwork)
+        guard !payloads.isEmpty else { return nil }
+        return payloads.removeFirst()
+    }
+}
+
+@MainActor
+private final class NeteaseInvalidationRecorder {
+    private(set) var values: [MusicAdapterInvalidation] = []
+
+    func record(_ invalidation: MusicAdapterInvalidation) {
+        values.append(invalidation)
+    }
+}
+
+@Test("网易云运行但尚无曲目时继续发现，避免来源选择死锁")
+func neteaseVerificationDiscoversFirstTrackBeforeSelection() {
+    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: false,
+        isRunning: true,
+        hasTrack: false,
+        isRebindVerificationActive: false
+    ))
+    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: true,
+        isRunning: true,
+        hasTrack: true,
+        isRebindVerificationActive: false
+    ))
+    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: false,
+        isRunning: true,
+        hasTrack: true,
+        isRebindVerificationActive: true
+    ))
+    #expect(!NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: false,
+        isRunning: true,
+        hasTrack: true,
+        isRebindVerificationActive: false
+    ))
+    #expect(!NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: false,
+        isRunning: false,
+        hasTrack: false,
+        isRebindVerificationActive: true
+    ))
+}
+
 @Test("网易云启动阶段只对运行中的瞬时不可用状态执行有界重试")
 func neteaseStartupRefreshRetryIsBounded() {
     #expect(NeteaseMusicRefreshRetryPolicy.nextDelay(
@@ -331,4 +390,130 @@ func neteaseSparseFocusEventPreservesAuthoritativeTimeline() throws {
     #expect(preserved.timeline?.duration == 180.072)
     #expect(preserved.timeline?.playbackRate == 1)
     #expect(preserved.track?.artworkData == Data([0xFF, 0xD8, 0xFF]))
+}
+
+@MainActor
+@Test("网易云状态流漏报后校验会原子恢复同封面后台切歌")
+func neteaseVerificationRecoversMissedSameArtworkTransition() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let artwork = Data([0x01, 0x02, 0x03])
+    let oldPayload = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Engel",
+            artist: "Rammstein",
+            album: "Sehnsucht",
+            duration: 264.6,
+            artworkData: artwork
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let timelineCandidate = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Du hast",
+            artist: "Rammstein",
+            album: "Sehnsucht",
+            duration: 235.6,
+            artworkData: nil
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    let confirmedPayload = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Du hast",
+            artist: "Rammstein",
+            album: "Sehnsucht",
+            duration: 235.6,
+            artworkData: artwork
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_002)
+    )
+    let reader = NeteasePayloadReaderStub(payloads: [
+        timelineCandidate,
+        confirmedPayload,
+        confirmedPayload
+    ])
+    let recorder = NeteaseInvalidationRecorder()
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { includeArtwork in
+            reader.read(includeArtwork: includeArtwork)
+        }
+    )
+    _ = adapter.applyPayloadForTesting(oldPayload)
+    adapter.start { invalidation in
+        recorder.record(invalidation)
+    }
+
+    let immediate = await adapter.snapshot(refresh: .timeline)
+    #expect(immediate.track?.title == "Engel")
+    #expect(immediate.track?.artworkData == artwork)
+
+    try await Task.sleep(nanoseconds: 250_000_000)
+    let recovered = await adapter.snapshot(refresh: .cached)
+
+    #expect(recovered.track?.title == "Du hast")
+    #expect(recovered.track?.artist == "Rammstein")
+    #expect(recovered.track?.album == "Sehnsucht")
+    #expect(recovered.track?.artworkData == artwork)
+    #expect(recovered.timeline?.duration == 235.6)
+    #expect(reader.artworkRequests == [false, true, true])
+    #expect(recorder.values == [.sourceChanged])
+    adapter.stop()
+}
+
+@MainActor
+@Test("网易云新 PID 重绑后会确认首次播放竞态")
+func neteaseRebindConfirmsPlaybackStartedDuringFirstRead() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let paused = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: false),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let playing = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: true),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    let reader = NeteasePayloadReaderStub(payloads: [paused, playing])
+    let recorder = NeteaseInvalidationRecorder()
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { includeArtwork in
+            reader.read(includeArtwork: includeArtwork)
+        }
+    )
+    adapter.start { invalidation in
+        recorder.record(invalidation)
+    }
+    adapter.rebindObservationToRunningInstance()
+
+    let initial = await adapter.snapshot(refresh: .metadata)
+    #expect(initial.playbackState == .paused)
+
+    try await Task.sleep(nanoseconds: 350_000_000)
+    let confirmed = await adapter.snapshot(refresh: .cached)
+
+    #expect(confirmed.track?.title == "Sweet Boy")
+    #expect(confirmed.playbackState == .playing)
+    #expect(confirmed.timeline?.playbackRate == 1)
+    #expect(reader.artworkRequests == [true, true])
+    #expect(recorder.values == [.sourceChanged])
+    adapter.stop()
 }

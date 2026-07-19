@@ -117,6 +117,25 @@ final class MediaRemoteClientBridge {
         self.process = nil
     }
 
+    func restart() {
+        guard isStarted else { return }
+        generation &+= 1
+        restartTask?.cancel()
+        restartTask = nil
+        outputBuffer.removeAll()
+        if let process {
+            if let pipe = process.standardOutput as? Pipe {
+                pipe.fileHandleForReading.readabilityHandler = nil
+            }
+            process.terminationHandler = nil
+            self.process = nil
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        startProcessIfNeeded()
+    }
+
     func readOnce(includeArtwork: Bool) async -> MediaRemoteClientPayload? {
         guard let paths = adapterPaths() else { return nil }
         let expectedProcessIdentifiers = runningProcessIdentifiersProvider()
