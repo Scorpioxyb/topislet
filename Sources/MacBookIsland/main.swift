@@ -2383,6 +2383,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverReturnMode: IslandMode?
     private var hoverGeneration = 0
     private var hoverExpectedModeChange: IslandMode?
+    private var hoverPointerCoalescer = LatestEventCoalescer<CGPoint>()
+    private var hoverDeliveryWorkItem: DispatchWorkItem?
+    private var isPanelFrameAnimating = false
+    private var isCorrectingAnimatedPanelOrigin = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -2448,6 +2452,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hoverEnterTask?.cancel()
         hoverExitTask?.cancel()
+        hoverDeliveryWorkItem?.cancel()
+        hoverDeliveryWorkItem = nil
+        hoverPointerCoalescer.cancel()
     }
 
     @objc private func receiveIslandEvent(_ notification: Notification) {
@@ -2474,6 +2481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host = IslandHostingView(rootView: root)
         configureIslandHostingView(host, size: size)
         panel.contentView = host
+        panel.delegate = self
 
         self.panel = panel
         repositionPanel(animated: false)
@@ -2653,17 +2661,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeIslandHover() {
         hoverGlobalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             let point = NSEvent.mouseLocation
-            Task { @MainActor in
-                self?.updateIslandHover(at: point)
+            MainActor.assumeIsolated {
+                self?.enqueueIslandHover(at: point)
             }
         }
         hoverLocalMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
             let point = NSEvent.mouseLocation
-            Task { @MainActor in
-                self?.updateIslandHover(at: point)
+            MainActor.assumeIsolated {
+                self?.enqueueIslandHover(at: point)
             }
             return event
         }
+    }
+
+    private func enqueueIslandHover(at point: CGPoint) {
+        guard hoverPointerCoalescer.submit(point) else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hoverDeliveryWorkItem = nil
+                guard let latestPoint = self.hoverPointerCoalescer.consume() else { return }
+                self.updateIslandHover(at: latestPoint)
+            }
+        }
+        hoverDeliveryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(8),
+            execute: workItem
+        )
     }
 
     private func updateIslandHover(at point: CGPoint) {
@@ -2886,6 +2911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard animated else {
             _ = panelAnimationGate.beginAnimation()
+            isPanelFrameAnimating = false
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
             updatePanelVisibility()
@@ -2894,6 +2920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let animationID = panelAnimationGate.beginAnimation()
         let animationDuration = IslandMotion.duration(for: mode)
+        isPanelFrameAnimating = true
 
         if model.isVisible {
             panel.orderFrontRegardless()
@@ -2938,8 +2965,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             targetMode: targetMode,
             currentMode: model.mode
         ) else { return }
+        isPanelFrameAnimating = false
         panel?.setFrame(frame, display: true)
         panel?.contentView?.frame = NSRect(origin: .zero, size: size)
+    }
+
+    private func correctAnimatedPanelOriginIfNeeded() {
+        guard isPanelFrameAnimating,
+              !isCorrectingAnimatedPanelOrigin,
+              let panel,
+              let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let correctedFrame = panelFrame(for: panel.frame.size, on: screen)
+        guard abs(panel.frame.minX - correctedFrame.minX) > 0.01
+                || abs(panel.frame.minY - correctedFrame.minY) > 0.01 else { return }
+        isCorrectingAnimatedPanelOrigin = true
+        panel.setFrameOrigin(correctedFrame.origin)
+        isCorrectingAnimatedPanelOrigin = false
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
@@ -3099,6 +3140,11 @@ private final class AppTerminationSignalBridge {
 }
 
 extension AppDelegate: NSWindowDelegate {
+    func windowDidResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === panel else { return }
+        correctAnimatedPanelOriginIfNeeded()
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === settingsWindow {

@@ -83,8 +83,19 @@ private func verifyAnchoring(
         abs($0.frame.minY - expectedTop)
     }.max() ?? .infinity
     guard maximumCenterError <= 0.75 else {
+        let centers = samples.map(\.frame.midX)
+        let minimumCenter = centers.min() ?? .nan
+        let maximumCenter = centers.max() ?? .nan
+        let worstSample = samples.max { lhs, rhs in
+            abs(lhs.frame.midX - expectedCenterX) < abs(rhs.frame.midX - expectedCenterX)
+        }
+        let worstSize = worstSample?.frame.size ?? .zero
         throw VerificationError.failed(
-            "动画水平中心漂移 \(String(format: "%.2f", maximumCenterError))pt"
+            "动画水平中心漂移 \(String(format: "%.2f", maximumCenterError))pt；"
+                + "预期 \(String(format: "%.2f", expectedCenterX))，"
+                + "范围 \(String(format: "%.2f", minimumCenter))..."
+                + "\(String(format: "%.2f", maximumCenter))，"
+                + "最差尺寸 \(Int(worstSize.width))x\(Int(worstSize.height))"
         )
     }
     guard maximumTopError <= 0.75 else {

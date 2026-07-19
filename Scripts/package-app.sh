@@ -7,6 +7,12 @@ PACKAGE_APP="$ROOT/.build/package/$APP_NAME"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/topislet-package.XXXXXX")"
 APP="$WORK_DIR/$APP_NAME"
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$ROOT/Packaging/Info.plist")"
+BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
+
+if [[ "$BUILD_CONFIGURATION" != "debug" && "$BUILD_CONFIGURATION" != "release" ]]; then
+  echo "error: BUILD_CONFIGURATION must be debug or release" >&2
+  exit 64
+fi
 
 move_to_trash_if_present() {
   local path="$1"
@@ -30,11 +36,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-swift build --package-path "$ROOT" -debug-info-format none
+swift build --package-path "$ROOT" -c "$BUILD_CONFIGURATION" -debug-info-format none
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
-cp "$ROOT/.build/debug/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
+cp "$ROOT/.build/$BUILD_CONFIGURATION/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
 if [ -d "$ROOT/Vendor/MediaRemoteAdapter" ]; then
   ditto --norsrc --noextattr --noqtn --noacl \
     "$ROOT/Vendor/MediaRemoteAdapter" \
@@ -67,3 +73,4 @@ codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP" >/dev/null
 
 echo "Packaged: $PACKAGE_APP"
 echo "Installed: $INSTALLED_APP"
+echo "Configuration: $BUILD_CONFIGURATION"
