@@ -200,6 +200,100 @@ struct AppleMusicPlayerInfoCandidate: Equatable, Sendable {
     }
 }
 
+enum AppleMusicArtworkPrefetchRoute: Equatable, Sendable {
+    case native
+    case catalog
+}
+
+struct AppleMusicArtworkRecoveryState: Equatable, Sendable {
+    private(set) var catalogFallbackSignature: String?
+    private(set) var nativeRecoveryScheduledSignature: String?
+    private(set) var nativeRecoveryAttemptedSignature: String?
+
+    func route(for fallbackSignature: String) -> AppleMusicArtworkPrefetchRoute {
+        catalogFallbackSignature == fallbackSignature ? .catalog : .native
+    }
+
+    mutating func recordMetadataResult(
+        _ observation: AppleMusicObservation,
+        artworkRequested: Bool,
+        nativeRecoverySignature: String?
+    ) -> Bool {
+        guard artworkRequested else { return false }
+        guard let identity = observation.trackIdentity else {
+            return true
+        }
+        let fallbackSignature = identity.fallbackSignature
+        if observation.artworkData != nil {
+            recordArtworkSuccess(for: fallbackSignature)
+            return false
+        }
+        if nativeRecoverySignature == fallbackSignature
+            || nativeRecoveryAttemptedSignature == fallbackSignature {
+            catalogFallbackSignature = nil
+            nativeRecoveryScheduledSignature = nil
+            nativeRecoveryAttemptedSignature = fallbackSignature
+            return false
+        }
+        catalogFallbackSignature = fallbackSignature
+        nativeRecoveryScheduledSignature = nil
+        nativeRecoveryAttemptedSignature = nil
+        return false
+    }
+
+    mutating func recordNativePrefetchMiss(
+        for fallbackSignature: String
+    ) -> Bool {
+        guard nativeRecoveryAttemptedSignature != fallbackSignature else {
+            catalogFallbackSignature = nil
+            return false
+        }
+        catalogFallbackSignature = fallbackSignature
+        return true
+    }
+
+    mutating func recordArtworkSuccess(for fallbackSignature: String) {
+        if catalogFallbackSignature == fallbackSignature {
+            catalogFallbackSignature = nil
+        }
+        if nativeRecoveryScheduledSignature == fallbackSignature {
+            nativeRecoveryScheduledSignature = nil
+        }
+        if nativeRecoveryAttemptedSignature == fallbackSignature {
+            nativeRecoveryAttemptedSignature = nil
+        }
+    }
+
+    mutating func scheduleNativeRecoveryAfterCatalogFailure(
+        fallbackSignature: String,
+        currentIdentity: MusicTrackIdentity?
+    ) -> Bool {
+        guard currentIdentity?.fallbackSignature == fallbackSignature,
+              nativeRecoveryScheduledSignature != fallbackSignature,
+              nativeRecoveryAttemptedSignature != fallbackSignature else {
+            return false
+        }
+        catalogFallbackSignature = nil
+        nativeRecoveryScheduledSignature = fallbackSignature
+        return true
+    }
+
+    mutating func consumeNativeRecoverySignature() -> String? {
+        guard let signature = nativeRecoveryScheduledSignature else {
+            return nil
+        }
+        nativeRecoveryScheduledSignature = nil
+        nativeRecoveryAttemptedSignature = signature
+        return signature
+    }
+
+    mutating func reset() {
+        catalogFallbackSignature = nil
+        nativeRecoveryScheduledSignature = nil
+        nativeRecoveryAttemptedSignature = nil
+    }
+}
+
 func appleMusicSnapshotByReplacingArtworkData(
     _ snapshot: MusicAppSnapshot,
     artworkData: Data,
@@ -619,7 +713,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private var artworkFetchIdentity: MusicTrackIdentity?
     private var artworkFetchGeneration: UInt64 = 0
     private var preferArtworkOnNextMetadata = true
-    private var shouldPrefetchCatalogFromPlayerInfo = false
+    private var artworkRecoveryState = AppleMusicArtworkRecoveryState()
     private var nativeArtworkPrefetchTask: Task<Void, Never>?
     private var nativeArtworkPrefetchRequest: AppleMusicArtworkBridgeRequest?
     private var nativeArtworkPrefetchGeneration: UInt64 = 0
@@ -682,7 +776,9 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                         observedAt: receivedAt,
                         observedUptime: receivedUptime
                     )
-                    if self.shouldPrefetchCatalogFromPlayerInfo {
+                    if self.artworkRecoveryState.route(
+                        for: candidate.fallbackSignature
+                    ) == .catalog {
                         self.cancelNativeArtworkPrefetch(clearPending: true)
                         self.preferArtworkOnNextMetadata = false
                         self.scheduleCatalogPrefetch(for: candidate)
@@ -722,7 +818,7 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
         playerInfoDebounceTask?.cancel()
         playerInfoDebounceTask = nil
         preferArtworkOnNextMetadata = true
-        shouldPrefetchCatalogFromPlayerInfo = false
+        artworkRecoveryState.reset()
         catalogPrefetchFailure = nil
         cancelNativeArtworkPrefetch(clearPending: true)
         cancelCatalogPrefetch(clearPending: true)
@@ -783,15 +879,21 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
 
         let processIdentifier = app.processIdentifier
         let includeArtwork: Bool
+        let nativeRecoverySignature: String?
         if case .metadata = refresh {
             includeArtwork = preferArtworkOnNextMetadata || lastInstance != instance
             if includeArtwork {
                 // Consume before awaiting so a newer playerInfo signal is not
                 // cleared when this older request eventually completes.
                 preferArtworkOnNextMetadata = false
+                nativeRecoverySignature = artworkRecoveryState
+                    .consumeNativeRecoverySignature()
+            } else {
+                nativeRecoverySignature = nil
             }
         } else {
             includeArtwork = false
+            nativeRecoverySignature = nil
         }
         let refreshLabel: String
         switch refresh {
@@ -855,7 +957,9 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                         for: identity,
                         at: checkedAt
                     )
-                    shouldPrefetchCatalogFromPlayerInfo = false
+                    artworkRecoveryState.recordArtworkSuccess(
+                        for: identity.fallbackSignature
+                    )
                     cancelNativeArtworkPrefetch(clearPending: true)
                     cancelCatalogPrefetch(clearPending: true)
                 } else if let pendingNativeArtwork,
@@ -904,8 +1008,14 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             }
             lastInstance = instance
             if includeArtwork {
-                if observation.artworkData == nil {
-                    shouldPrefetchCatalogFromPlayerInfo = true
+                let shouldKeepArtworkPreference = artworkRecoveryState
+                    .recordMetadataResult(
+                        resolvedObservation,
+                        artworkRequested: true,
+                        nativeRecoverySignature: nativeRecoverySignature
+                    )
+                if shouldKeepArtworkPreference {
+                    preferArtworkOnNextMetadata = true
                 }
             }
             if case .metadata = refresh {
@@ -1056,6 +1166,9 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
     private func scheduleNativeArtworkPrefetch(
         for candidate: AppleMusicPlayerInfoCandidate
     ) -> Bool {
+        if artworkReuseCache.data(for: candidate.observation) != nil {
+            return true
+        }
         if let identity = lastObservation?.trackIdentity,
            identity.fallbackSignature == candidate.fallbackSignature,
            artworkCache.data(for: identity) != nil {
@@ -1152,15 +1265,20 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 .artworkReadCompleted,
                 detail: "mechanism=native result=no-artwork"
             )
-            shouldPrefetchCatalogFromPlayerInfo = true
-            scheduleCatalogPrefetch(for: candidate)
+            if artworkRecoveryState.recordNativePrefetchMiss(
+                for: candidate.fallbackSignature
+            ) {
+                scheduleCatalogPrefetch(for: candidate)
+            }
             return
         }
         transitionTimeline.record(
             .artworkReadCompleted,
             detail: "mechanism=native result=success artworkBytes=\(artworkData.count)"
         )
-        shouldPrefetchCatalogFromPlayerInfo = false
+        artworkRecoveryState.recordArtworkSuccess(
+            for: identity.fallbackSignature
+        )
         if !applyPrefetchedArtwork(
             artworkData,
             identity: identity,
@@ -1298,13 +1416,24 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
                 for: identity,
                 at: completedAt
             )
+            scheduleNativeArtworkRecoveryIfNeeded(
+                fallbackSignature: fallbackSignature,
+                identity: identity
+            )
         case .transientFailure:
             artworkCache.recordFailure(
                 .transient,
                 for: identity,
                 at: completedAt
             )
+            scheduleNativeArtworkRecoveryIfNeeded(
+                fallbackSignature: fallbackSignature,
+                identity: identity
+            )
         case let .success(data):
+            artworkRecoveryState.recordArtworkSuccess(
+                for: fallbackSignature
+            )
             guard applyPrefetchedArtwork(
                 data,
                 identity: identity,
@@ -1314,6 +1443,20 @@ final class AppleMusicAppAdapter: MusicAppAdapter {
             }
             pendingCatalogArtwork = nil
         }
+    }
+
+    private func scheduleNativeArtworkRecoveryIfNeeded(
+        fallbackSignature: String,
+        identity: MusicTrackIdentity
+    ) {
+        guard artworkRecoveryState.scheduleNativeRecoveryAfterCatalogFailure(
+            fallbackSignature: fallbackSignature,
+            currentIdentity: identity
+        ) else {
+            return
+        }
+        preferArtworkOnNextMetadata = true
+        invalidationHandler?(.sourceChanged)
     }
 
     private func applyPrefetchedArtwork(

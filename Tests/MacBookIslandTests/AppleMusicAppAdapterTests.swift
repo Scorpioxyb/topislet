@@ -60,6 +60,117 @@ func appleMusicPlayerInfoCreatesArtworkCandidate() throws {
         == candidate.fallbackSignature)
 }
 
+@Test("Apple Music 空状态不会让下一首真实歌曲绕过原生封面")
+func appleMusicEmptyStateKeepsNativeArtworkRoute() throws {
+    let emptyObservation = try #require(AppleMusicObservation.decode(fields: [
+        "", "", "", "", "", "", "stopped"
+    ]))
+    let candidate = try #require(AppleMusicPlayerInfoCandidate(userInfo: [
+        "Name": "Fast Times",
+        "Artist": "Sabrina Carpenter",
+        "Album": "emails i can't send"
+    ]))
+    var state = AppleMusicArtworkRecoveryState()
+
+    let shouldKeepArtworkPreference = state.recordMetadataResult(
+        emptyObservation,
+        artworkRequested: true,
+        nativeRecoverySignature: nil
+    )
+
+    #expect(shouldKeepArtworkPreference)
+    #expect(state.route(for: candidate.fallbackSignature) == .native)
+}
+
+@Test("Apple Music 目录无匹配后只为当前歌曲安排原生回读")
+func appleMusicCatalogMissSchedulesNativeRecovery() throws {
+    let observation = try #require(AppleMusicObservation.decode(fields: [
+        "FAST-TIMES", "Fast Times", "Sabrina Carpenter",
+        "emails i can't send", "185", "2", "playing"
+    ]))
+    let identity = try #require(observation.trackIdentity)
+    var state = AppleMusicArtworkRecoveryState()
+    _ = state.recordMetadataResult(
+        observation,
+        artworkRequested: true,
+        nativeRecoverySignature: nil
+    )
+
+    #expect(state.route(for: identity.fallbackSignature) == .catalog)
+    let didScheduleRecovery = state.scheduleNativeRecoveryAfterCatalogFailure(
+        fallbackSignature: identity.fallbackSignature,
+        currentIdentity: identity
+    )
+    let recoverySignature = state.consumeNativeRecoverySignature()
+    #expect(didScheduleRecovery)
+    #expect(recoverySignature == identity.fallbackSignature)
+}
+
+@Test("Apple Music 旧歌曲目录失败不会触发新歌曲回读")
+func appleMusicStaleCatalogMissDoesNotAffectNewTrack() throws {
+    let oldObservation = try #require(AppleMusicObservation.decode(fields: [
+        "OLD", "Old Song", "Artist", "Old Album", "180", "20", "playing"
+    ]))
+    let newObservation = try #require(AppleMusicObservation.decode(fields: [
+        "NEW", "New Song", "Artist", "New Album", "200", "0", "playing"
+    ]))
+    let oldIdentity = try #require(oldObservation.trackIdentity)
+    let newIdentity = try #require(newObservation.trackIdentity)
+    var state = AppleMusicArtworkRecoveryState()
+    _ = state.recordMetadataResult(
+        oldObservation,
+        artworkRequested: true,
+        nativeRecoverySignature: nil
+    )
+
+    let didScheduleRecovery = state.scheduleNativeRecoveryAfterCatalogFailure(
+        fallbackSignature: oldIdentity.fallbackSignature,
+        currentIdentity: newIdentity
+    )
+    let recoverySignature = state.consumeNativeRecoverySignature()
+    #expect(!didScheduleRecovery)
+    #expect(state.route(for: newIdentity.fallbackSignature) == .native)
+    #expect(recoverySignature == nil)
+}
+
+@Test("Apple Music 原生与目录封面回退不会无限循环")
+func appleMusicArtworkRecoveryDoesNotLoop() throws {
+    let observation = try #require(AppleMusicObservation.decode(fields: [
+        "TRACK", "Song", "Artist", "Album", "180", "20", "playing"
+    ]))
+    let identity = try #require(observation.trackIdentity)
+    var state = AppleMusicArtworkRecoveryState()
+    _ = state.recordMetadataResult(
+        observation,
+        artworkRequested: true,
+        nativeRecoverySignature: nil
+    )
+    let didScheduleRecovery = state.scheduleNativeRecoveryAfterCatalogFailure(
+        fallbackSignature: identity.fallbackSignature,
+        currentIdentity: identity
+    )
+    let consumedRecoverySignature = state.consumeNativeRecoverySignature()
+    let recoverySignature = try #require(consumedRecoverySignature)
+    #expect(didScheduleRecovery)
+
+    _ = state.recordMetadataResult(
+        observation,
+        artworkRequested: true,
+        nativeRecoverySignature: recoverySignature
+    )
+
+    #expect(state.route(for: identity.fallbackSignature) == .native)
+    let shouldTryCatalogAgain = state.recordNativePrefetchMiss(
+        for: identity.fallbackSignature
+    )
+    let didScheduleSecondRecovery = state.scheduleNativeRecoveryAfterCatalogFailure(
+        fallbackSignature: identity.fallbackSignature,
+        currentIdentity: identity
+    )
+    #expect(!shouldTryCatalogAgain)
+    #expect(!didScheduleSecondRecovery)
+}
+
 @Test("Apple Music 封面合并不改变权威播放字段")
 func appleMusicArtworkMergePreservesObservation() throws {
     let observation = try #require(AppleMusicObservation.decode(fields: [
