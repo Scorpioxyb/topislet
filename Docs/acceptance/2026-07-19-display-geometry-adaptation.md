@@ -23,6 +23,7 @@
 - SwiftPM：`swift test`，141 项通过。
 - Xcode 26.6：`xcodebuild -scheme MacBookIsland-Package -destination 'platform=macOS' test CODE_SIGNING_ALLOWED=NO`，141 项通过，`TEST SUCCEEDED`。
 - 测试矩阵覆盖 MacBook Air 13/15、MacBook Pro 14/16、非零多屏坐标、无刘海外接屏和异常辅助区域。
+- 首轮 GitHub CI 暴露网易云异步测试的固定 `250ms` 等待在 Runner 负载下不稳定；测试已改为最多 1.5 秒的有界条件等待，产品时序保持不变。
 
 ## 边界
 

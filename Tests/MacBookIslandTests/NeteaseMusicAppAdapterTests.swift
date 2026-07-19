@@ -27,6 +27,21 @@ private final class NeteaseInvalidationRecorder {
     }
 }
 
+@MainActor
+private func waitForNeteaseSnapshot(
+    from adapter: NeteaseMusicAppAdapter,
+    timeout: TimeInterval = 1.5,
+    matching predicate: (MusicAppSnapshot) -> Bool
+) async -> MusicAppSnapshot {
+    let deadline = Date().addingTimeInterval(timeout)
+    var snapshot = await adapter.snapshot(refresh: .cached)
+    while !predicate(snapshot), Date() < deadline {
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        snapshot = await adapter.snapshot(refresh: .cached)
+    }
+    return snapshot
+}
+
 @Test("网易云运行但尚无曲目时继续发现，避免来源选择死锁")
 func neteaseVerificationDiscoversFirstTrackBeforeSelection() {
     #expect(NeteaseMusicVerificationPolicy.shouldVerify(
@@ -516,8 +531,9 @@ func neteaseNaturalTransitionWaitsForCompletePlayingSnapshot() async throws {
     #expect(immediate.track?.title == "Giftig")
     #expect(immediate.playbackState == .playing)
 
-    try await Task.sleep(nanoseconds: 250_000_000)
-    let committed = await adapter.snapshot(refresh: .cached)
+    let committed = await waitForNeteaseSnapshot(from: adapter) {
+        $0.track?.title == "Zeit"
+    }
 
     #expect(committed.track?.title == "Zeit")
     #expect(committed.track?.artworkData == transition.newArtwork)
@@ -558,8 +574,9 @@ func neteaseForegroundMetadataRefreshUsesTransitionGate() async throws {
     #expect(immediate.track?.title == "Giftig")
     #expect(immediate.playbackState == .playing)
 
-    try await Task.sleep(nanoseconds: 250_000_000)
-    let committed = await adapter.snapshot(refresh: .cached)
+    let committed = await waitForNeteaseSnapshot(from: adapter) {
+        $0.track?.title == "Zeit"
+    }
 
     #expect(committed.track?.title == "Zeit")
     #expect(committed.track?.artworkData == transition.newArtwork)
@@ -637,8 +654,9 @@ func neteaseVerificationRecoversMissedSameArtworkTransition() async throws {
     #expect(immediate.track?.title == "Engel")
     #expect(immediate.track?.artworkData == artwork)
 
-    try await Task.sleep(nanoseconds: 250_000_000)
-    let recovered = await adapter.snapshot(refresh: .cached)
+    let recovered = await waitForNeteaseSnapshot(from: adapter) {
+        $0.track?.title == "Du hast"
+    }
 
     #expect(recovered.track?.title == "Du hast")
     #expect(recovered.track?.artist == "Rammstein")
@@ -686,8 +704,9 @@ func neteaseRebindConfirmsPlaybackStartedDuringFirstRead() async throws {
     let initial = await adapter.snapshot(refresh: .metadata)
     #expect(initial.playbackState == .paused)
 
-    try await Task.sleep(nanoseconds: 350_000_000)
-    let confirmed = await adapter.snapshot(refresh: .cached)
+    let confirmed = await waitForNeteaseSnapshot(from: adapter) {
+        $0.playbackState == .playing
+    }
 
     #expect(confirmed.track?.title == "Sweet Boy")
     #expect(confirmed.playbackState == .playing)
