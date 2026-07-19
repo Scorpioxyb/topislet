@@ -64,6 +64,8 @@ bash Scripts/package-app.sh
 open "/Applications/顶屿.app"
 ```
 
+本地安装默认使用 Release 构建，确保日常动画与同步性能接近发布包；仅在排障时可使用 `BUILD_CONFIGURATION=debug bash Scripts/package-app.sh`。
+
 生成可分发候选包使用独立脚本：
 
 ```bash
