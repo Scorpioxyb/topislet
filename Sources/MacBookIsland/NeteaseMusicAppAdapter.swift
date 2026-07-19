@@ -149,10 +149,10 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
             )
         }
         let didRebindBridge = completeBridgeRebindIfNeeded()
-        if refresh == .timeline,
-           let latestSnapshot,
+        if let latestSnapshot,
            latestSnapshot.instance == instance,
            latestSnapshot.track?.identity.fallbackSignature != payload.stableTrackSignature {
+            beginTrackTransitionIfNeeded(from: latestSnapshot, candidate: payload)
             scheduleMetadataRefresh(candidate: payload)
             return latestSnapshot
         }
@@ -284,18 +284,28 @@ final class NeteaseMusicAppAdapter: MusicAppAdapter {
             }
             return
         }
-        if let snapshot = latestSnapshot,
-           let track = snapshot.track,
-           payload.descriptiveTrackSignature != Self.descriptiveIdentity(for: track) {
-            pendingTrackTransition = PendingTrackTransition(
-                baselineIdentity: track.identity.fallbackSignature,
-                baselineDescriptiveIdentity: Self.descriptiveIdentity(for: track),
-                baselineArtworkData: track.artworkData,
-                expectedPlaybackState: snapshot.playbackState,
-                issuedAt: Date()
-            )
+        if let snapshot = latestSnapshot {
+            beginTrackTransitionIfNeeded(from: snapshot, candidate: payload)
         }
         scheduleMetadataRefresh(candidate: payload)
+    }
+
+    private func beginTrackTransitionIfNeeded(
+        from snapshot: MusicAppSnapshot,
+        candidate payload: MediaRemoteClientPayload
+    ) {
+        guard pendingTrackTransition == nil,
+              let track = snapshot.track,
+              payload.descriptiveTrackSignature != Self.descriptiveIdentity(for: track) else {
+            return
+        }
+        pendingTrackTransition = PendingTrackTransition(
+            baselineIdentity: track.identity.fallbackSignature,
+            baselineDescriptiveIdentity: Self.descriptiveIdentity(for: track),
+            baselineArtworkData: track.artworkData,
+            expectedPlaybackState: snapshot.playbackState,
+            issuedAt: Date()
+        )
     }
 
     private func scheduleMetadataRefresh(
