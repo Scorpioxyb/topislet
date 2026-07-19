@@ -283,11 +283,18 @@ struct LayoutCalibrationView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("布局校准")
                 .font(.system(size: 20, weight: .semibold))
-            Text("\(settings.currentDisplayName)：刘海区域约 \(Int(model.notchWidth)) x \(Int(model.topBandHeight)) pt。调整会实时生效，并在重启后保留。")
+            Text(displayGeometrySummary)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var displayGeometrySummary: String {
+        if model.hasCameraHousing {
+            return "\(settings.currentDisplayName)：系统识别到约 \(Int(model.notchWidth)) x \(Int(model.topBandHeight)) pt 的摄像头区域。调整会实时生效，并在重启后保留。"
+        }
+        return "\(settings.currentDisplayName)：未检测到摄像头刘海，顶屿使用屏幕顶部居中胶囊布局。"
     }
 
     private var footer: some View {

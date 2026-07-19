@@ -118,6 +118,31 @@ if CommandLine.arguments.contains("--ax-check") {
     exit(AXIsProcessTrusted() ? 0 : 2)
 }
 
+if CommandLine.arguments.contains("--display-geometry") {
+    for (index, screen) in NSScreen.screens.enumerated() {
+        let geometry = IslandDisplayGeometry.resolve(
+            screenFrame: screen.frame,
+            safeAreaTop: screen.safeAreaInsets.top,
+            auxiliaryTopLeftArea: screen.auxiliaryTopLeftArea,
+            auxiliaryTopRightArea: screen.auxiliaryTopRightArea,
+            backingScaleFactor: screen.backingScaleFactor,
+            notchHeightAdjustment: 1
+        )
+        print("displayIndex=\(index)")
+        print("name=\(screen.localizedName)")
+        print("frame=\(NSStringFromRect(screen.frame))")
+        print("scale=\(screen.backingScaleFactor)")
+        print("safeAreaTop=\(screen.safeAreaInsets.top)")
+        print("hasCameraHousing=\(geometry.hasCameraHousing)")
+        print("cameraHousingFrame=\(geometry.cameraHousingFrame.map(NSStringFromRect) ?? "nil")")
+        print("islandAnchorX=\(geometry.islandAnchorX)")
+        print("notchWidth=\(geometry.notchWidth)")
+        print("topBandHeight=\(geometry.topBandHeight)")
+        print("")
+    }
+    exit(0)
+}
+
 func printQishuiSnapshot(_ snapshot: QishuiDirectSnapshot) {
     print("qishuiRunning=\(snapshot.isRunning)")
     print("pid=\(snapshot.processIdentifier.map(String.init) ?? "nil")")
@@ -453,10 +478,12 @@ enum IslandWindowLayout {
     static func frame(
         for size: NSSize,
         in screenFrame: NSRect,
-        yOffset: CGFloat
+        yOffset: CGFloat,
+        anchorX: CGFloat? = nil
     ) -> NSRect {
-        NSRect(
-            x: screenFrame.midX - size.width / 2,
+        let resolvedAnchorX = anchorX ?? screenFrame.midX
+        return NSRect(
+            x: resolvedAnchorX - size.width / 2,
             y: screenFrame.maxY - size.height - yOffset,
             width: size.width,
             height: size.height
@@ -853,6 +880,7 @@ final class IslandModel: ObservableObject {
     @Published var activeFeature: IslandFeature = .music
     @Published var notchWidth: CGFloat = 185
     @Published var topBandHeight: CGFloat = 33
+    @Published var hasCameraHousing = true
     let appSettings = AppSettings()
     let layout = LayoutCalibrationSettings()
     @Published var music: MusicState
@@ -2347,6 +2375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationGate = IslandAnimationCompletionGate()
+    private var activeDisplayGeometry: IslandDisplayGeometry?
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
     private var isPointerInsideHoverZone = false
@@ -2772,25 +2801,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.layout.useDisplay(name: screen.localizedName, identity: calibrationDisplayIdentity(for: screen))
 
-        var topHeight = max(screen.safeAreaInsets.top, 32)
-        var notchWidth: CGFloat = 160
-
-        if let left = screen.auxiliaryTopLeftArea,
-           let right = screen.auxiliaryTopRightArea,
-           right.minX > left.maxX {
-            notchWidth = right.minX - left.maxX
-            topHeight = max(topHeight, left.height, right.height)
-        }
-
-        let calibratedTopHeight = topHeight + CGFloat(model.layout.notchHeightAdjustment)
-        let nextNotchWidth = max(120, min(notchWidth, 240))
-        let nextTopBandHeight = max(30, min(calibratedTopHeight, 42))
+        let geometry = displayGeometry(for: screen)
+        activeDisplayGeometry = geometry
+        let nextNotchWidth = geometry.notchWidth
+        let nextTopBandHeight = geometry.topBandHeight
         if abs(model.notchWidth - nextNotchWidth) > 0.25 {
             model.notchWidth = nextNotchWidth
         }
         if abs(model.topBandHeight - nextTopBandHeight) > 0.25 {
             model.topBandHeight = nextTopBandHeight
         }
+        if model.hasCameraHousing != geometry.hasCameraHousing {
+            model.hasCameraHousing = geometry.hasCameraHousing
+        }
+    }
+
+    private func displayGeometry(for screen: NSScreen) -> IslandDisplayGeometry {
+        IslandDisplayGeometry.resolve(
+            screenFrame: screen.frame,
+            safeAreaTop: screen.safeAreaInsets.top,
+            auxiliaryTopLeftArea: screen.auxiliaryTopLeftArea,
+            auxiliaryTopRightArea: screen.auxiliaryTopRightArea,
+            backingScaleFactor: screen.backingScaleFactor,
+            notchHeightAdjustment: CGFloat(model.layout.notchHeightAdjustment)
+        )
     }
 
     private func calibrationDisplayIdentity(for screen: NSScreen) -> String {
@@ -2909,10 +2943,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        IslandWindowLayout.frame(
+        let geometry: IslandDisplayGeometry
+        if let activeDisplayGeometry,
+           activeDisplayGeometry.screenFrame == screen.frame {
+            geometry = activeDisplayGeometry
+        } else {
+            geometry = displayGeometry(for: screen)
+        }
+        return IslandWindowLayout.frame(
             for: size,
             in: screen.frame,
-            yOffset: CGFloat(model.layout.islandYOffset)
+            yOffset: CGFloat(model.layout.islandYOffset),
+            anchorX: geometry.islandAnchorX
         )
     }
 
