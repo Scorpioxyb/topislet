@@ -74,6 +74,95 @@ func interpolatedWindowFramesStayTopAnchoredAndCentered() {
     #expect(frames.map(\.height) == frames.map(\.height).sorted())
 }
 
+@Test("MacBook 机型矩阵使用系统刘海宽度和高度")
+func macBookDisplayMatrixUsesSystemCameraHousingGeometry() {
+    let profiles = [
+        MacBookDisplayProfile(name: "MacBook Air 13", width: 1_470, height: 956, topInset: 32, notchWidth: 180),
+        MacBookDisplayProfile(name: "MacBook Air 15", width: 1_710, height: 1_107, topInset: 33, notchWidth: 185),
+        MacBookDisplayProfile(name: "MacBook Pro 14", width: 1_512, height: 982, topInset: 32, notchWidth: 180),
+        MacBookDisplayProfile(name: "MacBook Pro 16", width: 1_728, height: 1_117, topInset: 32, notchWidth: 180)
+    ]
+
+    for profile in profiles {
+        let geometry = profile.geometry()
+        #expect(geometry.hasCameraHousing, Comment(rawValue: profile.name))
+        #expect(geometry.notchWidth == profile.notchWidth, Comment(rawValue: profile.name))
+        #expect(geometry.topBandHeight == profile.topInset + 1, Comment(rawValue: profile.name))
+        #expect(geometry.islandAnchorX == profile.frame.midX, Comment(rawValue: profile.name))
+
+        let panelFrame = IslandWindowLayout.frame(
+            for: NSSize(width: geometry.notchWidth + 192, height: geometry.topBandHeight),
+            in: profile.frame,
+            yOffset: 0,
+            anchorX: geometry.islandAnchorX
+        )
+        #expect(panelFrame.midX == geometry.islandAnchorX, Comment(rawValue: profile.name))
+        #expect(panelFrame.maxY == profile.frame.maxY, Comment(rawValue: profile.name))
+    }
+}
+
+@Test("岛锚定真实摄像头区域中心而不是假定屏幕绝对中心")
+func islandAnchorsToDetectedCameraHousingCenter() throws {
+    let screenFrame = NSRect(x: -1_710, y: 120, width: 1_710, height: 1_107)
+    let left = NSRect(x: -1_710, y: 1_194, width: 770, height: 33)
+    let right = NSRect(x: -756, y: 1_194, width: 756, height: 33)
+    let geometry = IslandDisplayGeometry.resolve(
+        screenFrame: screenFrame,
+        safeAreaTop: 33,
+        auxiliaryTopLeftArea: left,
+        auxiliaryTopRightArea: right,
+        backingScaleFactor: 2,
+        notchHeightAdjustment: 1
+    )
+    let cameraHousingFrame = try #require(geometry.cameraHousingFrame)
+    let panelFrame = IslandWindowLayout.frame(
+        for: NSSize(width: 376, height: geometry.topBandHeight),
+        in: screenFrame,
+        yOffset: 2,
+        anchorX: geometry.islandAnchorX
+    )
+
+    #expect(cameraHousingFrame.width == 184)
+    #expect(cameraHousingFrame.midX != screenFrame.midX)
+    #expect(panelFrame.midX == cameraHousingFrame.midX)
+    #expect(panelFrame.maxY == screenFrame.maxY - 2)
+}
+
+@Test("无刘海外接屏使用顶部居中胶囊而不伪造物理刘海")
+func externalDisplayUsesSyntheticCenteredGeometry() {
+    let screenFrame = NSRect(x: 1_710, y: 0, width: 2_560, height: 1_440)
+    let geometry = IslandDisplayGeometry.resolve(
+        screenFrame: screenFrame,
+        safeAreaTop: 0,
+        auxiliaryTopLeftArea: nil,
+        auxiliaryTopRightArea: nil,
+        backingScaleFactor: 2,
+        notchHeightAdjustment: 1
+    )
+
+    #expect(!geometry.hasCameraHousing)
+    #expect(geometry.cameraHousingFrame == nil)
+    #expect(geometry.notchWidth == IslandDisplayGeometry.syntheticNotchWidth)
+    #expect(geometry.topBandHeight == 33)
+    #expect(geometry.islandAnchorX == screenFrame.midX)
+}
+
+@Test("异常辅助区域不会被误判为摄像头刘海")
+func malformedAuxiliaryAreasFallBackToSyntheticGeometry() {
+    let screenFrame = NSRect(x: 0, y: 0, width: 1_710, height: 1_107)
+    let geometry = IslandDisplayGeometry.resolve(
+        screenFrame: screenFrame,
+        safeAreaTop: 0,
+        auxiliaryTopLeftArea: NSRect(x: 0, y: 900, width: 760, height: 33),
+        auxiliaryTopRightArea: NSRect(x: 950, y: 900, width: 760, height: 33),
+        backingScaleFactor: 2,
+        notchHeightAdjustment: 1
+    )
+
+    #expect(!geometry.hasCameraHousing)
+    #expect(geometry.islandAnchorX == screenFrame.midX)
+}
+
 @Test("展开交互区域精确区分顶部主体和透明肩部")
 func expandedInteractionRegionsExcludeTransparentShoulders() throws {
     let panelFrame = NSRect(x: 730, y: 889, width: 460, height: 189)
@@ -150,4 +239,29 @@ func onlyLatestAnimationCompletionOwnsFinalGeometry() {
 
 private extension IslandMode {
     static let allTestModes: [IslandMode] = [.collapsed, .compact, .expanded]
+}
+
+private struct MacBookDisplayProfile {
+    let name: String
+    let width: CGFloat
+    let height: CGFloat
+    let topInset: CGFloat
+    let notchWidth: CGFloat
+
+    var frame: NSRect {
+        NSRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    func geometry() -> IslandDisplayGeometry {
+        let sideWidth = (width - notchWidth) / 2
+        let topY = height - topInset
+        return IslandDisplayGeometry.resolve(
+            screenFrame: frame,
+            safeAreaTop: topInset,
+            auxiliaryTopLeftArea: NSRect(x: 0, y: topY, width: sideWidth, height: topInset),
+            auxiliaryTopRightArea: NSRect(x: sideWidth + notchWidth, y: topY, width: sideWidth, height: topInset),
+            backingScaleFactor: 2,
+            notchHeightAdjustment: 1
+        )
+    }
 }

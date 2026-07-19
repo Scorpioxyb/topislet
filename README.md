@@ -105,7 +105,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 - 项目依赖 macOS 非公开 MediaRemote 能力，系统更新可能导致兼容性变化。
 - 当前没有汽水专属定向 seek 接口，因此进度条保持只读。
 - Developer ID 签名与 Apple 公证尚未完成，当前本机包只是 ad-hoc 签名开发包。
-- 目前主要在一台带刘海的 Apple Silicon MacBook 上验证，其他尺寸仍需实机校准。
+- 已通过系统屏幕几何自动适配和 Air 13/15、Pro 14/16 测试矩阵；除当前 15 英寸 Air 外，其他机型仍需要真机截图完成最终像素级验收。
 
 ## 诊断
 
@@ -120,6 +120,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 .build/debug/MacBookIsland --qishui-control-diagnostic
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --eventkit-status
+.build/debug/MacBookIsland --display-geometry
 ```
 
 诊断命令不会主动申请权限。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。

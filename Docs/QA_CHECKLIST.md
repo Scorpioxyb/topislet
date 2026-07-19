@@ -17,6 +17,14 @@
 - 安装包 `Info.plist` 包含 `NSCalendarsFullAccessUsageDescription` 和 `NSRemindersFullAccessUsageDescription`。
 - 安装包包含 `NSAppleEventsUsageDescription` 和 `com.apple.security.automation.apple-events` entitlement。
 
+## MacBook 与显示器布局适配
+
+- `--display-geometry` 必须打印当前屏幕的 frame、缩放比例、安全区、摄像头区域、岛锚点、宽度和顶部高度，且不申请任何权限。
+- 带刘海屏必须使用系统两侧 `auxiliaryTopLeftArea / auxiliaryTopRightArea` 之间的真实区域，窗口中心对齐摄像头区域中心，而不是假定其与屏幕中心完全一致。
+- MacBook Air 13/15、MacBook Pro 14/16 的代表性几何测试必须保持折叠、紧凑和展开三种状态顶边不漂移。
+- 无刘海外接屏不得伪报摄像头区域，使用顶部居中胶囊；异常、离开屏幕顶边或尺寸不合理的辅助区域必须安全降级。
+- 更改分辨率、显示缩放或主显示器后，顶屿应立即重新读取系统几何，并加载对应显示器的独立校准值。
+
 ## Apple Music Alpha 支持
 
 - Apple Music 未运行时顶屿不会自动启动它，汽水显示与控制不受影响。
