@@ -121,6 +121,63 @@ private func neteaseJSONData(
     return try JSONSerialization.data(withJSONObject: payload)
 }
 
+private struct NeteasePlaceholderTransitionFixture {
+    let old: MediaRemoteClientPayload
+    let placeholder: MediaRemoteClientPayload
+    let complete: MediaRemoteClientPayload
+    let newArtwork: Data
+}
+
+private func neteasePlaceholderTransitionFixture() throws
+    -> NeteasePlaceholderTransitionFixture {
+    let oldArtwork = Data([0x01, 0x02])
+    let newArtwork = Data([0x03, 0x04])
+    let old = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Giftig",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 188.309,
+            artworkData: oldArtwork
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let placeholder = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Zeit",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 30.041,
+            artworkData: newArtwork,
+            playing: false
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    let complete = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(
+            title: "Zeit",
+            artist: "Rammstein",
+            album: "Zeit",
+            duration: 321.749,
+            artworkData: newArtwork,
+            playing: true
+        ),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_002)
+    )
+    return NeteasePlaceholderTransitionFixture(
+        old: old,
+        placeholder: placeholder,
+        complete: complete,
+        newArtwork: newArtwork
+    )
+}
+
 private func neteaseSparseTimelineJSONData(playing: Bool?) throws -> Data {
     var payload: [String: Any] = [
         "bundleIdentifier": "com.netease.163music",
@@ -437,49 +494,10 @@ func neteaseNaturalTransitionWaitsForCompletePlayingSnapshot() async throws {
         processIdentifier: 62598,
         launchedAt: Date(timeIntervalSince1970: 900)
     )
-    let oldArtwork = Data([0x01, 0x02])
-    let newArtwork = Data([0x03, 0x04])
-    let oldPayload = try MediaRemoteClientBridge.decode(
-        neteaseJSONData(
-            title: "Giftig",
-            artist: "Rammstein",
-            album: "Zeit",
-            duration: 188.309,
-            artworkData: oldArtwork
-        ),
-        expectedBundleIdentifier: "com.netease.163music",
-        runningProcessIdentifiers: [62598],
-        observedAt: Date(timeIntervalSince1970: 1_000)
-    )
-    let pausedPlaceholder = try MediaRemoteClientBridge.decode(
-        neteaseJSONData(
-            title: "Zeit",
-            artist: "Rammstein",
-            album: "Zeit",
-            duration: 30.041,
-            artworkData: newArtwork,
-            playing: false
-        ),
-        expectedBundleIdentifier: "com.netease.163music",
-        runningProcessIdentifiers: [62598],
-        observedAt: Date(timeIntervalSince1970: 1_001)
-    )
-    let completePlaying = try MediaRemoteClientBridge.decode(
-        neteaseJSONData(
-            title: "Zeit",
-            artist: "Rammstein",
-            album: "Zeit",
-            duration: 321.749,
-            artworkData: newArtwork,
-            playing: true
-        ),
-        expectedBundleIdentifier: "com.netease.163music",
-        runningProcessIdentifiers: [62598],
-        observedAt: Date(timeIntervalSince1970: 1_002)
-    )
+    let transition = try neteasePlaceholderTransitionFixture()
     let reader = NeteasePayloadReaderStub(payloads: [
-        pausedPlaceholder,
-        completePlaying
+        transition.placeholder,
+        transition.complete
     ])
     let recorder = NeteaseInvalidationRecorder()
     let adapter = NeteaseMusicAppAdapter(
@@ -488,12 +506,12 @@ func neteaseNaturalTransitionWaitsForCompletePlayingSnapshot() async throws {
             reader.read(includeArtwork: includeArtwork)
         }
     )
-    _ = adapter.applyPayloadForTesting(oldPayload)
+    _ = adapter.applyPayloadForTesting(transition.old)
     adapter.start { invalidation in
         recorder.record(invalidation)
     }
 
-    adapter.receiveStreamPayloadForTesting(pausedPlaceholder)
+    adapter.receiveStreamPayloadForTesting(transition.placeholder)
     let immediate = await adapter.snapshot(refresh: .cached)
     #expect(immediate.track?.title == "Giftig")
     #expect(immediate.playbackState == .playing)
@@ -502,7 +520,49 @@ func neteaseNaturalTransitionWaitsForCompletePlayingSnapshot() async throws {
     let committed = await adapter.snapshot(refresh: .cached)
 
     #expect(committed.track?.title == "Zeit")
-    #expect(committed.track?.artworkData == newArtwork)
+    #expect(committed.track?.artworkData == transition.newArtwork)
+    #expect(committed.timeline?.duration == 321.749)
+    #expect(committed.playbackState == .playing)
+    #expect(committed.timeline?.playbackRate == 1)
+    #expect(reader.artworkRequests == [true, true])
+    #expect(recorder.values == [.sourceChanged])
+    adapter.stop()
+}
+
+@MainActor
+@Test("网易云前台元数据刷新也拒绝 paused 临时时长占位快照")
+func neteaseForegroundMetadataRefreshUsesTransitionGate() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let transition = try neteasePlaceholderTransitionFixture()
+    let reader = NeteasePayloadReaderStub(payloads: [
+        transition.placeholder,
+        transition.complete
+    ])
+    let recorder = NeteaseInvalidationRecorder()
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { includeArtwork in
+            reader.read(includeArtwork: includeArtwork)
+        }
+    )
+    _ = adapter.applyPayloadForTesting(transition.old)
+    adapter.start { invalidation in
+        recorder.record(invalidation)
+    }
+
+    let immediate = await adapter.snapshot(refresh: .metadata)
+    #expect(immediate.track?.title == "Giftig")
+    #expect(immediate.playbackState == .playing)
+
+    try await Task.sleep(nanoseconds: 250_000_000)
+    let committed = await adapter.snapshot(refresh: .cached)
+
+    #expect(committed.track?.title == "Zeit")
+    #expect(committed.track?.artworkData == transition.newArtwork)
     #expect(committed.timeline?.duration == 321.749)
     #expect(committed.playbackState == .playing)
     #expect(committed.timeline?.playbackRate == 1)
