@@ -149,17 +149,9 @@ final class QishuiSemanticAXController: @unchecked Sendable {
                 diagnostic: "无法初始化汽水音乐的辅助功能控件树，未发送\(command.label)。"
             )
         }
-        let temporarilyUnminimizedWindow = temporarilyUnminimizeUniqueWindow(
-            processIdentifier: processIdentifier
-        )
-        defer {
-            if let temporarilyUnminimizedWindow {
-                restoreMinimizedWindow(temporarilyUnminimizedWindow)
-            }
-        }
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
-           Self.isEligibleCandidate(candidateFacts(for: cachedControls)) {
+           Self.isEligibleHealthCandidate(candidateFacts(for: cachedControls)) {
             let cachedResult = performPress(cachedControls.element(for: command))
             if cachedResult == .success {
                 return QishuiSemanticAXControlResult(
@@ -254,14 +246,6 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             return .available
         }
 
-        let temporarilyUnminimizedWindow = temporarilyUnminimizeUniqueWindow(
-            processIdentifier: processIdentifier
-        )
-        defer {
-            if let temporarilyUnminimizedWindow {
-                restoreMinimizedWindow(temporarilyUnminimizedWindow)
-            }
-        }
         let discovery = discoverControlsWithRecovery(
             processIdentifier: processIdentifier
         )
@@ -379,13 +363,6 @@ final class QishuiSemanticAXController: @unchecked Sendable {
               facts.hasPlaybackTimeContext,
               let relativeY = facts.relativeY else { return false }
         return relativeY >= 0.72 && relativeY <= 1.02
-    }
-
-    static func shouldTemporarilyUnminimize(
-        standardWindowCount: Int,
-        isMinimized: Bool
-    ) -> Bool {
-        standardWindowCount == 1 && isMinimized
     }
 
     static func resolveWindowAvailability(
@@ -535,7 +512,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
                     playPause: ElementIdentity(element: orderedControls[1]),
                     next: ElementIdentity(element: orderedControls[2])
                 )
-                if Self.isEligibleCandidate(candidateFacts(for: controls)),
+                if Self.isEligibleHealthCandidate(candidateFacts(for: controls)),
                    matchedControlSets.insert(controlSetIdentity).inserted {
                     matches.append(
                         DiscoveredControls(
@@ -594,35 +571,6 @@ final class QishuiSemanticAXController: @unchecked Sendable {
                 application,
                 Self.manualAccessibilityAttribute
             )
-        )
-    }
-
-    private func temporarilyUnminimizeUniqueWindow(
-        processIdentifier: pid_t
-    ) -> AXUIElement? {
-        let windows = standardWindows(processIdentifier: processIdentifier)
-        guard let window = windows.first,
-              Self.shouldTemporarilyUnminimize(
-                standardWindowCount: windows.count,
-                isMinimized: boolAttribute(window, kAXMinimizedAttribute as String)
-              ) else {
-            return nil
-        }
-        let result = AXUIElementSetAttributeValue(
-            window,
-            kAXMinimizedAttribute as CFString,
-            kCFBooleanFalse
-        )
-        guard result == .success else { return nil }
-        usleep(80_000)
-        return window
-    }
-
-    private func restoreMinimizedWindow(_ window: AXUIElement) {
-        _ = AXUIElementSetAttributeValue(
-            window,
-            kAXMinimizedAttribute as CFString,
-            kCFBooleanTrue
         )
     }
 
