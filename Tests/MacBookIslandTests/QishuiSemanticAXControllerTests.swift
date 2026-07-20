@@ -98,8 +98,8 @@ func hiddenOrOffPlayerCandidatesAreRejected() {
     ))
 }
 
-@Test("已验证的唯一最小化窗口控件可复用健康状态")
-func cachedMinimizedControlsRemainHealthy() {
+@Test("唯一最小化窗口控件可直接使用且无需恢复窗口")
+func minimizedControlsRemainEligibleWithoutWindowMutation() {
     let minimized = QishuiSemanticAXController.CandidateFacts(
         windowIsNormal: true,
         windowIsPrimary: true,
@@ -126,26 +126,6 @@ func cachedMinimizedControlsRemainHealthy() {
         hasPlaybackTimeContext: true
     )
     #expect(!QishuiSemanticAXController.isEligibleHealthCandidate(duplicateWindow))
-}
-
-@Test("唯一最小化标准窗口允许后台临时恢复")
-func onlyUniqueMinimizedWindowCanBeTemporarilyRestored() {
-    #expect(QishuiSemanticAXController.shouldTemporarilyUnminimize(
-        standardWindowCount: 1,
-        isMinimized: true
-    ))
-    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
-        standardWindowCount: 2,
-        isMinimized: true
-    ))
-    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
-        standardWindowCount: 0,
-        isMinimized: false
-    ))
-    #expect(!QishuiSemanticAXController.shouldTemporarilyUnminimize(
-        standardWindowCount: 1,
-        isMinimized: false
-    ))
 }
 
 @Test("汽水窗口状态区分关闭、异常控件树和读取失败")
