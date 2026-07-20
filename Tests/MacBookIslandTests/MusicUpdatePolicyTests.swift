@@ -51,6 +51,31 @@ func sourceSwitchAlwaysAcceptsCandidate() {
         candidate: candidate,
         sourceAvailability: .qishuiDetectedAXLimited
     ))
+    #expect(MusicUpdatePolicy.didChangeSource(
+        current: current,
+        candidate: candidate
+    ))
+}
+
+@Test("同一音乐来源切歌不会误清理控制反馈")
+func sameSourceTrackChangeKeepsControlFeedback() {
+    let current = musicState(
+        title: "Track A",
+        progress: 0.5,
+        elapsedTime: 90,
+        duration: 180
+    )
+    let candidate = musicState(
+        title: "Track B",
+        progress: 0,
+        elapsedTime: 0,
+        duration: 200
+    )
+
+    #expect(!MusicUpdatePolicy.didChangeSource(
+        current: current,
+        candidate: candidate
+    ))
 }
 
 @Test("普通 AX 瞬时归零仍保留可信时间轴")
