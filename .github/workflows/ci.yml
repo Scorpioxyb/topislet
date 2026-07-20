@@ -16,7 +16,8 @@ jobs:
 
       - name: Validate repository files
         run: |
-          bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/rebuild-mediaremote-adapter.sh Scripts/verify-release-source.sh Scripts/verify-release-dmg.sh Scripts/check-signing-readiness.sh Scripts/notarize-release.sh
+          bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/rebuild-mediaremote-adapter.sh Scripts/verify-release-source.sh Scripts/verify-release-dmg.sh Scripts/check-signing-readiness.sh Scripts/notarize-release.sh Scripts/verify-qishui-control-safety.sh
+          bash Scripts/verify-qishui-control-safety.sh
           plutil -lint Packaging/Info.plist
           test "$(plutil -extract CFBundleIdentifier raw Packaging/Info.plist)" = "io.github.scorpioxyb.topislet"
           plutil -lint Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/Resources/Info.plist
