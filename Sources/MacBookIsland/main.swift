@@ -707,6 +707,11 @@ struct MusicState: Equatable {
 }
 
 enum MusicUpdatePolicy {
+    static func didChangeSource(current: MusicState, candidate: MusicState) -> Bool {
+        current.track.sourceBundleIdentifier
+            != candidate.track.sourceBundleIdentifier
+    }
+
     static func shouldIgnoreUntrustedProgressReset(
         current: MusicState,
         candidate: MusicState,
@@ -2062,6 +2067,8 @@ final class IslandModel: ObservableObject {
     ) {
         if newStatus?.availability == .qishuiNotRunning {
             resetMusicPresentationAfterSourceExit()
+        } else if MusicUpdatePolicy.didChangeSource(current: music, candidate: newMusic) {
+            resetPendingMusicControlPresentation()
         }
         if isMusicScrubbing, !forceMusic {
             if let newStatus,
@@ -2131,6 +2138,20 @@ final class IslandModel: ObservableObject {
     }
 
     private func resetMusicPresentationAfterSourceExit() {
+        resetPendingMusicControlPresentation()
+        if activeFeature == .music,
+           !hasPendingNotification,
+           MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
+            currentMode: mode,
+            isUserExpanded: isUserExpandedMusicPresentation
+           ) {
+            autoCompactOnNextMusicTrack = true
+            isUserExpandedMusicPresentation = false
+            mode = .collapsed
+        }
+    }
+
+    private func resetPendingMusicControlPresentation() {
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
         trackControlFeedbackTask?.cancel()
@@ -2142,16 +2163,6 @@ final class IslandModel: ObservableObject {
         pendingMusicSeek = nil
         musicSeekRequestID += 1
         isMusicScrubbing = false
-        if activeFeature == .music,
-           !hasPendingNotification,
-           MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-            currentMode: mode,
-            isUserExpanded: isUserExpandedMusicPresentation
-           ) {
-            autoCompactOnNextMusicTrack = true
-            isUserExpandedMusicPresentation = false
-            mode = .collapsed
-        }
     }
 
     private func confirmTrackControlFeedbackIfNeeded(

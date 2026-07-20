@@ -57,6 +57,25 @@ struct MusicSourceSelection: Equatable, Sendable {
     let generation: UInt64
 }
 
+struct MusicControlAuthorization: Equatable, Sendable {
+    let source: MusicSourceID
+    let selectionGeneration: UInt64
+
+    init?(
+        binding: DisplayedMusicControlBinding,
+        selection: MusicSourceSelection
+    ) {
+        guard selection.source == binding.source else { return nil }
+        source = binding.source
+        selectionGeneration = selection.generation
+    }
+
+    func isValid(for selection: MusicSourceSelection) -> Bool {
+        selection.source == source
+            && selection.generation == selectionGeneration
+    }
+}
+
 final class MusicSourceSelector {
     static let qishuiSwitchDelay: TimeInterval = 0.2
     static let neteaseMusicSwitchDelay: TimeInterval = 0.25

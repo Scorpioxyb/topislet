@@ -91,6 +91,28 @@ func neteaseMusicExitFallsBackImmediately() {
     #expect(selection.source == .appleMusic)
 }
 
+@Test("Apple Music 退出后立即回退到正在播放的汽水")
+func appleMusicExitFallsBackToQishuiImmediately() {
+    let selector = MusicSourceSelector()
+    _ = selector.update(
+        qishui: candidate(.qishui, playback: .paused),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        foregroundSource: .appleMusic
+    )
+
+    let selection = selector.update(
+        qishui: candidate(.qishui, playback: .playing),
+        appleMusic: candidate(
+            .appleMusic,
+            available: false,
+            hasTrack: false,
+            playback: .unknown
+        )
+    )
+
+    #expect(selection.source == .qishui)
+}
+
 @Test("两者同时播放时汽水优先")
 func qishuiWinsWhenBothArePlaying() {
     let selector = MusicSourceSelector()
@@ -363,6 +385,15 @@ func appleMusicControlBindingUsesDisplayedSource() {
     #expect(binding?.source == .appleMusic)
 }
 
+@Test("网易云控制绑定来自岛当前显示来源")
+func neteaseMusicControlBindingUsesDisplayedSource() {
+    let binding = DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.netease.163music"
+    )
+
+    #expect(binding?.source == .neteaseMusic)
+}
+
 @Test("未知显示来源必须拒绝控制")
 func unknownDisplayedSourceFailsClosed() {
     let binding = DisplayedMusicControlBinding(
@@ -370,4 +401,48 @@ func unknownDisplayedSourceFailsClosed() {
     )
 
     #expect(binding == nil)
+}
+
+@Test("控制授权只接受当前选中的音乐来源")
+func controlAuthorizationRequiresSelectedSource() throws {
+    let selection = MusicSourceSelection(source: .appleMusic, generation: 7)
+    let appleMusicBinding = try #require(DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.apple.Music"
+    ))
+    let qishuiBinding = try #require(DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.soda.music"
+    ))
+
+    #expect(MusicControlAuthorization(
+        binding: appleMusicBinding,
+        selection: selection
+    ) != nil)
+    #expect(MusicControlAuthorization(
+        binding: qishuiBinding,
+        selection: selection
+    ) == nil)
+}
+
+@Test("控制授权在来源切走又切回后仍会失效")
+func controlAuthorizationRejectsReusedSourceAfterGenerationChange() throws {
+    let binding = try #require(DisplayedMusicControlBinding(
+        displayedSourceBundleIdentifier: "com.soda.music"
+    ))
+    let authorization = try #require(MusicControlAuthorization(
+        binding: binding,
+        selection: MusicSourceSelection(source: .qishui, generation: 4)
+    ))
+
+    #expect(authorization.isValid(for: MusicSourceSelection(
+        source: .qishui,
+        generation: 4
+    )))
+    #expect(!authorization.isValid(for: MusicSourceSelection(
+        source: .appleMusic,
+        generation: 5
+    )))
+    #expect(!authorization.isValid(for: MusicSourceSelection(
+        source: .qishui,
+        generation: 6
+    )))
 }

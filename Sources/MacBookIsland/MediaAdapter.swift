@@ -547,6 +547,17 @@ final class MusicAdapterCoordinator {
                 didSendCommand: false
             )
         }
+        let selection = selectedMusicSelection()
+        guard let authorization = MusicControlAuthorization(
+            binding: binding,
+            selection: selection
+        ) else {
+            return staleDisplayedSourceOutcome(
+                command: command,
+                binding: binding,
+                selectedSource: selection.source
+            )
+        }
         if binding.source == .appleMusic {
             guard appleMusicEnabled else {
                 return MusicControlOutcome(
@@ -585,6 +596,13 @@ final class MusicAdapterCoordinator {
             ) else {
                 return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
             }
+            guard authorization.isValid(for: selectedMusicSelection()) else {
+                return staleDisplayedSourceOutcome(
+                    command: command,
+                    binding: binding,
+                    selectedSource: musicSourceSelector.selection.source
+                )
+            }
         }
 
         let targetProcessIdentifier = latestQishuiSnapshot?.processIdentifier
@@ -601,6 +619,13 @@ final class MusicAdapterCoordinator {
         )
         guard controlAttemptGeneration == controlGeneration else {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
+        }
+        guard authorization.isValid(for: selectedMusicSelection()) else {
+            return staleDisplayedSourceOutcome(
+                command: command,
+                binding: binding,
+                selectedSource: musicSourceSelector.selection.source
+            )
         }
         latestQishuiControlAvailability = controlAvailability
         guard controlAvailability.allowsControl else {
@@ -889,6 +914,23 @@ final class MusicAdapterCoordinator {
             headline: "未执行\(command.label)",
             detail: "岛当前显示的音乐来源不可识别；为避免控制其他应用，本次操作已取消。",
             checkedAt: Date()
+        )
+    }
+
+    private func staleDisplayedSourceOutcome(
+        command: MusicControlCommand,
+        binding: DisplayedMusicControlBinding,
+        selectedSource: MusicSourceID?
+    ) -> MusicControlOutcome {
+        MusicControlOutcome(
+            status: MusicSourceStatus(
+                sourceName: "顶屿",
+                availability: .systemNowPlayingUnavailable,
+                headline: "未执行\(command.label)",
+                detail: "音乐来源已从 \(Self.sourceDisplayName(binding.source)) 切换为 \(Self.sourceDisplayName(selectedSource))；旧控制请求已取消。",
+                checkedAt: Date()
+            ),
+            didSendCommand: false
         )
     }
 
@@ -2163,7 +2205,7 @@ final class MusicAdapterCoordinator {
         )
     }
 
-    private func selectedMusicSource() -> MusicSourceID? {
+    private func selectedMusicSelection() -> MusicSourceSelection {
         reconcileForegroundMusicSource()
         let previousSelection = musicSourceSelector.selection
         let selection = musicSourceSelector.update(
@@ -2177,7 +2219,11 @@ final class MusicAdapterCoordinator {
                 "Music source changed from=\(Self.sourceLabel(previousSelection.source), privacy: .public) to=\(Self.sourceLabel(selection.source), privacy: .public) foreground=\(Self.sourceLabel(self.foregroundMusicSource), privacy: .public)"
             )
         }
-        return selection.source
+        return selection
+    }
+
+    private func selectedMusicSource() -> MusicSourceID? {
+        selectedMusicSelection().source
     }
 
     nonisolated private static func sourceLabel(_ source: MusicSourceID?) -> String {
@@ -2190,6 +2236,19 @@ final class MusicAdapterCoordinator {
             return "apple-music"
         case nil:
             return "none"
+        }
+    }
+
+    nonisolated private static func sourceDisplayName(_ source: MusicSourceID?) -> String {
+        switch source {
+        case .qishui:
+            return "汽水音乐"
+        case .neteaseMusic:
+            return "网易云音乐"
+        case .appleMusic:
+            return "Apple Music"
+        case nil:
+            return "默认状态"
         }
     }
 
