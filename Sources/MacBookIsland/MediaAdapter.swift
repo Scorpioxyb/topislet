@@ -1012,6 +1012,12 @@ final class MusicAdapterCoordinator {
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
         reconcileForegroundMusicSource()
         scheduleAppleMusicRefresh(force: false)
+        if pendingPlaybackOperation != nil
+            || shouldRefreshCachedPlaybackState()
+            || shouldRefreshPlaybackPosition(state) {
+            schedulePlaybackPositionRefresh()
+        }
+        _ = refreshSourceStatusIfNeeded()
         let selectedSource = selectedMusicSource()
         let neteaseMusicCandidate = neteaseMusicSourceCandidate()
         let isRebindVerificationActive = neteaseMusicRebindVerificationDeadline
@@ -1027,13 +1033,7 @@ final class MusicAdapterCoordinator {
         ) {
             scheduleNeteaseMusicVerificationIfNeeded()
         }
-        if pendingPlaybackOperation != nil
-            || shouldRefreshCachedPlaybackState()
-            || shouldRefreshPlaybackPosition(state) {
-            schedulePlaybackPositionRefresh()
-        }
-        _ = refreshSourceStatusIfNeeded()
-        return selectedMusicUpdate()
+        return selectedMusicUpdate(for: selectedSource)
     }
 
     func currentState() -> MusicState {
@@ -2352,6 +2352,12 @@ final class MusicAdapterCoordinator {
 
     private func selectedMusicUpdate() -> (music: MusicState, sourceStatus: MusicSourceStatus) {
         let source = selectedMusicSource()
+        return selectedMusicUpdate(for: source)
+    }
+
+    private func selectedMusicUpdate(
+        for source: MusicSourceID?
+    ) -> (music: MusicState, sourceStatus: MusicSourceStatus) {
         return (musicState(for: source), musicStatus(for: source))
     }
 

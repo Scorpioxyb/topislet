@@ -6,10 +6,12 @@ import Foundation
 private let ownerName = "顶屿"
 private let hoverPersistenceDuration: TimeInterval = 12
 private let maximumHoverResponseDuration: TimeInterval = 0.12
+private let sampleInterval: TimeInterval = 0.005
 
 private struct WindowSample {
     let frame: CGRect
     let windowCount: Int
+    let pointerLocation: CGPoint
 }
 
 private enum VerificationError: Error, CustomStringConvertible {
@@ -43,12 +45,15 @@ private func currentSample() throws -> WindowSample {
     guard let frame = windows.first else {
         throw VerificationError.failed("顶屿窗口未运行")
     }
-    return WindowSample(frame: frame, windowCount: windows.count)
+    return WindowSample(
+        frame: frame,
+        windowCount: windows.count,
+        pointerLocation: CGEvent(source: nil)?.location ?? .zero
+    )
 }
 
 private func postMouseMove(to point: CGPoint) {
     CGWarpMouseCursorPosition(point)
-    CGAssociateMouseAndMouseCursorPosition(1)
     let event = CGEvent(
         mouseEventSource: nil,
         mouseType: .mouseMoved,
@@ -63,7 +68,7 @@ private func sampleFrames(duration: TimeInterval) throws -> [WindowSample] {
     var samples: [WindowSample] = []
     while Date().timeIntervalSince(startedAt) < duration {
         samples.append(try currentSample())
-        usleep(5_000)
+        usleep(useconds_t(sampleInterval * 1_000_000))
     }
     return samples
 }
@@ -141,7 +146,39 @@ private func verifyStableWindowSize(
         abs(sample.frame.width - expectedSize.width) <= 0.75
             && abs(sample.frame.height - expectedSize.height) <= 0.75
     }) else {
-        throw VerificationError.failed("悬停保持期间窗口尺寸发生变化")
+        let firstMismatchIndex = samples.firstIndex { sample in
+            abs(sample.frame.width - expectedSize.width) > 0.75
+                || abs(sample.frame.height - expectedSize.height) > 0.75
+        } ?? 0
+        let firstMismatch = samples[firstMismatchIndex].frame.size
+        let mismatchPointer = samples[firstMismatchIndex].pointerLocation
+        let widths = samples.map(\.frame.width)
+        let heights = samples.map(\.frame.height)
+        throw VerificationError.failed(
+            "悬停保持期间窗口尺寸发生变化；"
+                + "首次 \(Int(Double(firstMismatchIndex) * sampleInterval * 1_000))ms "
+                + "尺寸 \(Int(firstMismatch.width))x\(Int(firstMismatch.height))，"
+                + "鼠标 \(Int(mismatchPointer.x)),\(Int(mismatchPointer.y))，"
+                + "范围 \(Int(widths.min() ?? 0))...\(Int(widths.max() ?? 0))x"
+                + "\(Int(heights.min() ?? 0))...\(Int(heights.max() ?? 0))"
+        )
+    }
+}
+
+private func verifyWindowSizesStayBounded(
+    _ samples: [WindowSample],
+    between firstSize: CGSize,
+    and secondSize: CGSize
+) throws {
+    let minimumWidth = min(firstSize.width, secondSize.width) - 0.75
+    let maximumWidth = max(firstSize.width, secondSize.width) + 0.75
+    let minimumHeight = min(firstSize.height, secondSize.height) - 0.75
+    let maximumHeight = max(firstSize.height, secondSize.height) + 0.75
+    guard samples.allSatisfy({ sample in
+        minimumWidth...maximumWidth ~= sample.frame.width
+            && minimumHeight...maximumHeight ~= sample.frame.height
+    }) else {
+        throw VerificationError.failed("反向动画尺寸越过紧凑态或展开态边界")
     }
 }
 
@@ -155,7 +192,7 @@ private func verifyHoverResponse(
     }) else {
         throw VerificationError.failed("悬停后岛没有开始展开")
     }
-    let responseDuration = Double(firstChangedIndex) * 0.005
+    let responseDuration = Double(firstChangedIndex) * sampleInterval
     guard responseDuration <= maximumHoverResponseDuration else {
         throw VerificationError.failed(
             "悬停展开响应过慢：\(Int(responseDuration * 1_000))ms"
@@ -166,6 +203,7 @@ private func verifyHoverResponse(
 
 private func run() throws {
     let originalPointer = CGEvent(source: nil)?.location ?? .zero
+    CGAssociateMouseAndMouseCursorPosition(0)
     defer {
         postMouseMove(to: originalPointer)
         CGWarpMouseCursorPosition(originalPointer)
@@ -222,6 +260,31 @@ private func run() throws {
     )
 
     postMouseMove(to: outsidePoint)
+    usleep(400_000)
+    let reversalStart = try currentSample()
+    guard reversalStart.frame.width < expanded.frame.width - 0.75,
+          reversalStart.frame.height < expanded.frame.height - 0.75 else {
+        throw VerificationError.failed("未进入收回动画，无法验证反向切换")
+    }
+    postMouseMove(to: insidePoint)
+    let reversal = try sampleFrames(duration: 0.5)
+    let reexpanded = try currentSample()
+    try verifyAnchoring(
+        reversal,
+        expectedCenterX: expectedCenterX,
+        expectedTop: expectedTop
+    )
+    try verifyWindowSizesStayBounded(
+        reversal,
+        between: initial.frame.size,
+        and: expanded.frame.size
+    )
+    guard abs(reexpanded.frame.width - expanded.frame.width) <= 0.75,
+          abs(reexpanded.frame.height - expanded.frame.height) <= 0.75 else {
+        throw VerificationError.failed("收回途中重新进入后没有恢复展开态")
+    }
+
+    postMouseMove(to: outsidePoint)
     let collapse = try sampleFrames(duration: 0.75)
     let collapsed = try currentSample()
     try verifyAnchoring(
@@ -246,6 +309,7 @@ private func run() throws {
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")
     print("悬停响应: \(Int(hoverResponseDuration * 1_000))ms")
     print("悬停保持: \(String(format: "%.1f", hoverPersistenceDuration))s")
+    print("反向切换: 收回途中重新进入通过")
 }
 
 do {
