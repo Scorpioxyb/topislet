@@ -1796,7 +1796,7 @@ final class IslandModel: ObservableObject {
 
     private func startTicker() {
         ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.tick()
             }
         }
@@ -3830,22 +3830,33 @@ struct IslandRootView: View {
                 ZStack {
                     CollapsedIsland(model: model)
                         .opacity(model.mode == .collapsed ? 1 : 0)
+                        .animation(
+                            IslandMotion.headerContentAnimation(for: model.mode),
+                            value: model.mode
+                        )
                         .allowsHitTesting(model.mode == .collapsed)
                         .accessibilityHidden(model.mode != .collapsed)
 
                     CompactIsland(model: model)
                         .opacity(model.mode == .compact ? 1 : 0)
+                        .animation(
+                            IslandMotion.headerContentAnimation(for: model.mode),
+                            value: model.mode
+                        )
                         .allowsHitTesting(model.mode == .compact)
                         .accessibilityHidden(model.mode != .compact)
 
                     ExpandedIsland(model: model)
                         .opacity(model.mode == .expanded ? 1 : 0)
+                        .animation(
+                            IslandMotion.headerContentAnimation(for: model.mode),
+                            value: model.mode
+                        )
                         .allowsHitTesting(model.mode == .expanded)
                         .accessibilityHidden(model.mode != .expanded)
                 }
                 .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
                 .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
-                .animation(IslandMotion.headerContentAnimation(for: model.mode), value: model.mode)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
@@ -4573,7 +4584,7 @@ struct AlbumArt: View {
     var body: some View {
         ZStack {
             if let artworkData = track.artworkData,
-               let image = NSImage(data: artworkData) {
+               let image = AlbumArtworkImageCache.shared.image(for: artworkData) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
