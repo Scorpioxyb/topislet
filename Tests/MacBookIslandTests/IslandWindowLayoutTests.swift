@@ -52,6 +52,69 @@ func rapidIslandModeReversalNeverChangesCenter() {
     #expect(centers.allSatisfy { $0 == screenFrame.midX })
 }
 
+@Test("主显示器变化时仍保持当前岛的显示器绑定")
+func islandDisplaySelectionKeepsExistingBindingWhenMainChanges() {
+    let selected = IslandDisplaySelectionPolicy.selectIdentity(
+        boundIdentity: "internal",
+        candidates: [
+            IslandDisplayCandidate(
+                identity: "internal",
+                hasCameraHousing: true,
+                isMain: false
+            ),
+            IslandDisplayCandidate(
+                identity: "external",
+                hasCameraHousing: false,
+                isMain: true
+            )
+        ]
+    )
+
+    #expect(selected == "internal")
+}
+
+@Test("绑定显示器消失时优先回退到带摄像头模组的内屏")
+func islandDisplaySelectionFallsBackOnlyAfterBoundDisplayDisappears() {
+    let selected = IslandDisplaySelectionPolicy.selectIdentity(
+        boundIdentity: "removed-display",
+        candidates: [
+            IslandDisplayCandidate(
+                identity: "external",
+                hasCameraHousing: false,
+                isMain: true
+            ),
+            IslandDisplayCandidate(
+                identity: "internal",
+                hasCameraHousing: true,
+                isMain: false
+            )
+        ]
+    )
+
+    #expect(selected == "internal")
+}
+
+@Test("没有摄像头屏幕时回退到当前主显示器")
+func islandDisplaySelectionFallsBackToMainWithoutCameraDisplay() {
+    let selected = IslandDisplaySelectionPolicy.selectIdentity(
+        boundIdentity: nil,
+        candidates: [
+            IslandDisplayCandidate(
+                identity: "secondary",
+                hasCameraHousing: false,
+                isMain: false
+            ),
+            IslandDisplayCandidate(
+                identity: "main",
+                hasCameraHousing: false,
+                isMain: true
+            )
+        ]
+    )
+
+    #expect(selected == "main")
+}
+
 @Test("窗口插值全过程保持顶部和中心锚定")
 func interpolatedWindowFramesStayTopAnchoredAndCentered() {
     let screenFrame = NSRect(x: 0, y: 0, width: 1_920, height: 1_080)

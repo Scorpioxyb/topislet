@@ -25,20 +25,32 @@ if CommandLine.arguments.contains("--music-adapters") {
 }
 
 if CommandLine.arguments.contains("--apple-music-status") {
-    let adapter = AppleMusicAppAdapter()
+    let transitionTimeline = AppleMusicTransitionTimeline()
+    let adapter = AppleMusicAppAdapter(
+        transitionTimeline: transitionTimeline
+    )
     Task { @MainActor in
         let startedAt = Date()
+        transitionTimeline.notePlayerInfo(
+            candidateSignature: nil,
+            detail: "source=apple-music-status"
+        )
         var snapshot = await adapter.snapshot(refresh: .metadata)
         let metadataLatencyMilliseconds = Int(
             Date().timeIntervalSince(startedAt) * 1_000
         )
-        if snapshot.track != nil,
-           snapshot.track?.artworkData == nil {
-            for _ in 0..<50 {
+        var artworkLatencyMilliseconds: Int?
+        if snapshot.track?.artworkData != nil {
+            artworkLatencyMilliseconds = metadataLatencyMilliseconds
+        } else if snapshot.track?.artist?.isEmpty == false {
+            for _ in 0..<20 {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 let cachedSnapshot = await adapter.snapshot(refresh: .cached)
                 if cachedSnapshot.track?.artworkData != nil {
                     snapshot = cachedSnapshot
+                    artworkLatencyMilliseconds = Int(
+                        Date().timeIntervalSince(startedAt) * 1_000
+                    )
                     break
                 }
             }
@@ -64,8 +76,12 @@ if CommandLine.arguments.contains("--apple-music-status") {
         print("track=\(snapshot.track?.title ?? "nil")")
         print("artworkDataBytes=\(snapshot.track?.artworkData?.count ?? 0)")
         print("metadataLatencyMilliseconds=\(metadataLatencyMilliseconds)")
-        print("artworkLatencyMilliseconds=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
+        print("artworkLatencyMilliseconds=\(artworkLatencyMilliseconds.map(String.init) ?? "unavailable")")
+        print("diagnosticDurationMilliseconds=\(Int(Date().timeIntervalSince(startedAt) * 1_000))")
         print("diagnostic=\(snapshot.diagnostic)")
+        print("transitionTimelineBegin")
+        print(transitionTimeline.latestReport())
+        print("transitionTimelineEnd")
         exit(0)
     }
     RunLoop.main.run()
@@ -2386,6 +2402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideEventTap: CFMachPort?
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationGate = IslandAnimationCompletionGate()
+    private var targetDisplayIdentity: String?
     private var activeDisplayGeometry: IslandDisplayGeometry?
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
@@ -2651,9 +2668,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return Unmanaged.passUnretained(event)
                 }
                 let appDelegate = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
-                let location = event.location
                 Task { @MainActor in
-                    appDelegate.collapseExpandedIslandIfClickIsOutside(cgEventLocation: location)
+                    appDelegate.collapseExpandedIslandIfClickIsOutside()
                 }
                 return Unmanaged.passUnretained(event)
             },
@@ -2800,19 +2816,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseExpandedIslandIfClickIsOutside(appKitLocation: NSEvent.mouseLocation)
     }
 
-    private func collapseExpandedIslandIfClickIsOutside(cgEventLocation: CGPoint) {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let screen else {
-            collapseExpandedIslandIfClickIsOutside()
-            return
-        }
-        let appKitLocation = CGPoint(
-            x: cgEventLocation.x,
-            y: screen.frame.maxY - cgEventLocation.y
-        )
-        collapseExpandedIslandIfClickIsOutside(appKitLocation: appKitLocation)
-    }
-
     private func collapseExpandedIslandIfClickIsOutside(appKitLocation clickPoint: CGPoint) {
         guard model.mode == .expanded, model.isVisible, let panel else { return }
         guard model.appSettings.autoCollapseExpandedIsland else { return }
@@ -2832,8 +2835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateScreenMetrics() {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
+        guard let screen = targetScreen() else { return }
 
         model.layout.useDisplay(name: screen.localizedName, identity: calibrationDisplayIdentity(for: screen))
 
@@ -2872,6 +2874,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "scale\(screen.backingScaleFactor)",
             "id\(screenNumber?.stringValue ?? "unknown")"
         ].joined(separator: "-")
+    }
+
+    private func targetScreen() -> NSScreen? {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
+            targetDisplayIdentity = nil
+            activeDisplayGeometry = nil
+            return nil
+        }
+
+        if let targetDisplayIdentity,
+           let boundScreen = screens.first(where: {
+               stableDisplayIdentity(for: $0) == targetDisplayIdentity
+           }) {
+            return boundScreen
+        }
+
+        let mainIdentity = NSScreen.main.map(stableDisplayIdentity(for:))
+        let candidates = screens.map { screen in
+            let identity = stableDisplayIdentity(for: screen)
+            return IslandDisplayCandidate(
+                identity: identity,
+                hasCameraHousing: displayGeometry(for: screen).hasCameraHousing,
+                isMain: identity == mainIdentity
+            )
+        }
+        guard let selectedIdentity = IslandDisplaySelectionPolicy.selectIdentity(
+            boundIdentity: targetDisplayIdentity,
+            candidates: candidates
+        ), let selectedScreen = screens.first(where: {
+            stableDisplayIdentity(for: $0) == selectedIdentity
+        }) else {
+            return nil
+        }
+
+        targetDisplayIdentity = selectedIdentity
+        return selectedScreen
+    }
+
+    private func stableDisplayIdentity(for screen: NSScreen) -> String {
+        if let screenNumber = screen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+        ] as? NSNumber {
+            return "display-\(screenNumber.stringValue)"
+        }
+        return "\(screen.localizedName)-\(Int(screen.frame.width))x\(Int(screen.frame.height))"
     }
 
     private func panelSize(for mode: IslandMode) -> NSSize {
@@ -2913,8 +2961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         targetMode: IslandMode? = nil
     ) {
         guard let panel else { return }
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
+        guard let screen = targetScreen() else { return }
 
         let mode = targetMode ?? model.mode
         let size = panelSize(for: mode)
@@ -2985,7 +3032,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isPanelFrameAnimating,
               !isCorrectingAnimatedPanelOrigin,
               let panel,
-              let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+              let screen = targetScreen() else { return }
         let correctedFrame = panelFrame(for: panel.frame.size, on: screen)
         guard abs(panel.frame.minX - correctedFrame.minX) > 0.01
                 || abs(panel.frame.minY - correctedFrame.minY) > 0.01 else { return }

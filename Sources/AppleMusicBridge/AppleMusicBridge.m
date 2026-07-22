@@ -66,6 +66,36 @@ static SBApplication *TopIsletApplication(
     return application;
 }
 
+static SBApplication *TopIsletMetadataApplication(
+    pid_t processIdentifier,
+    TopIsletAppleMusicErrorDelegate **delegate,
+    NSError **error
+) {
+    if (!TopIsletValidateTarget(processIdentifier, error)) {
+        return nil;
+    }
+    // Music 1.6.5 can return the radio station placeholder when its Apple
+    // Event address uses a kernel PID. Bundle addressing returns the actual
+    // current track. The PID checks before and after the read still bind the
+    // snapshot to the exact running Music instance.
+    SBApplication *application = [SBApplication
+        applicationWithBundleIdentifier:@"com.apple.Music"];
+    if (application == nil || !application.running) {
+        if (error != NULL) {
+            *error = TopIsletAppleMusicError(
+                -600,
+                @"无法连接已运行的 Apple Music 进程。"
+            );
+        }
+        return nil;
+    }
+    TopIsletAppleMusicErrorDelegate *errorDelegate =
+        [[TopIsletAppleMusicErrorDelegate alloc] init];
+    application.delegate = errorDelegate;
+    *delegate = errorDelegate;
+    return application;
+}
+
 static id TopIsletPropertyValue(
     SBObject *object,
     AEKeyword propertyCode,
@@ -198,7 +228,7 @@ NSDictionary<NSString *, id> *TopIsletAppleMusicCopySnapshot(
     NSError **error
 ) {
     TopIsletAppleMusicErrorDelegate *delegate = nil;
-    SBApplication *application = TopIsletApplication(
+    SBApplication *application = TopIsletMetadataApplication(
         processIdentifier,
         &delegate,
         error

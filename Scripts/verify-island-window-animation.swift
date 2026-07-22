@@ -6,6 +6,7 @@ import Foundation
 private let ownerName = "顶屿"
 private let hoverPersistenceDuration: TimeInterval = 12
 private let maximumHoverResponseDuration: TimeInterval = 0.12
+private let maximumHoverExitStartDuration: TimeInterval = 0.65
 private let sampleInterval: TimeInterval = 0.005
 
 private struct WindowSample {
@@ -63,14 +64,54 @@ private func postMouseMove(to point: CGPoint) {
     event?.post(tap: .cghidEventTap)
 }
 
-private func sampleFrames(duration: TimeInterval) throws -> [WindowSample] {
+private func sampleFrames(
+    duration: TimeInterval,
+    keepingPointerAt pinnedPointer: CGPoint? = nil
+) throws -> [WindowSample] {
     let startedAt = Date()
     var samples: [WindowSample] = []
     while Date().timeIntervalSince(startedAt) < duration {
-        samples.append(try currentSample())
+        var sample = try currentSample()
+        if let pinnedPointer,
+           hypot(
+               sample.pointerLocation.x - pinnedPointer.x,
+               sample.pointerLocation.y - pinnedPointer.y
+           ) > 1 {
+            postMouseMove(to: pinnedPointer)
+            usleep(1_000)
+            sample = try currentSample()
+        }
+        samples.append(sample)
         usleep(useconds_t(sampleInterval * 1_000_000))
     }
     return samples
+}
+
+private func waitForWindowShrink(
+    from initialSize: CGSize,
+    timeout: TimeInterval,
+    keepingPointerAt pinnedPointer: CGPoint
+) throws -> (sample: WindowSample, elapsed: TimeInterval) {
+    let startedAt = Date()
+    while Date().timeIntervalSince(startedAt) < timeout {
+        var sample = try currentSample()
+        if hypot(
+            sample.pointerLocation.x - pinnedPointer.x,
+            sample.pointerLocation.y - pinnedPointer.y
+        ) > 1 {
+            postMouseMove(to: pinnedPointer)
+            usleep(1_000)
+            sample = try currentSample()
+        }
+        if sample.frame.width < initialSize.width - 0.75
+            && sample.frame.height < initialSize.height - 0.75 {
+            return (sample, Date().timeIntervalSince(startedAt))
+        }
+        usleep(useconds_t(sampleInterval * 1_000_000))
+    }
+    throw VerificationError.failed(
+        "移出后 \(Int(timeout * 1_000))ms 内未进入收回动画"
+    )
 }
 
 private func verifyAnchoring(
@@ -226,7 +267,10 @@ private func run() throws {
         y: initial.frame.minY + min(16, initial.frame.height / 2)
     )
     postMouseMove(to: insidePoint)
-    let expansion = try sampleFrames(duration: 0.5)
+    let expansion = try sampleFrames(
+        duration: 0.5,
+        keepingPointerAt: insidePoint
+    )
     let expanded = try currentSample()
 
     guard expanded.frame.width > initial.frame.width,
@@ -248,7 +292,10 @@ private func run() throws {
         to: expanded.frame.size
     )
 
-    let hoverPersistence = try sampleFrames(duration: hoverPersistenceDuration)
+    let hoverPersistence = try sampleFrames(
+        duration: hoverPersistenceDuration,
+        keepingPointerAt: insidePoint
+    )
     try verifyAnchoring(
         hoverPersistence,
         expectedCenterX: expectedCenterX,
@@ -260,14 +307,20 @@ private func run() throws {
     )
 
     postMouseMove(to: outsidePoint)
-    usleep(400_000)
-    let reversalStart = try currentSample()
+    let (reversalStart, hoverExitStartDuration) = try waitForWindowShrink(
+        from: expanded.frame.size,
+        timeout: maximumHoverExitStartDuration,
+        keepingPointerAt: outsidePoint
+    )
     guard reversalStart.frame.width < expanded.frame.width - 0.75,
           reversalStart.frame.height < expanded.frame.height - 0.75 else {
         throw VerificationError.failed("未进入收回动画，无法验证反向切换")
     }
     postMouseMove(to: insidePoint)
-    let reversal = try sampleFrames(duration: 0.5)
+    let reversal = try sampleFrames(
+        duration: 0.5,
+        keepingPointerAt: insidePoint
+    )
     let reexpanded = try currentSample()
     try verifyAnchoring(
         reversal,
@@ -285,7 +338,10 @@ private func run() throws {
     }
 
     postMouseMove(to: outsidePoint)
-    let collapse = try sampleFrames(duration: 0.75)
+    let collapse = try sampleFrames(
+        duration: 0.75,
+        keepingPointerAt: outsidePoint
+    )
     let collapsed = try currentSample()
     try verifyAnchoring(
         collapse,
@@ -308,6 +364,7 @@ private func run() throws {
     print("紧凑尺寸: \(Int(initial.frame.width))x\(Int(initial.frame.height))")
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")
     print("悬停响应: \(Int(hoverResponseDuration * 1_000))ms")
+    print("移出收回响应: \(Int(hoverExitStartDuration * 1_000))ms")
     print("悬停保持: \(String(format: "%.1f", hoverPersistenceDuration))s")
     print("反向切换: 收回途中重新进入通过")
 }

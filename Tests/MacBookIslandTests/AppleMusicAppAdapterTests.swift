@@ -60,6 +60,36 @@ func appleMusicPlayerInfoCreatesArtworkCandidate() throws {
         == candidate.fallbackSignature)
 }
 
+@Test("Apple Music 元数据快照不等待普通封面读取")
+func appleMusicMetadataOnlyIncludesArtworkForBoundedRecovery() {
+    #expect(!AppleMusicMetadataArtworkPolicy.shouldIncludeArtwork(
+        nativeRecoverySignature: nil
+    ))
+    #expect(AppleMusicMetadataArtworkPolicy.shouldIncludeArtwork(
+        nativeRecoverySignature: "Song\u{1f}Artist\u{1f}Album"
+    ))
+    #expect(
+        AppleMusicArtworkPrefetchPolicy.catalogHedgeDelayNanoseconds
+            == 350_000_000
+    )
+}
+
+@Test("Apple Music 元数据可直接形成异步封面候选")
+func appleMusicObservationCreatesArtworkCandidate() throws {
+    let observation = try #require(AppleMusicObservation.decode(fields: [
+        "TRACK", "Song", "Artist", "Album", "180", "2", "playing"
+    ]))
+    let candidate = try #require(AppleMusicPlayerInfoCandidate(
+        observation: observation
+    ))
+
+    #expect(candidate.title == "Song")
+    #expect(candidate.artist == "Artist")
+    #expect(candidate.album == "Album")
+    #expect(candidate.fallbackSignature
+        == observation.trackIdentity?.fallbackSignature)
+}
+
 @Test("Apple Music 空状态不会让下一首真实歌曲绕过原生封面")
 func appleMusicEmptyStateKeepsNativeArtworkRoute() throws {
     let emptyObservation = try #require(AppleMusicObservation.decode(fields: [
@@ -742,6 +772,57 @@ func appleMusicTransientRefreshUsesBoundedRetry() {
         candidate: olderReady,
         attempt: 0
     ) == .rejectOlder)
+}
+
+@Test("Apple Music 电台不完整占位快照使用有界短重试")
+func appleMusicIncompleteRadioPlaceholderUsesBoundedRetry() {
+    let current = appleMusicPlaybackSnapshot(
+        state: .playing,
+        checkedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let placeholder = MusicAppSnapshot(
+        descriptor: current.descriptor,
+        instance: current.instance,
+        availability: .ready,
+        track: MusicTrackSnapshot(
+            identity: MusicTrackIdentity(
+                providerIdentifier: "RADIO",
+                fallbackSignature: "ATEEZ\u{1f}\u{1f}"
+            ),
+            title: "ATEEZ",
+            artist: nil,
+            album: nil,
+            artworkData: nil,
+            lyrics: []
+        ),
+        playbackState: .playing,
+        timeline: current.timeline,
+        controls: current.controls,
+        revision: current.revision + 1,
+        provenance: current.provenance,
+        checkedAt: Date(timeIntervalSince1970: 1_001),
+        diagnostic: "radio transition"
+    )
+
+    #expect(AppleMusicSnapshotAdmissionPolicy
+        .isIncompleteTransitionSnapshot(placeholder))
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: placeholder,
+        attempt: 0
+    ) == .retry(after: 0.25))
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: nil,
+        candidate: placeholder,
+        attempt: 1
+    ) == .retry(after: 0.6))
+    #expect(AppleMusicSnapshotAdmissionPolicy.decision(
+        current: current,
+        candidate: placeholder,
+        attempt: AppleMusicSnapshotAdmissionPolicy.retryDelays.count
+    ) == .accept)
+    #expect(!AppleMusicSnapshotAdmissionPolicy
+        .isIncompleteTransitionSnapshot(current))
 }
 
 @Test("Apple Music 停止状态不伪造歌曲和进度")

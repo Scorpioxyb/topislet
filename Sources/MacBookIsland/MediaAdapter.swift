@@ -221,6 +221,20 @@ enum AppleMusicSnapshotAdmissionDecision: Equatable {
 enum AppleMusicSnapshotAdmissionPolicy {
     static let retryDelays: [TimeInterval] = [0.25, 0.6, 1.2, 2.4]
 
+    static func isIncompleteTransitionSnapshot(
+        _ snapshot: MusicAppSnapshot
+    ) -> Bool {
+        guard case .ready = snapshot.availability,
+              snapshot.instance != nil,
+              let track = snapshot.track,
+              !track.title.isEmpty else {
+            return false
+        }
+        let artistIsMissing = track.artist?.isEmpty != false
+        let albumIsMissing = track.album?.isEmpty != false
+        return artistIsMissing && albumIsMissing
+    }
+
     static func decision(
         current: MusicAppSnapshot?,
         candidate: MusicAppSnapshot,
@@ -229,8 +243,14 @@ enum AppleMusicSnapshotAdmissionPolicy {
         if let current, current.checkedAt > candidate.checkedAt {
             return .rejectOlder
         }
+        guard retryDelays.indices.contains(attempt) else {
+            return .accept
+        }
+        if isIncompleteTransitionSnapshot(candidate),
+           current == nil || current?.instance == candidate.instance {
+            return .retry(after: retryDelays[attempt])
+        }
         guard let current,
-              retryDelays.indices.contains(attempt),
               case .ready = current.availability,
               current.instance == candidate.instance,
               case .degraded = candidate.availability else {
@@ -2044,7 +2064,7 @@ final class MusicAdapterCoordinator {
         case let .retry(after: retryDelay):
             appleMusicTransitionTimeline.record(
                 .snapshotRejected,
-                detail: "reason=transient-degraded retryMs=\(Int(retryDelay * 1_000))"
+                detail: "reason=transient-snapshot retryMs=\(Int(retryDelay * 1_000))"
             )
             scheduleAppleMusicTransientRetry(after: retryDelay)
             return .retryScheduled
