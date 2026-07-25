@@ -151,15 +151,11 @@ final class MediaRemoteAdapterStreamSource {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [
-            paths.script.path,
-            paths.framework.path,
-            "stream-client",
-            qishuiBundleIdentifier,
-            "--debounce=40",
-            "--no-diff",
-            "--no-artwork"
-        ]
+        process.arguments = Self.streamArguments(
+            script: paths.script.path,
+            framework: paths.framework.path,
+            bundleIdentifier: qishuiBundleIdentifier
+        )
 
         let output = Pipe()
         process.standardOutput = output
@@ -1363,8 +1359,23 @@ final class MediaRemoteAdapterStreamSource {
         guard let track else { return false }
         let needsArtist = track.artist == "汽水音乐"
         let needsArtwork = track.artworkData == nil
-        guard didChangeTrack || needsArtist || needsArtwork else { return false }
+        guard needsArtist || needsArtwork else { return false }
         return requestFreshMetadata(for: track, onChange: onChange, force: didChangeTrack)
+    }
+
+    nonisolated static func streamArguments(
+        script: String,
+        framework: String,
+        bundleIdentifier: String
+    ) -> [String] {
+        [
+            script,
+            framework,
+            "stream-client",
+            bundleIdentifier,
+            "--debounce=40",
+            "--no-diff"
+        ]
     }
 
     private func requestFreshMetadata(

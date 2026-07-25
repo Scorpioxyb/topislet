@@ -8,6 +8,7 @@
 
 | 状态 | 优化项 | 负责人 | 验收指标 |
 | --- | --- | --- | --- |
+| 已验收 | 汽水切歌原子加载延迟 | macOS 架构师 / 开发工程师 / QA | 状态流直接携带封面；混合过渡包继续拒绝；完整发布 A/B 平均 `567ms → 336ms`，最终 Release 为 `344/343/345ms`；20 次切歌资源告警 0；见 `acceptance/2026-07-26-v0.1.2-qishui-transition-latency.md` |
 | 已验收 | 合并高频鼠标移动事件并启用 Release 日常安装 | 开发工程师 / QA | 事件每 8ms 最多投递一次最新位置；Release 安装完成；实机悬停响应 60ms；见 `acceptance/2026-07-19-p0-hover-performance.md` |
 | 自动化已验收 / 待视觉确认 | 展开、收回和内容切换帧节奏 | UI/UX / 开发工程师 | 内容与几何动画事务已拆分；50ms 响应、12 秒保持和收回途中反向展开通过；待产品负责人确认实际手感 |
 | 已验收 | 主线程阻塞审计 | macOS 架构师 / QA | 5 秒 Release 栈采样未发现同步 AX、Apple Event、MediaRemote 或封面解码阻塞；空闲 CPU 0.4%-1.1%；见 `acceptance/2026-07-20-p0-main-thread-and-reversal.md` |

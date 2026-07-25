@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("汽水专属状态流直接携带封面以减少切歌补取延迟")
+func qishuiStreamIncludesArtwork() {
+    let arguments = MediaRemoteAdapterStreamSource.streamArguments(
+        script: "/tmp/adapter.pl",
+        framework: "/tmp/MediaRemoteAdapter.framework",
+        bundleIdentifier: "com.soda.music"
+    )
+
+    #expect(arguments.contains("stream-client"))
+    #expect(arguments.contains("com.soda.music"))
+    #expect(!arguments.contains("--no-artwork"))
+}
+
 @Test("汽水会话失效后不能恢复上一首歌曲")
 @MainActor
 func invalidatedQishuiSessionCannotRestorePreviousTrack() throws {
