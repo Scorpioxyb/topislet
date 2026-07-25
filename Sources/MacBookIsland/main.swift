@@ -171,6 +171,16 @@ if CommandLine.arguments.contains("--ax-check") {
 
 if CommandLine.arguments.contains("--display-geometry") {
     for (index, screen) in NSScreen.screens.enumerated() {
+        let displayID = (screen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+        ] as? NSNumber)?.uint32Value
+        let physicalUUID = displayID.flatMap(IslandDisplayIdentity.physicalUUID(for:))
+        let stableIdentity = IslandDisplayIdentity.stableIdentifier(
+            displayID: displayID,
+            physicalUUID: physicalUUID,
+            displayName: screen.localizedName,
+            frame: screen.frame
+        )
         let geometry = IslandDisplayGeometry.resolve(
             screenFrame: screen.frame,
             safeAreaTop: screen.safeAreaInsets.top,
@@ -181,6 +191,9 @@ if CommandLine.arguments.contains("--display-geometry") {
         )
         print("displayIndex=\(index)")
         print("name=\(screen.localizedName)")
+        print("displayID=\(displayID.map(String.init) ?? "nil")")
+        print("displayUUID=\(physicalUUID ?? "nil")")
+        print("stableIdentity=\(stableIdentity)")
         print("frame=\(NSStringFromRect(screen.frame))")
         print("scale=\(screen.backingScaleFactor)")
         print("safeAreaTop=\(screen.safeAreaInsets.top)")
@@ -687,6 +700,13 @@ enum IslandMotion {
     static func featureContentAnimation(reduceMotion: Bool) -> Animation {
         .easeInOut(duration: reduceMotion ? 0.05 : 0.14)
     }
+}
+
+enum IslandDisplayRefreshPolicy {
+    static let stabilizationDelaysNanoseconds: [UInt64] = [
+        150_000_000,
+        500_000_000
+    ]
 }
 
 enum IslandFeature: String, Hashable {
@@ -2458,6 +2478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
+    private var screenRefreshTask: Task<Void, Never>?
     private var accessibilityDisplayObserver: NSObjectProtocol?
     private var outsideMouseMonitor: Any?
     private var hoverGlobalMouseMonitor: Any?
@@ -2466,6 +2487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideEventTapRunLoopSource: CFRunLoopSource?
     private var panelAnimationGate = IslandAnimationCompletionGate()
     private var targetDisplayIdentity: String?
+    private var stableDisplayIdentityCache: [UInt32: String] = [:]
     private var activeDisplayGeometry: IslandDisplayGeometry?
     private var hoverEnterTask: Task<Void, Never>?
     private var hoverExitTask: Task<Void, Never>?
@@ -2542,6 +2564,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+        screenRefreshTask?.cancel()
+        screenRefreshTask = nil
         if let accessibilityDisplayObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(accessibilityDisplayObserver)
         }
@@ -2706,10 +2730,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.updateScreenMetrics()
-                self?.repositionPanel(animated: false)
+                self?.handleScreenParametersChange()
             }
         }
+    }
+
+    private func handleScreenParametersChange() {
+        screenRefreshTask?.cancel()
+        stableDisplayIdentityCache.removeAll()
+        refreshDisplayTopology()
+        screenRefreshTask = Task { @MainActor [weak self] in
+            for delay in IslandDisplayRefreshPolicy.stabilizationDelaysNanoseconds {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                self.refreshDisplayTopology()
+            }
+        }
+    }
+
+    private func refreshDisplayTopology() {
+        _ = panelAnimationGate.beginAnimation()
+        isPanelFrameAnimating = false
+        updateScreenMetrics()
+        repositionPanel(animated: false)
+        updateIslandHover(at: NSEvent.mouseLocation)
     }
 
     private func observeAccessibilityDisplayOptions() {
@@ -2919,7 +2967,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateScreenMetrics() {
         guard let screen = targetScreen() else { return }
 
-        model.layout.useDisplay(name: screen.localizedName, identity: calibrationDisplayIdentity(for: screen))
+        model.layout.useDisplay(
+            name: screen.localizedName,
+            identity: calibrationDisplayIdentity(for: screen),
+            legacyIdentities: [legacyCalibrationDisplayIdentity(for: screen)],
+            legacyIdentityPrefixes: [legacyCalibrationDisplayIdentityPrefix(for: screen)]
+        )
 
         let geometry = displayGeometry(for: screen)
         activeDisplayGeometry = geometry
@@ -2948,13 +3001,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func calibrationDisplayIdentity(for screen: NSScreen) -> String {
-        let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        IslandDisplayIdentity.calibrationIdentifier(
+            stableIdentifier: stableDisplayIdentity(for: screen),
+            frame: screen.frame,
+            scale: screen.backingScaleFactor
+        )
+    }
+
+    private func legacyCalibrationDisplayIdentity(for screen: NSScreen) -> String {
+        let screenNumber = screen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+        ] as? NSNumber
         let frame = screen.frame
         return [
             screen.localizedName,
             "\(Int(frame.width))x\(Int(frame.height))",
             "scale\(screen.backingScaleFactor)",
             "id\(screenNumber?.stringValue ?? "unknown")"
+        ].joined(separator: "-")
+    }
+
+    private func legacyCalibrationDisplayIdentityPrefix(for screen: NSScreen) -> String {
+        let frame = screen.frame
+        return [
+            screen.localizedName,
+            "\(Int(frame.width))x\(Int(frame.height))",
+            "scale\(screen.backingScaleFactor)",
+            "id"
         ].joined(separator: "-")
     }
 
@@ -2996,12 +3069,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stableDisplayIdentity(for screen: NSScreen) -> String {
-        if let screenNumber = screen.deviceDescription[
+        let displayID = (screen.deviceDescription[
             NSDeviceDescriptionKey("NSScreenNumber")
-        ] as? NSNumber {
-            return "display-\(screenNumber.stringValue)"
+        ] as? NSNumber)?.uint32Value
+        if let displayID, let cachedIdentity = stableDisplayIdentityCache[displayID] {
+            return cachedIdentity
         }
-        return "\(screen.localizedName)-\(Int(screen.frame.width))x\(Int(screen.frame.height))"
+        let identity = IslandDisplayIdentity.stableIdentifier(
+            displayID: displayID,
+            physicalUUID: displayID.flatMap(IslandDisplayIdentity.physicalUUID(for:)),
+            displayName: screen.localizedName,
+            frame: screen.frame
+        )
+        if let displayID {
+            stableDisplayIdentityCache[displayID] = identity
+        }
+        return identity
     }
 
     private func panelSize(for mode: IslandMode) -> NSSize {

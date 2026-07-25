@@ -14,6 +14,18 @@ final class LayoutCalibrationSettings: ObservableObject {
         static let rightControlsXOffset = "rightControlsXOffset"
         static let rightControlsYOffset = "rightControlsYOffset"
         static let expandedContentTopGap = "expandedContentTopGap"
+
+        static let persistedValueNames = [
+            islandYOffset,
+            notchHeightAdjustment,
+            expandedHeightAdjustment,
+            expandedTopControlsTopOffset,
+            leftControlsXOffset,
+            leftControlsYOffset,
+            rightControlsXOffset,
+            rightControlsYOffset,
+            expandedContentTopGap
+        ]
     }
 
     private enum Default {
@@ -130,7 +142,12 @@ final class LayoutCalibrationSettings: ObservableObject {
         )
     }
 
-    func useDisplay(name: String, identity: String) {
+    func useDisplay(
+        name: String,
+        identity: String,
+        legacyIdentities: [String] = [],
+        legacyIdentityPrefixes: [String] = []
+    ) {
         let nextDisplayKey = Self.safeDisplayKey(identity)
         let nextDisplayName = name.isEmpty ? "当前屏幕" : name
         guard nextDisplayKey != currentDisplayKey else {
@@ -141,6 +158,11 @@ final class LayoutCalibrationSettings: ObservableObject {
         }
 
         currentDisplayName = nextDisplayName
+        migrateLegacyValuesIfNeeded(
+            from: legacyIdentities,
+            matching: legacyIdentityPrefixes,
+            to: nextDisplayKey
+        )
 
         isLoading = true
         currentDisplayKey = nextDisplayKey
@@ -199,6 +221,38 @@ final class LayoutCalibrationSettings: ObservableObject {
             fallback: Default.expandedContentTopGap
         )
         isLoading = false
+    }
+
+    private func migrateLegacyValuesIfNeeded(
+        from legacyIdentities: [String],
+        matching legacyIdentityPrefixes: [String],
+        to displayKey: String
+    ) {
+        let legacyDisplayKeys = legacyIdentities
+            .map(Self.safeDisplayKey)
+            .filter { $0 != displayKey }
+        let legacyStoragePrefixes = legacyIdentityPrefixes.map {
+            "\(Key.prefix)\(Self.safeDisplayKey($0))"
+        }
+        guard !legacyDisplayKeys.isEmpty || !legacyStoragePrefixes.isEmpty else { return }
+        let availableKeys = defaults.dictionaryRepresentation().keys.sorted()
+
+        for valueName in Key.persistedValueNames {
+            let destinationKey = Self.storageKey(valueName, displayKey: displayKey)
+            guard defaults.object(forKey: destinationKey) == nil else { continue }
+            let explicitSourceKeys = legacyDisplayKeys.map {
+                Self.storageKey(valueName, displayKey: $0)
+            }
+            let matchingSourceKeys = availableKeys.filter { key in
+                key.hasSuffix(".\(valueName)")
+                    && legacyStoragePrefixes.contains(where: key.hasPrefix)
+            }
+            for sourceKey in explicitSourceKeys + matchingSourceKeys {
+                guard let value = defaults.object(forKey: sourceKey) else { continue }
+                defaults.set(value, forKey: destinationKey)
+                break
+            }
+        }
     }
 
     func resetToDefaults() {

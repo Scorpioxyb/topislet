@@ -115,6 +115,110 @@ func islandDisplaySelectionFallsBackToMainWithoutCameraDisplay() {
     #expect(selected == "main")
 }
 
+@Test("同一绑定屏幕改变排列后使用新 frame 重新锚定")
+func boundDisplayArrangementChangeRecomputesWindowFrame() {
+    let selected = IslandDisplaySelectionPolicy.selectIdentity(
+        boundIdentity: "internal",
+        candidates: [
+            IslandDisplayCandidate(
+                identity: "external",
+                hasCameraHousing: false,
+                isMain: true
+            ),
+            IslandDisplayCandidate(
+                identity: "internal",
+                hasCameraHousing: true,
+                isMain: false
+            )
+        ]
+    )
+    let originalScreenFrame = NSRect(x: 0, y: 0, width: 1_710, height: 1_107)
+    let rearrangedScreenFrame = NSRect(x: -1_710, y: 180, width: 1_710, height: 1_107)
+    let size = NSSize(width: 377, height: 34)
+    let originalFrame = IslandWindowLayout.frame(
+        for: size,
+        in: originalScreenFrame,
+        yOffset: 0,
+        anchorX: originalScreenFrame.midX
+    )
+    let rearrangedFrame = IslandWindowLayout.frame(
+        for: size,
+        in: rearrangedScreenFrame,
+        yOffset: 0,
+        anchorX: rearrangedScreenFrame.midX
+    )
+
+    #expect(selected == "internal")
+    #expect(rearrangedFrame.midX == rearrangedScreenFrame.midX)
+    #expect(rearrangedFrame.maxY == rearrangedScreenFrame.maxY)
+    #expect(rearrangedFrame.midX != originalFrame.midX)
+    #expect(rearrangedFrame.maxY != originalFrame.maxY)
+}
+
+@Test("显示拓扑变化会作废旧窗口动画完成")
+func displayTopologyChangeInvalidatesInFlightAnimation() {
+    var gate = IslandAnimationCompletionGate()
+    let inFlightAnimationID = gate.beginAnimation()
+    _ = gate.beginAnimation()
+
+    let staleCompletion = gate.claimCompletion(
+        animationID: inFlightAnimationID,
+        targetMode: .expanded,
+        currentMode: .expanded
+    )
+
+    #expect(!staleCompletion)
+}
+
+@Test("显示参数变化包含即时刷新和有界稳定化复核")
+func displayRefreshPolicyUsesBoundedStabilizationRetries() {
+    #expect(IslandDisplayRefreshPolicy.stabilizationDelaysNanoseconds == [
+        150_000_000,
+        500_000_000
+    ])
+}
+
+@Test("物理显示器 UUID 在重连和排列变化后保持稳定身份")
+func physicalDisplayUUIDSurvivesReconnectAndArrangementChanges() {
+    let firstIdentity = IslandDisplayIdentity.stableIdentifier(
+        displayID: 17,
+        physicalUUID: "37D8832A-2D66-02CA-B9F7-8F30A301B230",
+        displayName: "内建显示器",
+        frame: NSRect(x: 0, y: 0, width: 1_710, height: 1_107)
+    )
+    let reconnectedIdentity = IslandDisplayIdentity.stableIdentifier(
+        displayID: 42,
+        physicalUUID: "37d8832a-2d66-02ca-b9f7-8f30a301b230",
+        displayName: "内建显示器",
+        frame: NSRect(x: -1_710, y: 180, width: 1_710, height: 1_107)
+    )
+
+    #expect(firstIdentity == reconnectedIdentity)
+}
+
+@Test("显示器校准身份忽略排列原点但区分缩放档位")
+func displayCalibrationIdentityTracksModeNotArrangementOrigin() {
+    let stableIdentity = "display-physical-uuid"
+    let original = IslandDisplayIdentity.calibrationIdentifier(
+        stableIdentifier: stableIdentity,
+        frame: NSRect(x: 0, y: 0, width: 1_710, height: 1_107),
+        scale: 2
+    )
+    let rearranged = IslandDisplayIdentity.calibrationIdentifier(
+        stableIdentifier: stableIdentity,
+        frame: NSRect(x: -1_710, y: 180, width: 1_710, height: 1_107),
+        scale: 2
+    )
+    let scaled = IslandDisplayIdentity.calibrationIdentifier(
+        stableIdentifier: stableIdentity,
+        frame: NSRect(x: 0, y: 0, width: 1_440, height: 932),
+        scale: 2
+    )
+
+    #expect(original == rearranged)
+    #expect(original != scaled)
+}
+
 @Test("窗口插值全过程保持顶部和中心锚定")
 func interpolatedWindowFramesStayTopAnchoredAndCentered() {
     let screenFrame = NSRect(x: 0, y: 0, width: 1_920, height: 1_080)
