@@ -60,13 +60,21 @@ enum QishuiSeekSafety {
 }
 
 enum NeteaseMusicVerificationPolicy {
-    static func shouldVerify(
-        isSelected: Bool,
+    static let discoveryInterval: TimeInterval = 0.5
+    static let steadyInterval: TimeInterval = 1.0
+
+    // MediaRemote's per-client stream can remain alive without delivering
+    // later playback changes. A PID-targeted read is the correctness backstop.
+    static func interval(
         isRunning: Bool,
-        hasTrack: Bool,
-        isRebindVerificationActive: Bool
-    ) -> Bool {
-        isRunning && (isSelected || !hasTrack || isRebindVerificationActive)
+        isSelected: Bool,
+        playback: MusicSourcePlaybackLevel
+    ) -> TimeInterval? {
+        guard isRunning else { return nil }
+        if !isSelected, playback != .playing {
+            return discoveryInterval
+        }
+        return steadyInterval
     }
 }
 
@@ -360,8 +368,6 @@ final class MusicAdapterCoordinator {
     )
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
-    private let neteaseMusicVerificationInterval: TimeInterval = 1.0
-    private let neteaseMusicRebindVerificationInterval: TimeInterval = 5.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
     private var latestQishuiControlAvailability: QishuiControlAvailability = .unknown
     private var latestMediaRemoteSnapshot: MediaRemoteNowPlayingSnapshot?
@@ -393,7 +399,6 @@ final class MusicAdapterCoordinator {
     private var neteaseMusicRefreshTask: Task<Void, Never>?
     private var neteaseMusicRefreshGeneration: UInt64 = 0
     private var lastNeteaseMusicRefreshStartedAt: Date?
-    private var neteaseMusicRebindVerificationDeadline: Date?
     private var neteaseMusicControlRequestID: UInt64 = 0
     private var latestAppleMusicSnapshot: MusicAppSnapshot?
     private var appleMusicEnabled = true
@@ -1082,18 +1087,14 @@ final class MusicAdapterCoordinator {
         _ = refreshSourceStatusIfNeeded()
         let selectedSource = selectedMusicSource()
         let neteaseMusicCandidate = neteaseMusicSourceCandidate()
-        let isRebindVerificationActive = neteaseMusicRebindVerificationDeadline
-            .map { Date() < $0 } ?? false
-        if !isRebindVerificationActive {
-            neteaseMusicRebindVerificationDeadline = nil
-        }
-        if NeteaseMusicVerificationPolicy.shouldVerify(
-            isSelected: selectedSource == .neteaseMusic,
+        if let verificationInterval = NeteaseMusicVerificationPolicy.interval(
             isRunning: neteaseMusicCandidate.isAvailable,
-            hasTrack: neteaseMusicCandidate.hasTrack,
-            isRebindVerificationActive: isRebindVerificationActive
+            isSelected: selectedSource == .neteaseMusic,
+            playback: neteaseMusicCandidate.playback
         ) {
-            scheduleNeteaseMusicVerificationIfNeeded()
+            scheduleNeteaseMusicVerificationIfNeeded(
+                minimumInterval: verificationInterval
+            )
         }
         return selectedMusicUpdate(for: selectedSource)
     }
@@ -1613,7 +1614,6 @@ final class MusicAdapterCoordinator {
                     self.neteaseMusicRefreshTask?.cancel()
                     self.neteaseMusicRefreshTask = nil
                     self.lastNeteaseMusicRefreshStartedAt = nil
-                    self.neteaseMusicRebindVerificationDeadline = nil
                     self.neteaseMusicAdapter.invalidateRunningInstance(
                         processIdentifier: terminatedApplication?.processIdentifier
                     )
@@ -1649,13 +1649,13 @@ final class MusicAdapterCoordinator {
                     self.lastSourceRefreshAt = nil
                     self.qishuiAdapter.invalidateAXCache()
                     self.qishuiSemanticAXController.invalidateCache()
+                    self.mediaRemoteAdapterStreamSource.rebindAfterQishuiRelaunch()
                     self.scheduleQishuiControlAvailabilityRefresh()
                 case .neteaseMusic:
                     self.neteaseMusicRefreshGeneration &+= 1
                     self.neteaseMusicRefreshTask?.cancel()
                     self.neteaseMusicRefreshTask = nil
                     self.lastNeteaseMusicRefreshStartedAt = nil
-                    self.neteaseMusicRebindVerificationDeadline = nil
                 case .appleMusic:
                     self.cancelAppleMusicTransientRetry(resetAttempt: true)
                     self.lastAppleMusicRefreshCompletedAt = nil
@@ -1737,7 +1737,6 @@ final class MusicAdapterCoordinator {
         neteaseMusicRefreshTask?.cancel()
         neteaseMusicRefreshTask = nil
         lastNeteaseMusicRefreshStartedAt = nil
-        neteaseMusicRebindVerificationDeadline = nil
         neteaseMusicAdapter.stop()
         latestNeteaseMusicSnapshot = nil
     }
@@ -1779,18 +1778,9 @@ final class MusicAdapterCoordinator {
             if case .notRunning = snapshot.availability {
                 self.latestNeteaseMusicSnapshot = nil
             } else {
-                let hadTrackForCurrentInstance = self.latestNeteaseMusicSnapshot?
-                    .instance == snapshot.instance
-                    && self.latestNeteaseMusicSnapshot?.track != nil
                 let previousTrackIdentity = self.latestNeteaseMusicSnapshot?
                     .track?.identity
                 self.latestNeteaseMusicSnapshot = snapshot
-                if snapshot.track != nil, !hadTrackForCurrentInstance {
-                    self.neteaseMusicRebindVerificationDeadline = Date()
-                        .addingTimeInterval(
-                            self.neteaseMusicRebindVerificationInterval
-                        )
-                }
                 if snapshot.track?.identity != previousTrackIdentity {
                     let processIdentifier = snapshot.instance?.processIdentifier ?? 0
                     let trackTitle = snapshot.track?.title ?? "nil"
@@ -1804,11 +1794,14 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func scheduleNeteaseMusicVerificationIfNeeded(now: Date = Date()) {
+    private func scheduleNeteaseMusicVerificationIfNeeded(
+        minimumInterval: TimeInterval,
+        now: Date = Date()
+    ) {
         guard neteaseMusicRefreshTask == nil else { return }
         if let lastNeteaseMusicRefreshStartedAt,
            now.timeIntervalSince(lastNeteaseMusicRefreshStartedAt)
-            < neteaseMusicVerificationInterval {
+            < minimumInterval {
             return
         }
         scheduleNeteaseMusicRefresh(refresh: .timeline)

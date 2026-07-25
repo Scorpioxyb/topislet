@@ -414,15 +414,34 @@ final class MediaRemoteAdapterStreamSource {
            ) {
             return latestSnapshot
         }
-        mergedPayload.merge(payload) { _, new in new }
+        let merge = mergeObservedStreamPayload(
+            payload,
+            isDiff: stringValue(payload["title"])?.adapterTrimmedNonEmpty == nil,
+            observedAt: receivedAt
+        )
+        guard merge != .ignoredProcess else { return latestSnapshot }
         recordPlaybackEvidenceIfPresent(
             payload,
             identityPayload: mergedPayload,
             receivedAt: receivedAt
         )
-        if deferredTrackPublicationStartedAt != nil {
+        let shouldDefer = deferredTrackPublicationStartedAt != nil
+            ? shouldDeferDeferredTrackPublication(mergedPayload)
+            : shouldDeferTrackPublication(
+                from: lastPublishedPayload,
+                to: mergedPayload
+            )
+        if shouldDefer {
+            beginDeferredTrackPublication(
+                timelinePayload: payload,
+                startedAt: receivedAt
+            )
+            if let changeHandler {
+                scheduleDeferredTrackPublication(onChange: changeHandler)
+            }
             return latestSnapshot
         }
+        clearDeferredTrackPublication()
         advanceSample(origin: .synchronousRead)
         let rawSnapshot = snapshot(
             from: mergedPayload,
@@ -472,6 +491,21 @@ final class MediaRemoteAdapterStreamSource {
             Self.terminateStreamProcess(activeProcess)
         }
         invalidateQishuiSession(retireProcessIdentifier: false)
+    }
+
+    func rebindAfterQishuiRelaunch() {
+        guard let changeHandler else {
+            invalidateQishuiSession(retireProcessIdentifier: false)
+            return
+        }
+
+        // The private stream client can be started before Qishui exists. In that
+        // state it stays alive but does not necessarily attach when a later
+        // Qishui process appears. Restarting here also advances the lifecycle
+        // generation, so output from the pre-launch process cannot repopulate
+        // the newly cleared session.
+        stop()
+        start(onChange: changeHandler)
     }
 
     nonisolated static func terminateStreamProcess(

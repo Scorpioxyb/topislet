@@ -9,6 +9,41 @@ import SwiftUI
 
 private let islandEventNotificationName = Notification.Name("io.github.scorpioxyb.topislet.event")
 
+if CommandLine.arguments.contains("--login-item-status") {
+    Task { @MainActor in
+        let settings = LoginItemSettings()
+        print("loginItemStatus=\(settings.status.diagnosticCode)")
+        print("loginItemRequested=\(settings.isRequested)")
+        exit(0)
+    }
+    RunLoop.main.run()
+}
+
+if let loginItemIndex = CommandLine.arguments.firstIndex(of: "--login-item-set") {
+    guard CommandLine.arguments.indices.contains(loginItemIndex + 1) else {
+        print("usage: MacBookIsland --login-item-set on|off")
+        exit(64)
+    }
+    let requestedValue = CommandLine.arguments[loginItemIndex + 1].lowercased()
+    guard ["on", "off"].contains(requestedValue) else {
+        print("error=unsupported_login_item_value")
+        print("supported=on,off")
+        exit(64)
+    }
+    Task { @MainActor in
+        let settings = LoginItemSettings()
+        settings.setEnabled(requestedValue == "on")
+        print("loginItemStatus=\(settings.status.diagnosticCode)")
+        print("loginItemRequested=\(settings.isRequested)")
+        print("error=\(settings.errorMessage ?? "nil")")
+        let succeeded = requestedValue == "on"
+            ? settings.isRequested
+            : settings.status == .disabled
+        exit(succeeded ? 0 : 2)
+    }
+    RunLoop.main.run()
+}
+
 if CommandLine.arguments.contains("--music-adapters") {
     for registration in MusicAdapterRegistry.registrations {
         let capabilities = MusicAdapterCapability.allCases
@@ -686,12 +721,10 @@ enum MusicPresentationTransitionPolicy {
         targetMode == .collapsed
     }
 
-    static func shouldArmAfterSourceExit(
-        currentMode: IslandMode,
-        isUserExpanded: Bool
+    static func shouldResetToDefaultAfterAllSourcesExit(
+        currentMode: IslandMode
     ) -> Bool {
-        currentMode == .compact
-            || (currentMode == .expanded && !isUserExpanded)
+        currentMode != .collapsed
     }
 }
 
@@ -903,6 +936,7 @@ final class IslandModel: ObservableObject {
     @Published var topBandHeight: CGFloat = 33
     @Published var hasCameraHousing = true
     let appSettings = AppSettings()
+    let loginItemSettings = LoginItemSettings()
     let layout = LayoutCalibrationSettings()
     @Published var music: MusicState
     @Published var musicAccentColor = Color.white
@@ -2157,10 +2191,8 @@ final class IslandModel: ObservableObject {
         resetPendingMusicControlPresentation()
         if activeFeature == .music,
            !hasPendingNotification,
-           MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-            currentMode: mode,
-            isUserExpanded: isUserExpandedMusicPresentation
-           ) {
+           MusicPresentationTransitionPolicy
+            .shouldResetToDefaultAfterAllSourcesExit(currentMode: mode) {
             autoCompactOnNextMusicTrack = true
             isUserExpandedMusicPresentation = false
             mode = .collapsed
@@ -3264,10 +3296,57 @@ private func musicControlStrategyText(_ bundleIdentifier: String?) -> String {
 private struct GeneralSettingsPane: View {
     @ObservedObject var model: IslandModel
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var loginItemSettings: LoginItemSettings
+
+    init(model: IslandModel, settings: AppSettings) {
+        self.model = model
+        self.settings = settings
+        loginItemSettings = model.loginItemSettings
+    }
 
     var body: some View {
         Form {
             Section {
+                Toggle(
+                    "登录时自动启动顶屿",
+                    isOn: Binding(
+                        get: { loginItemSettings.isRequested },
+                        set: { loginItemSettings.setEnabled($0) }
+                    )
+                )
+                .disabled(
+                    loginItemSettings.isUpdating
+                        || loginItemSettings.status == .unavailable
+                )
+
+                LabeledContent(
+                    "macOS 登录项",
+                    value: loginItemSettings.status.title
+                )
+
+                if loginItemSettings.status == .requiresApproval {
+                    Text("顶屿已经申请登录时启动，但需要你在 macOS“登录项”中允许。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button("打开系统登录项设置") {
+                        loginItemSettings.openSystemSettings()
+                    }
+                } else if loginItemSettings.status == .unavailable {
+                    Text("请从“应用程序”文件夹运行已签名的顶屿.app，再设置登录时启动。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let errorMessage = loginItemSettings.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Toggle("启动后显示顶屿", isOn: $settings.showIslandOnLaunch)
 
                 Toggle("点击外部自动收起展开面板", isOn: $settings.autoCollapseExpandedIsland)
@@ -3337,6 +3416,16 @@ private struct GeneralSettingsPane: View {
         }
         .formStyle(.grouped)
         .padding(16)
+        .onAppear {
+            loginItemSettings.refresh()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            loginItemSettings.refresh()
+        }
     }
 }
 

@@ -42,38 +42,65 @@ private func waitForNeteaseSnapshot(
     return snapshot
 }
 
-@Test("网易云运行但尚无曲目时继续发现，避免来源选择死锁")
-func neteaseVerificationDiscoversFirstTrackBeforeSelection() {
-    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
-        isSelected: false,
+@MainActor
+@Test("网易云轻量校验会在瞬时空读后立即重试")
+func neteaseTimelineRefreshRetriesTransientEmptyRead() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let playing = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: true),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    var responses: [MediaRemoteClientPayload?] = [nil, playing]
+    var readCount = 0
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { _ in
+            readCount += 1
+            guard !responses.isEmpty else { return nil }
+            return responses.removeFirst()
+        }
+    )
+
+    let snapshot = await adapter.snapshot(refresh: .timeline)
+
+    #expect(readCount == 2)
+    #expect(snapshot.playbackState == .playing)
+    #expect(snapshot.track?.title == "Sweet Boy")
+}
+
+@Test("网易云未选中且未播放时加速发现，稳态降低轮询频率")
+func neteaseVerificationUsesDiscoveryAndSteadyIntervals() {
+    #expect(NeteaseMusicVerificationPolicy.interval(
         isRunning: true,
-        hasTrack: false,
-        isRebindVerificationActive: false
-    ))
-    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
+        isSelected: false,
+        playback: .paused
+    ) == 0.5)
+    #expect(NeteaseMusicVerificationPolicy.interval(
+        isRunning: true,
+        isSelected: false,
+        playback: .unknown
+    ) == 0.5)
+    #expect(NeteaseMusicVerificationPolicy.interval(
+        isRunning: true,
+        isSelected: false,
+        playback: .playing
+    ) == 1.0)
+    #expect(NeteaseMusicVerificationPolicy.interval(
+        isRunning: true,
         isSelected: true,
-        isRunning: true,
-        hasTrack: true,
-        isRebindVerificationActive: false
-    ))
-    #expect(NeteaseMusicVerificationPolicy.shouldVerify(
-        isSelected: false,
-        isRunning: true,
-        hasTrack: true,
-        isRebindVerificationActive: true
-    ))
-    #expect(!NeteaseMusicVerificationPolicy.shouldVerify(
-        isSelected: false,
-        isRunning: true,
-        hasTrack: true,
-        isRebindVerificationActive: false
-    ))
-    #expect(!NeteaseMusicVerificationPolicy.shouldVerify(
-        isSelected: false,
+        playback: .paused
+    ) == 1.0)
+    #expect(NeteaseMusicVerificationPolicy.interval(
         isRunning: false,
-        hasTrack: false,
-        isRebindVerificationActive: true
-    ))
+        isSelected: false,
+        playback: .unknown
+    ) == nil)
 }
 
 @Test("网易云启动阶段只对运行中的瞬时不可用状态执行有界重试")
@@ -713,5 +740,52 @@ func neteaseRebindConfirmsPlaybackStartedDuringFirstRead() async throws {
     #expect(confirmed.timeline?.playbackRate == 1)
     #expect(reader.artworkRequests == [true, true])
     #expect(recorder.values == [.sourceChanged])
+    adapter.stop()
+}
+
+@MainActor
+@Test("网易云新 PID 出现与首次有效快照后分两阶段重建状态流")
+func neteaseRebindRestartsStreamBeforeAndAfterFirstPayload() async throws {
+    let instance = MusicAppInstance(
+        app: MusicAdapterRegistry.neteaseMusic.descriptor,
+        processIdentifier: 62598,
+        launchedAt: Date(timeIntervalSince1970: 900)
+    )
+    let paused = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: false),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_000)
+    )
+    let playing = try MediaRemoteClientBridge.decode(
+        neteaseJSONData(playing: true),
+        expectedBundleIdentifier: "com.netease.163music",
+        runningProcessIdentifiers: [62598],
+        observedAt: Date(timeIntervalSince1970: 1_001)
+    )
+    let reader = NeteasePayloadReaderStub(payloads: [paused, playing])
+    var rebindCount = 0
+    let adapter = NeteaseMusicAppAdapter(
+        runningInstancesProvider: { [instance] },
+        payloadReaderForTesting: { includeArtwork in
+            reader.read(includeArtwork: includeArtwork)
+        },
+        bridgeRebindHandlerForTesting: {
+            rebindCount += 1
+        }
+    )
+    adapter.start { _ in }
+
+    adapter.rebindObservationToRunningInstance()
+    #expect(rebindCount == 1)
+    let initial = await adapter.snapshot(refresh: .metadata)
+    let confirmed = await waitForNeteaseSnapshot(from: adapter) {
+        $0.playbackState == .playing
+    }
+
+    #expect(rebindCount == 2)
+    #expect(initial.playbackState == .paused)
+    #expect(confirmed.playbackState == .playing)
+    #expect(reader.artworkRequests == [true, true])
     adapter.stop()
 }

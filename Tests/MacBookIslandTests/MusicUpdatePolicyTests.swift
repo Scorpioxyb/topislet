@@ -191,20 +191,10 @@ func firstRealTrackPromotesCollapsedIslandOnce() {
 
     #expect(MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(.collapsed))
     #expect(!MusicPresentationTransitionPolicy.shouldDisarmForUserRequest(.compact))
-    #expect(!MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-        currentMode: .collapsed,
-        isUserExpanded: false
-    ))
-    #expect(MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-        currentMode: .compact,
-        isUserExpanded: false
-    ))
-    #expect(MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-        currentMode: .expanded,
-        isUserExpanded: false
-    ))
-    #expect(!MusicPresentationTransitionPolicy.shouldArmAfterSourceExit(
-        currentMode: .expanded,
-        isUserExpanded: true
-    ))
+    #expect(!MusicPresentationTransitionPolicy
+        .shouldResetToDefaultAfterAllSourcesExit(currentMode: .collapsed))
+    #expect(MusicPresentationTransitionPolicy
+        .shouldResetToDefaultAfterAllSourcesExit(currentMode: .compact))
+    #expect(MusicPresentationTransitionPolicy
+        .shouldResetToDefaultAfterAllSourcesExit(currentMode: .expanded))
 }

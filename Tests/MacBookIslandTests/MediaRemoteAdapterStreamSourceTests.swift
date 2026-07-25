@@ -607,6 +607,72 @@ func deferredPositionRefreshCannotAuthorizePreviousSnapshot() throws {
     ))
 }
 
+@Test("位置刷新首次发现切歌时不能发布混合元数据")
+@MainActor
+func positionRefreshCannotFirstPublishMixedTrack() throws {
+    let source = makeStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 997)
+    let initial = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-a",
+        "title": "Song A",
+        "artist": "Artist A",
+        "album": "Album A",
+        "duration": 180.0,
+        "playing": 1,
+        "elapsedTimeNow": 30.0,
+        "artworkData": Data([0x01]).base64EncodedString()
+    ])
+
+    _ = source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 99.7
+    )
+    let afterMixedPosition = try #require(source.applyPlaybackPositionPayloadForTesting(
+        [
+            "bundleIdentifier": "com.soda.music",
+            "contentItemIdentifier": "song-b",
+            "title": "Song B",
+            "artist": "Artist A",
+            "album": "Album A",
+            "duration": 180.0,
+            "playing": 1,
+            "elapsedTimeNow": 0.4
+        ],
+        receivedAt: startedAt.addingTimeInterval(0.2),
+        receivedUptime: 99.9
+    )?.currentTrack)
+
+    #expect(afterMixedPosition.title == "Song A")
+    #expect(afterMixedPosition.artist == "Artist A")
+    #expect(afterMixedPosition.album == "Album A")
+    #expect(afterMixedPosition.duration == 180)
+
+    let completeNextTrack = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "song-b",
+        "title": "Song B",
+        "artist": "Artist B",
+        "album": "Album B",
+        "duration": 200.0,
+        "playing": 1,
+        "elapsedTimeNow": 0.8,
+        "artworkData": Data([0x02]).base64EncodedString()
+    ])
+    let committed = try #require(source.ingestStreamEnvelopeForTesting(
+        completeNextTrack,
+        receivedAt: startedAt.addingTimeInterval(0.4),
+        receivedUptime: 100.1
+    )?.currentTrack)
+
+    #expect(committed.title == "Song B")
+    #expect(committed.artist == "Artist B")
+    #expect(committed.album == "Album B")
+    #expect(committed.duration == 200)
+    #expect(committed.artworkData == Data([0x02]))
+}
+
 @Test("元数据差分不能把缓存的 elapsedTimeNow 重新锚定为旧进度")
 @MainActor
 func metadataDiffDoesNotReanchorCachedElapsedTimeNow() throws {
