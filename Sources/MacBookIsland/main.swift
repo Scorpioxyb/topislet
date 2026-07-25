@@ -1,9 +1,9 @@
 import AppKit
 import ApplicationServices
 import Combine
-import CoreImage
 import Darwin
 import EventKit
+import ImageIO
 import QuartzCore
 import SwiftUI
 
@@ -883,40 +883,68 @@ private struct PendingMusicSeek {
     var matchingSince: Date?
 }
 
-private struct ArtworkAccentComponents: Sendable {
+struct ArtworkAccentComponents: Sendable {
     let red: Double
     let green: Double
     let blue: Double
 }
 
-private let artworkColorContext = CIContext(options: [.cacheIntermediates: false])
-private let artworkColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-
-private func artworkAccentComponents(from data: Data) -> ArtworkAccentComponents? {
-    guard let image = CIImage(data: data),
-          !image.extent.isEmpty,
-          let filter = CIFilter(name: "CIAreaAverage") else { return nil }
-    filter.setValue(image, forKey: kCIInputImageKey)
-    filter.setValue(CIVector(cgRect: image.extent), forKey: kCIInputExtentKey)
-    guard let outputImage = filter.outputImage else { return nil }
-
-    var pixel = [UInt8](repeating: 0, count: 4)
-    pixel.withUnsafeMutableBytes { bytes in
-        guard let baseAddress = bytes.baseAddress else { return }
-        artworkColorContext.render(
-            outputImage,
-            toBitmap: baseAddress,
-            rowBytes: 4,
-            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-            format: .RGBA8,
-            colorSpace: artworkColorSpace
-        )
+func artworkAccentComponents(from data: Data) -> ArtworkAccentComponents? {
+    let sourceOptions = [
+        kCGImageSourceShouldCache: false
+    ] as CFDictionary
+    guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+        return nil
     }
-    guard pixel[3] > 20 else { return nil }
+    let thumbnailOptions = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceThumbnailMaxPixelSize: 32,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true
+    ] as CFDictionary
+    guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+        return nil
+    }
+
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+    let width = thumbnail.width
+    let height = thumbnail.height
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+        guard let baseAddress = bytes.baseAddress,
+              let context = CGContext(
+                data: baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue
+              ) else { return false }
+        context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    guard rendered else { return nil }
+
+    var redTotal = 0.0
+    var greenTotal = 0.0
+    var blueTotal = 0.0
+    var sampleCount = 0
+    for offset in stride(from: 0, to: pixels.count, by: 4) {
+        let alpha = Double(pixels[offset + 3])
+        guard alpha > 20 else { continue }
+        let unpremultiply = 255 / alpha
+        redTotal += min(Double(pixels[offset]) * unpremultiply, 255)
+        greenTotal += min(Double(pixels[offset + 1]) * unpremultiply, 255)
+        blueTotal += min(Double(pixels[offset + 2]) * unpremultiply, 255)
+        sampleCount += 1
+    }
+    guard sampleCount > 0 else { return nil }
     return normalizedArtworkAccent(
-        red: Double(pixel[0]) / 255,
-        green: Double(pixel[1]) / 255,
-        blue: Double(pixel[2]) / 255
+        red: redTotal / Double(sampleCount) / 255,
+        green: greenTotal / Double(sampleCount) / 255,
+        blue: blueTotal / Double(sampleCount) / 255
     )
 }
 
@@ -2217,6 +2245,9 @@ final class IslandModel: ObservableObject {
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
             music = reconciledMusic
             musicAdapter.noteMusicUIPublished(reconciledMusic)
+            if !reconciledMusic.hasCurrentTrack {
+                AlbumArtworkImageCache.shared.removeAll()
+            }
             if becameAvailable {
                 autoCompactOnNextMusicTrack = false
             }

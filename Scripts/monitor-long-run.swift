@@ -101,6 +101,12 @@ private struct MonitorSummary: Codable {
     var maximumRSSBytes: UInt64?
     var finalRSSGrowthPercent: Double?
     var maximumRSSGrowthPercent: Double?
+    var baselinePhysicalFootprintBytes: UInt64?
+    var finalPhysicalFootprintBytes: UInt64?
+    var minimumPhysicalFootprintBytes: UInt64?
+    var maximumPhysicalFootprintBytes: UInt64?
+    var finalPhysicalFootprintGrowthPercent: Double?
+    var maximumPhysicalFootprintGrowthPercent: Double?
     var baselineThreadCount: Int?
     var finalThreadCount: Int?
     var minimumThreadCount: Int?
@@ -121,6 +127,7 @@ private struct MonitorSummary: Codable {
 private struct TaskSnapshot {
     let totalCPUTimeNanoseconds: UInt64
     let residentBytes: UInt64
+    let physicalFootprintBytes: UInt64?
     let threadCount: Int
 }
 
@@ -145,9 +152,16 @@ private func taskSnapshot(pid: Int32) -> TaskSnapshot? {
         expectedSize
     )
     guard result == expectedSize else { return nil }
+    var usage = rusage_info_v4()
+    let usageResult = withUnsafeMutablePointer(to: &usage) { pointer in
+        pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebound in
+            proc_pid_rusage(pid, RUSAGE_INFO_V4, rebound)
+        }
+    }
     return TaskSnapshot(
         totalCPUTimeNanoseconds: info.pti_total_user + info.pti_total_system,
         residentBytes: info.pti_resident_size,
+        physicalFootprintBytes: usageResult == 0 ? usage.ri_phys_footprint : nil,
         threadCount: Int(info.pti_threadnum)
     )
 }
@@ -206,6 +220,7 @@ private func csvLine(
         String(format: "%.3f", elapsed),
         cpuPercent.map { String(format: "%.4f", $0) } ?? "",
         String(snapshot.residentBytes),
+        snapshot.physicalFootprintBytes.map(String.init) ?? "",
         String(snapshot.threadCount),
         String(children.count),
         children.map(String.init).joined(separator: "|"),
@@ -231,7 +246,7 @@ private func run(configuration: Configuration) throws {
     let samplesHandle = try FileHandle(forWritingTo: samplesURL)
     defer { try? samplesHandle.close() }
     try append(
-        "timestamp,elapsed_seconds,cpu_percent,rss_bytes,thread_count,child_count,child_pids,window_count\n",
+        "timestamp,elapsed_seconds,cpu_percent,rss_bytes,physical_footprint_bytes,thread_count,child_count,child_pids,window_count\n",
         to: samplesHandle
     )
 
@@ -244,7 +259,7 @@ private func run(configuration: Configuration) throws {
     let initialWindowCount = onScreenWindowCount(pid: configuration.pid)
 
     var summary = MonitorSummary(
-        schemaVersion: 1,
+        schemaVersion: 2,
         pid: configuration.pid,
         startedAt: timestamp(startedAt),
         updatedAt: timestamp(startedAt),
@@ -266,6 +281,12 @@ private func run(configuration: Configuration) throws {
         maximumRSSBytes: initialSnapshot.residentBytes,
         finalRSSGrowthPercent: 0,
         maximumRSSGrowthPercent: 0,
+        baselinePhysicalFootprintBytes: initialSnapshot.physicalFootprintBytes,
+        finalPhysicalFootprintBytes: initialSnapshot.physicalFootprintBytes,
+        minimumPhysicalFootprintBytes: initialSnapshot.physicalFootprintBytes,
+        maximumPhysicalFootprintBytes: initialSnapshot.physicalFootprintBytes,
+        finalPhysicalFootprintGrowthPercent: 0,
+        maximumPhysicalFootprintGrowthPercent: 0,
         baselineThreadCount: initialSnapshot.threadCount,
         finalThreadCount: initialSnapshot.threadCount,
         minimumThreadCount: initialSnapshot.threadCount,
@@ -339,6 +360,25 @@ private func run(configuration: Configuration) throws {
             current: summary.maximumRSSBytes,
             baseline: summary.baselineRSSBytes
         )
+        if let footprint = snapshot.physicalFootprintBytes {
+            summary.finalPhysicalFootprintBytes = footprint
+            summary.minimumPhysicalFootprintBytes = min(
+                summary.minimumPhysicalFootprintBytes ?? footprint,
+                footprint
+            )
+            summary.maximumPhysicalFootprintBytes = max(
+                summary.maximumPhysicalFootprintBytes ?? footprint,
+                footprint
+            )
+            summary.finalPhysicalFootprintGrowthPercent = growthPercent(
+                current: footprint,
+                baseline: summary.baselinePhysicalFootprintBytes
+            )
+            summary.maximumPhysicalFootprintGrowthPercent = growthPercent(
+                current: summary.maximumPhysicalFootprintBytes,
+                baseline: summary.baselinePhysicalFootprintBytes
+            )
+        }
         summary.finalThreadCount = snapshot.threadCount
         summary.minimumThreadCount = min(summary.minimumThreadCount ?? snapshot.threadCount, snapshot.threadCount)
         summary.maximumThreadCount = max(summary.maximumThreadCount ?? snapshot.threadCount, snapshot.threadCount)
@@ -409,7 +449,12 @@ private func run(configuration: Configuration) throws {
 
     if let growth = summary.finalRSSGrowthPercent, growth > 15 {
         summary.violations.append(
-            String(format: "两小时 RSS 增长 %.2f%%，超过 15%% 门槛", growth)
+            String(format: "监测期间 RSS 增长 %.2f%%，超过 15%% 门槛", growth)
+        )
+    }
+    if let growth = summary.finalPhysicalFootprintGrowthPercent, growth > 15 {
+        summary.violations.append(
+            String(format: "监测期间物理占用增长 %.2f%%，超过 15%% 门槛", growth)
         )
     }
     if summary.maximumSustainedCPUAbove5Seconds >= 30 {
