@@ -3297,6 +3297,9 @@ private struct GeneralSettingsPane: View {
     @ObservedObject var model: IslandModel
     @ObservedObject var settings: AppSettings
     @ObservedObject private var loginItemSettings: LoginItemSettings
+    @State private var isConfirmingLayoutReset = false
+    @State private var layoutResetStatus: String?
+    @State private var isRefreshingPermissions = false
 
     init(model: IslandModel, settings: AppSettings) {
         self.model = model
@@ -3373,6 +3376,76 @@ private struct GeneralSettingsPane: View {
             }
 
             Section {
+                LabeledContent(
+                    "辅助功能",
+                    value: model.accessibilityTrusted ? "已授权" : "待授权"
+                )
+                LabeledContent(
+                    "Apple Music 自动化",
+                    value: model.appleMusicAutomationAccess.displayName
+                )
+                LabeledContent(
+                    "日历",
+                    value: model.eventKitStatus.calendarAccess.displayName
+                )
+                LabeledContent(
+                    "提醒事项",
+                    value: model.eventKitStatus.remindersAccess.displayName
+                )
+
+                HStack {
+                    Button("辅助功能设置") {
+                        model.openAccessibilitySettings()
+                    }
+
+                    Button("自动化设置") {
+                        model.openAppleMusicAutomationSettings()
+                    }
+                }
+
+                HStack {
+                    Button("日历权限") {
+                        model.openEventKitPrivacySettings(for: .event)
+                    }
+
+                    Button("提醒事项权限") {
+                        model.openEventKitPrivacySettings(for: .reminder)
+                    }
+
+                    Button("重新检查") {
+                        isRefreshingPermissions = true
+                        model.refreshMusicIntegrationStatus()
+                        Task {
+                            await model.refreshEventKitNow()
+                            isRefreshingPermissions = false
+                        }
+                    }
+                    .disabled(isRefreshingPermissions)
+                }
+
+                Divider()
+
+                LabeledContent("布局配置", value: model.layout.currentDisplayName)
+
+                Button("恢复当前屏幕默认布局") {
+                    isConfirmingLayoutReset = true
+                }
+
+                if let layoutResetStatus {
+                    Text(layoutResetStatus)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("权限入口只打开 macOS 系统设置；顶屿不会替你更改授权。布局恢复只影响当前屏幕，不会修改音乐适配或登录项。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("维护与权限")
+            }
+
+            Section {
                 LabeledContent("默认主活动", value: "前台音乐应用优先")
 
                 Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
@@ -3425,6 +3498,20 @@ private struct GeneralSettingsPane: View {
             )
         ) { _ in
             loginItemSettings.refresh()
+        }
+        .confirmationDialog(
+            "恢复当前屏幕的默认布局？",
+            isPresented: $isConfirmingLayoutReset,
+            titleVisibility: .visible
+        ) {
+            Button("恢复默认布局") {
+                model.layout.resetToDefaults()
+                layoutResetStatus = "已恢复 \(model.layout.currentDisplayName) 的默认布局。"
+            }
+
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("当前屏幕的手动位置、尺寸和控件偏移会恢复默认值。")
         }
     }
 }
