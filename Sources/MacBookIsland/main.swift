@@ -634,9 +634,16 @@ struct IslandInteractionRegions: Equatable {
     }
 }
 
-private enum IslandMotion {
+enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
         mode == .expanded ? 0.24 : 0.18
+    }
+
+    static func frameDuration(
+        for mode: IslandMode,
+        reduceMotion: Bool
+    ) -> TimeInterval {
+        reduceMotion ? 0 : duration(for: mode)
     }
 
     static func timingFunction(for mode: IslandMode) -> CAMediaTimingFunction {
@@ -646,22 +653,39 @@ private enum IslandMotion {
         return CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
     }
 
-    static func geometryAnimation(for mode: IslandMode) -> Animation {
+    static func geometryAnimation(
+        for mode: IslandMode,
+        reduceMotion: Bool
+    ) -> Animation? {
+        guard !reduceMotion else { return nil }
         if mode == .expanded {
             return .timingCurve(0.25, 0.10, 0.25, 1.0, duration: duration(for: mode))
         }
         return .timingCurve(0.40, 0.0, 0.20, 1.0, duration: duration(for: mode))
     }
 
-    static func headerContentAnimation(for mode: IslandMode) -> Animation {
-        .easeOut(duration: mode == .expanded ? 0.07 : 0.055)
+    static func headerContentAnimation(
+        for mode: IslandMode,
+        reduceMotion: Bool
+    ) -> Animation {
+        .easeOut(duration: reduceMotion ? 0.04 : mode == .expanded ? 0.07 : 0.055)
     }
 
-    static func bodyContentAnimation(for mode: IslandMode) -> Animation {
+    static func bodyContentAnimation(
+        for mode: IslandMode,
+        reduceMotion: Bool
+    ) -> Animation {
+        if reduceMotion {
+            return .easeOut(duration: 0.05)
+        }
         if mode == .expanded {
             return .easeOut(duration: 0.12).delay(0.055)
         }
         return .easeOut(duration: 0.06)
+    }
+
+    static func featureContentAnimation(reduceMotion: Bool) -> Animation {
+        .easeInOut(duration: reduceMotion ? 0.05 : 0.14)
     }
 }
 
@@ -971,6 +995,8 @@ final class IslandModel: ObservableObject {
     )
     @Published var eventKitStatus = EventKitActivityStatus.current
     @Published var isVisible = true
+    @Published private(set) var reduceMotionEnabled = NSWorkspace.shared
+        .accessibilityDisplayShouldReduceMotion
 
     var appleMusicTransitionDiagnostic: String {
         musicAdapter.appleMusicTransitionReport()
@@ -1405,6 +1431,10 @@ final class IslandModel: ObservableObject {
         accessibilityTrusted = AXIsProcessTrusted()
         refreshNeteaseMusicStatus()
         refreshAppleMusicStatus()
+    }
+
+    func refreshAccessibilityDisplayOptions() {
+        reduceMotionEnabled = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     func refreshNeteaseMusicStatus() {
@@ -2428,6 +2458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
+    private var accessibilityDisplayObserver: NSObjectProtocol?
     private var outsideMouseMonitor: Any?
     private var hoverGlobalMouseMonitor: Any?
     private var hoverLocalMouseMonitor: Any?
@@ -2461,6 +2492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createStatusItem()
         observeModel()
         observeScreenChanges()
+        observeAccessibilityDisplayOptions()
         observeOutsideClicks()
         observeIslandHover()
         updatePanelVisibility()
@@ -2509,6 +2541,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let accessibilityDisplayObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityDisplayObserver)
         }
         hoverEnterTask?.cancel()
         hoverExitTask?.cancel()
@@ -2673,6 +2708,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 self?.updateScreenMetrics()
                 self?.repositionPanel(animated: false)
+            }
+        }
+    }
+
+    private func observeAccessibilityDisplayOptions() {
+        model.refreshAccessibilityDisplayOptions()
+        accessibilityDisplayObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.model.refreshAccessibilityDisplayOptions()
+                self.repositionPanel(animated: false)
             }
         }
     }
@@ -2999,7 +3049,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = panelSize(for: mode)
         let frame = panelFrame(for: size, on: screen)
 
-        guard animated else {
+        let animationDuration = IslandMotion.frameDuration(
+            for: mode,
+            reduceMotion: model.reduceMotionEnabled
+        )
+        guard animated, animationDuration > 0 else {
             _ = panelAnimationGate.beginAnimation()
             isPanelFrameAnimating = false
             panel.setFrame(frame, display: true)
@@ -3009,7 +3063,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let animationID = panelAnimationGate.beginAnimation()
-        let animationDuration = IslandMotion.duration(for: mode)
         isPanelFrameAnimating = true
 
         if model.isVisible {
@@ -3391,6 +3444,10 @@ private struct GeneralSettingsPane: View {
                 LabeledContent(
                     "提醒事项",
                     value: model.eventKitStatus.remindersAccess.displayName
+                )
+                LabeledContent(
+                    "减少动态效果",
+                    value: model.reduceMotionEnabled ? "已开启" : "已关闭"
                 )
 
                 HStack {
@@ -4059,13 +4116,22 @@ struct IslandRootView: View {
                 ) {
                     Color.clear
                 }
-                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
+                .animation(
+                    IslandMotion.geometryAnimation(
+                        for: model.mode,
+                        reduceMotion: model.reduceMotionEnabled
+                    ),
+                    value: model.mode
+                )
 
                 ZStack {
                     CollapsedIsland(model: model)
                         .opacity(model.mode == .collapsed ? 1 : 0)
                         .animation(
-                            IslandMotion.headerContentAnimation(for: model.mode),
+                            IslandMotion.headerContentAnimation(
+                                for: model.mode,
+                                reduceMotion: model.reduceMotionEnabled
+                            ),
                             value: model.mode
                         )
                         .allowsHitTesting(model.mode == .collapsed)
@@ -4074,7 +4140,10 @@ struct IslandRootView: View {
                     CompactIsland(model: model)
                         .opacity(model.mode == .compact ? 1 : 0)
                         .animation(
-                            IslandMotion.headerContentAnimation(for: model.mode),
+                            IslandMotion.headerContentAnimation(
+                                for: model.mode,
+                                reduceMotion: model.reduceMotionEnabled
+                            ),
                             value: model.mode
                         )
                         .allowsHitTesting(model.mode == .compact)
@@ -4083,19 +4152,33 @@ struct IslandRootView: View {
                     ExpandedIsland(model: model)
                         .opacity(model.mode == .expanded ? 1 : 0)
                         .animation(
-                            IslandMotion.headerContentAnimation(for: model.mode),
+                            IslandMotion.headerContentAnimation(
+                                for: model.mode,
+                                reduceMotion: model.reduceMotionEnabled
+                            ),
                             value: model.mode
                         )
                         .allowsHitTesting(model.mode == .expanded)
                         .accessibilityHidden(model.mode != .expanded)
                 }
                 .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
-                .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
+                .animation(
+                    IslandMotion.geometryAnimation(
+                        for: model.mode,
+                        reduceMotion: model.reduceMotionEnabled
+                    ),
+                    value: model.mode
+                )
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.easeInOut(duration: 0.14), value: model.activeFeature)
+        .animation(
+            IslandMotion.featureContentAnimation(
+                reduceMotion: model.reduceMotionEnabled
+            ),
+            value: model.activeFeature
+        )
     }
 }
 
@@ -4281,7 +4364,13 @@ struct ExpandedIslandBodyPanel: View {
                 Color.clear
             }
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-            .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
+            .animation(
+                IslandMotion.geometryAnimation(
+                    for: model.mode,
+                    reduceMotion: model.reduceMotionEnabled
+                ),
+                value: model.mode
+            )
 
             ZStack(alignment: .topTrailing) {
                 switch model.activeFeature {
@@ -4338,11 +4427,23 @@ struct ExpandedIslandBodyPanel: View {
             }
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
             .opacity(model.mode == .expanded ? 1 : 0)
-            .animation(IslandMotion.bodyContentAnimation(for: model.mode), value: model.mode)
+            .animation(
+                IslandMotion.bodyContentAnimation(
+                    for: model.mode,
+                    reduceMotion: model.reduceMotionEnabled
+                ),
+                value: model.mode
+            )
             .mask {
                 Rectangle()
                     .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-                    .animation(IslandMotion.geometryAnimation(for: model.mode), value: model.mode)
+                    .animation(
+                        IslandMotion.geometryAnimation(
+                            for: model.mode,
+                            reduceMotion: model.reduceMotionEnabled
+                        ),
+                        value: model.mode
+                    )
             }
             .allowsHitTesting(model.mode == .expanded)
         }

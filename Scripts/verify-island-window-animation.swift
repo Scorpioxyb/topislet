@@ -1,5 +1,6 @@
 #!/usr/bin/env swift
 
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -179,6 +180,25 @@ private func verifyWindowSizeInterpolation(
     }
 }
 
+private func verifyImmediateWindowSizeTransition(
+    _ samples: [WindowSample],
+    from startSize: CGSize,
+    to endSize: CGSize
+) throws {
+    let hasUnexpectedIntermediateFrame = samples.contains { sample in
+        let matchesStart = abs(sample.frame.width - startSize.width) <= 0.75
+            && abs(sample.frame.height - startSize.height) <= 0.75
+        let matchesEnd = abs(sample.frame.width - endSize.width) <= 0.75
+            && abs(sample.frame.height - endSize.height) <= 0.75
+        return !matchesStart && !matchesEnd
+    }
+    guard !hasUnexpectedIntermediateFrame else {
+        throw VerificationError.failed(
+            "开启减少动态效果后仍检测到窗口几何插值"
+        )
+    }
+}
+
 private func verifyStableWindowSize(
     _ samples: [WindowSample],
     expectedSize: CGSize
@@ -243,6 +263,7 @@ private func verifyHoverResponse(
 }
 
 private func run() throws {
+    let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     let originalPointer = CGEvent(source: nil)?.location ?? .zero
     CGAssociateMouseAndMouseCursorPosition(0)
     defer {
@@ -286,11 +307,19 @@ private func run() throws {
         expansion,
         initialSize: initial.frame.size
     )
-    try verifyWindowSizeInterpolation(
-        expansion,
-        from: initial.frame.size,
-        to: expanded.frame.size
-    )
+    if reduceMotion {
+        try verifyImmediateWindowSizeTransition(
+            expansion,
+            from: initial.frame.size,
+            to: expanded.frame.size
+        )
+    } else {
+        try verifyWindowSizeInterpolation(
+            expansion,
+            from: initial.frame.size,
+            to: expanded.frame.size
+        )
+    }
 
     let hoverPersistence = try sampleFrames(
         duration: hoverPersistenceDuration,
@@ -348,11 +377,19 @@ private func run() throws {
         expectedCenterX: expectedCenterX,
         expectedTop: expectedTop
     )
-    try verifyWindowSizeInterpolation(
-        collapse,
-        from: expanded.frame.size,
-        to: collapsed.frame.size
-    )
+    if reduceMotion {
+        try verifyImmediateWindowSizeTransition(
+            collapse,
+            from: expanded.frame.size,
+            to: collapsed.frame.size
+        )
+    } else {
+        try verifyWindowSizeInterpolation(
+            collapse,
+            from: expanded.frame.size,
+            to: collapsed.frame.size
+        )
+    }
 
     guard abs(collapsed.frame.width - initial.frame.width) <= 0.75,
           abs(collapsed.frame.height - initial.frame.height) <= 0.75 else {
@@ -360,6 +397,7 @@ private func run() throws {
     }
 
     print("顶屿单窗口动画验证通过")
+    print("减少动态效果: \(reduceMotion ? "开启" : "关闭")")
     print("窗口数量: 1")
     print("紧凑尺寸: \(Int(initial.frame.width))x\(Int(initial.frame.height))")
     print("展开尺寸: \(Int(expanded.frame.width))x\(Int(expanded.frame.height))")

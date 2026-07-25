@@ -300,6 +300,21 @@ func onlyLatestAnimationCompletionOwnsFinalGeometry() {
     #expect(!duplicateCompletion)
 }
 
+@Test("系统减少动态效果时窗口形变改为即时切换")
+func reducedMotionDisablesWindowGeometryAnimation() {
+    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: true) == 0)
+    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: true) == 0)
+    #expect(IslandMotion.geometryAnimation(for: .expanded, reduceMotion: true) == nil)
+    #expect(IslandMotion.geometryAnimation(for: .compact, reduceMotion: true) == nil)
+}
+
+@Test("关闭减少动态效果时保留原有窗口动画时长")
+func standardMotionKeepsExistingWindowAnimation() {
+    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: false) == 0.24)
+    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: false) == 0.18)
+    #expect(IslandMotion.geometryAnimation(for: .expanded, reduceMotion: false) != nil)
+}
+
 private extension IslandMode {
     static let allTestModes: [IslandMode] = [.collapsed, .compact, .expanded]
 }
