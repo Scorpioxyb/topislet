@@ -1108,6 +1108,13 @@ final class IslandModel: ObservableObject {
         )
     }
 
+    var canRecoverCurrentMusicControlPermission: Bool {
+        MusicControlPermissionRecoveryPolicy.allowsRecovery(
+            sourceBundleIdentifier: music.track.sourceBundleIdentifier,
+            accessibilityTrusted: accessibilityTrusted
+        )
+    }
+
     var collapsedWidth: CGFloat {
         notchWidth + collapsedWingWidth * 2
     }
@@ -1339,7 +1346,10 @@ final class IslandModel: ObservableObject {
     }
 
     func playPause() {
-        guard music.canPlayPause else { return }
+        guard music.canPlayPause else {
+            requestCurrentMusicControlPermissionIfNeeded()
+            return
+        }
         noteDirectControlInteraction()
         playPauseFeedbackGeneration &+= 1
         let previousSignature = musicSignature(music)
@@ -1367,7 +1377,10 @@ final class IslandModel: ObservableObject {
     }
 
     func nextTrack() {
-        guard music.canNextTrack else { return }
+        guard music.canNextTrack else {
+            requestCurrentMusicControlPermissionIfNeeded()
+            return
+        }
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
@@ -1412,7 +1425,10 @@ final class IslandModel: ObservableObject {
     }
 
     func previousTrack() {
-        guard music.canPreviousTrack else { return }
+        guard music.canPreviousTrack else {
+            requestCurrentMusicControlPermissionIfNeeded()
+            return
+        }
         noteDirectControlInteraction()
         pendingMusicSeek = nil
         let previousSignature = musicSignature(music)
@@ -1702,6 +1718,15 @@ final class IslandModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    private func requestCurrentMusicControlPermissionIfNeeded() {
+        guard canRecoverCurrentMusicControlPermission else { return }
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        accessibilityTrusted = AXIsProcessTrustedWithOptions(options)
+        if !accessibilityTrusted {
+            openAccessibilitySettings()
+        }
+    }
+
     func openAppleMusicAutomationSettings() {
         guard let url = URL(
             string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
@@ -1936,6 +1961,10 @@ final class IslandModel: ObservableObject {
     }
 
     private func tick() {
+        let trusted = AXIsProcessTrusted()
+        if trusted != accessibilityTrusted {
+            accessibilityTrusted = trusted
+        }
         let mediaUpdate = musicAdapter.tick(music)
         if isMusicScrubbing {
             if let status = mediaUpdate.sourceStatus,
@@ -4820,11 +4849,16 @@ struct ExpandedMusic: View {
                     ) {
                         model.previousTrack()
                     }
-                    .disabled(!model.music.canPreviousTrack)
+                    .disabled(
+                        !model.music.canPreviousTrack
+                            && !model.canRecoverCurrentMusicControlPermission
+                    )
                     .help(
                         model.music.canPreviousTrack
                             ? "上一首"
-                            : model.music.controlUnavailableReason ?? "上一首当前不可用"
+                            : model.canRecoverCurrentMusicControlPermission
+                                ? "授权后控制上一首"
+                                : model.music.controlUnavailableReason ?? "上一首当前不可用"
                     )
 
                     ControlButton(
@@ -4834,11 +4868,16 @@ struct ExpandedMusic: View {
                     ) {
                         model.playPause()
                     }
-                    .disabled(!model.music.canPlayPause)
+                    .disabled(
+                        !model.music.canPlayPause
+                            && !model.canRecoverCurrentMusicControlPermission
+                    )
                     .help(
                         model.music.canPlayPause
                             ? (model.music.isPlaying ? "暂停" : "播放")
-                            : model.music.controlUnavailableReason ?? "播放控制当前不可用"
+                            : model.canRecoverCurrentMusicControlPermission
+                                ? "授权后控制播放与暂停"
+                                : model.music.controlUnavailableReason ?? "播放控制当前不可用"
                     )
 
                     ControlButton(
@@ -4849,11 +4888,16 @@ struct ExpandedMusic: View {
                     ) {
                         model.nextTrack()
                     }
-                    .disabled(!model.music.canNextTrack)
+                    .disabled(
+                        !model.music.canNextTrack
+                            && !model.canRecoverCurrentMusicControlPermission
+                    )
                     .help(
                         model.music.canNextTrack
                             ? "下一首"
-                            : model.music.controlUnavailableReason ?? "下一首当前不可用"
+                            : model.canRecoverCurrentMusicControlPermission
+                                ? "授权后控制下一首"
+                                : model.music.controlUnavailableReason ?? "下一首当前不可用"
                     )
                 }
                 .frame(width: 224, alignment: .center)
