@@ -357,6 +357,14 @@ struct AppleMusicPlaybackControlExpectation: Equatable {
     }
 }
 
+enum MusicUsageHeartbeatPolicy {
+    static let interval: TimeInterval = 15 * 60
+
+    static func shouldRecord(lastRecordedAt: Date?, now: Date) -> Bool {
+        now.timeIntervalSince(lastRecordedAt ?? .distantPast) >= interval
+    }
+}
+
 @MainActor
 final class MusicAdapterCoordinator {
     private static let qishuiControlStructureNotifications: Set<String> = [
@@ -387,7 +395,6 @@ final class MusicAdapterCoordinator {
         subsystem: "io.github.scorpioxyb.topislet",
         category: "MusicUsage"
     )
-    private let usageHeartbeatInterval: TimeInterval = 15 * 60
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
@@ -2660,8 +2667,10 @@ final class MusicAdapterCoordinator {
 
     private func recordUsageHeartbeatIfNeeded(_ state: MusicState, now: Date = Date()) {
         guard isRealtimeObservationRunning,
-              now.timeIntervalSince(lastUsageHeartbeatAt ?? .distantPast)
-                >= usageHeartbeatInterval else { return }
+              MusicUsageHeartbeatPolicy.shouldRecord(
+                lastRecordedAt: lastUsageHeartbeatAt,
+                now: now
+              ) else { return }
         lastUsageHeartbeatAt = now
         let source = Self.sourceLabel(MusicSourceID(
             bundleIdentifier: state.track.sourceBundleIdentifier
