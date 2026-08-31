@@ -114,8 +114,13 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let controls: MusicUsageOutcomeSummary
     public let seeks: MusicUsageOutcomeSummary
     public let controlToTrackLatency: MusicUsageLatencySummary
+    public let controlToPlaybackUILatency: MusicUsageLatencySummary
+    public let playbackConfirmationLatency: MusicUsageLatencySummary
+    public let playbackConfirmationTimeoutCount: Int
     public let metadataToArtworkLatency: MusicUsageLatencySummary
     public let controlToArtworkLatency: MusicUsageLatencySummary
+    public let seekConfirmationLatency: MusicUsageLatencySummary
+    public let seekConfirmationTimeoutCount: Int
     public let anomalies: [String]
 }
 
@@ -123,6 +128,7 @@ public enum MusicUsageDailyAnalyzer {
     private struct PendingControl {
         let timestamp: Date
         let command: String
+        let targetPlayback: String?
     }
 
     private struct PendingArtwork {
@@ -151,10 +157,16 @@ public enum MusicUsageDailyAnalyzer {
         var controlLatencies: [Int] = []
         var seekLatencies: [Int] = []
         var controlToTrackLatencies: [Int] = []
+        var controlToPlaybackUILatencies: [Int] = []
+        var playbackConfirmationLatencies: [Int] = []
+        var playbackConfirmationTimeouts = 0
         var metadataToArtworkLatencies: [Int] = []
         var controlToArtworkLatencies: [Int] = []
+        var seekConfirmationLatencies: [Int] = []
+        var seekConfirmationTimeouts = 0
         var issuedControls: [String: PendingControl] = [:]
         var pendingTrackControlBySource: [String: PendingControl] = [:]
+        var pendingPlaybackControlBySource: [String: PendingControl] = [:]
         var pendingArtworkByTrack: [String: PendingArtwork] = [:]
         var lastUIPublishedTrackBySource: [String: String] = [:]
         var lastSourceChangeAt: Date?
@@ -190,12 +202,17 @@ public enum MusicUsageDailyAnalyzer {
                    let command = event.fields["command"] {
                     let pending = PendingControl(
                         timestamp: record.timestamp,
-                        command: command
+                        command: command,
+                        targetPlayback: event.fields["target_playback"]
                     )
                     issuedControls[request] = pending
-                    if let source = event.fields["source"],
-                       command == "next" || command == "previous" {
-                        pendingTrackControlBySource[source] = pending
+                    if let source = event.fields["source"] {
+                        if command == "next" || command == "previous" {
+                            pendingTrackControlBySource[source] = pending
+                        } else if command == "play_pause",
+                                  pending.targetPlayback != nil {
+                            pendingPlaybackControlBySource[source] = pending
+                        }
                     }
                 }
             case "control_result":
@@ -204,21 +221,31 @@ public enum MusicUsageDailyAnalyzer {
                 if let latency = integer(event.fields["latency_ms"]) {
                     controlLatencies.append(latency)
                 }
-                guard let source = event.fields["source"],
-                      let command = event.fields["command"],
-                      command == "next" || command == "previous" else { break }
                 let issued = event.fields["request"].flatMap {
                     issuedControls.removeValue(forKey: $0)
                 }
-                    ?? PendingControl(
+                guard let source = event.fields["source"],
+                      let command = event.fields["command"] else { break }
+                let resolvedIssued = issued ?? PendingControl(
                         timestamp: record.timestamp.addingTimeInterval(
                             -Double(integer(event.fields["latency_ms"]) ?? 0) / 1_000
                         ),
-                        command: command
+                        command: command,
+                        targetPlayback: event.fields["target_playback"]
                     )
+                if command == "play_pause" {
+                    if !accepted,
+                       pendingPlaybackControlBySource[source]?.timestamp
+                        == resolvedIssued.timestamp {
+                        pendingPlaybackControlBySource.removeValue(forKey: source)
+                    }
+                    break
+                }
+                guard command == "next" || command == "previous" else { break }
                 if accepted {
-                    pendingTrackControlBySource[source] = issued
-                } else if pendingTrackControlBySource[source]?.timestamp == issued.timestamp {
+                    pendingTrackControlBySource[source] = resolvedIssued
+                } else if pendingTrackControlBySource[source]?.timestamp
+                    == resolvedIssued.timestamp {
                     pendingTrackControlBySource.removeValue(forKey: source)
                 }
             case "seek_result":
@@ -239,9 +266,30 @@ public enum MusicUsageDailyAnalyzer {
                 }
             case "artwork_ready":
                 break
+            case "playback_confirmed":
+                if let latency = integer(event.fields["latency_ms"]) {
+                    playbackConfirmationLatencies.append(latency)
+                }
+            case "playback_confirmation_timeout":
+                playbackConfirmationTimeouts += 1
+            case "seek_confirmed":
+                if let latency = integer(event.fields["latency_ms"]) {
+                    seekConfirmationLatencies.append(latency)
+                }
+            case "seek_confirmation_timeout":
+                seekConfirmationTimeouts += 1
             case "ui_published":
                 guard let source = event.fields["source"],
                       let track = event.fields["track"] else { break }
+                if let pendingPlayback = pendingPlaybackControlBySource[source],
+                   event.fields["playback"] == pendingPlayback.targetPlayback,
+                   record.timestamp.timeIntervalSince(pendingPlayback.timestamp) <= 10 {
+                    controlToPlaybackUILatencies.append(milliseconds(
+                        from: pendingPlayback.timestamp,
+                        to: record.timestamp
+                    ))
+                    pendingPlaybackControlBySource.removeValue(forKey: source)
+                }
                 let isNewTrack = lastUIPublishedTrackBySource[source] != track
                 lastUIPublishedTrackBySource[source] = track
                 var didRecordControlArtwork = false
@@ -299,9 +347,15 @@ public enum MusicUsageDailyAnalyzer {
         if unresolvedArtworkCount > 0 {
             anomalies.append("artwork_unresolved=\(unresolvedArtworkCount)")
         }
+        if playbackConfirmationTimeouts > 0 {
+            anomalies.append("playback_confirmation_timeout=\(playbackConfirmationTimeouts)")
+        }
+        if seekConfirmationTimeouts > 0 {
+            anomalies.append("seek_confirmation_timeout=\(seekConfirmationTimeouts)")
+        }
 
         return MusicUsageDailySummary(
-            schemaVersion: 1,
+            schemaVersion: 2,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -327,8 +381,13 @@ public enum MusicUsageDailyAnalyzer {
                 latencies: seekLatencies
             ),
             controlToTrackLatency: latencySummary(controlToTrackLatencies),
+            controlToPlaybackUILatency: latencySummary(controlToPlaybackUILatencies),
+            playbackConfirmationLatency: latencySummary(playbackConfirmationLatencies),
+            playbackConfirmationTimeoutCount: playbackConfirmationTimeouts,
             metadataToArtworkLatency: latencySummary(metadataToArtworkLatencies),
             controlToArtworkLatency: latencySummary(controlToArtworkLatencies),
+            seekConfirmationLatency: latencySummary(seekConfirmationLatencies),
+            seekConfirmationTimeoutCount: seekConfirmationTimeouts,
             anomalies: anomalies
         )
     }

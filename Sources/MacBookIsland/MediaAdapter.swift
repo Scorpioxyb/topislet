@@ -611,23 +611,37 @@ final class MusicAdapterCoordinator {
         ))
         let commandLabel = Self.commandLabel(command)
         let startedAt = Date()
-        recordUsage("control_issued", fields: [
+        let targetPlayback: String?
+        if command == .playPause {
+            targetPlayback = selectedMusicState().isPlaying ? "paused" : "playing"
+        } else {
+            targetPlayback = nil
+        }
+        var issuedFields = [
             "command": commandLabel,
             "request": String(requestID),
             "source": source
-        ])
+        ]
+        if let targetPlayback {
+            issuedFields["target_playback"] = targetPlayback
+        }
+        recordUsage("control_issued", fields: issuedFields)
         let outcome = await performControlImplementation(
             command,
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
-        recordUsage("control_result", fields: [
+        var resultFields = [
             "command": commandLabel,
             "latency_ms": String(max(Int(Date().timeIntervalSince(startedAt) * 1_000), 0)),
             "outcome": outcome.didSendCommand ? "accepted" : "rejected",
             "request": String(requestID),
             "status": outcome.status.availability.rawValue,
             "source": source
-        ])
+        ]
+        if let targetPlayback {
+            resultFields["target_playback"] = targetPlayback
+        }
+        recordUsage("control_result", fields: resultFields)
         return outcome
     }
 
@@ -1231,6 +1245,48 @@ final class MusicAdapterCoordinator {
             .uiPublished,
             detail: "track=\(state.track.title) artist=\(state.track.artist) artworkBytes=\(artworkBytes) isPlaying=\(state.isPlaying)"
         )
+    }
+
+    func noteSeekConfirmed(
+        sourceBundleIdentifier: String?,
+        requestedAt: Date,
+        targetProgress: Double,
+        observedProgress: Double
+    ) {
+        recordUsage("seek_confirmed", fields: [
+            "latency_ms": String(max(
+                Int(Date().timeIntervalSince(requestedAt) * 1_000),
+                0
+            )),
+            "observed_permille": String(Int(
+                (min(max(observedProgress, 0), 1) * 1_000).rounded()
+            )),
+            "source": Self.sourceLabel(MusicSourceID(
+                bundleIdentifier: sourceBundleIdentifier
+            )),
+            "target_permille": String(Int(
+                (min(max(targetProgress, 0), 1) * 1_000).rounded()
+            ))
+        ])
+    }
+
+    func noteSeekConfirmationTimeout(
+        sourceBundleIdentifier: String?,
+        requestedAt: Date,
+        targetProgress: Double
+    ) {
+        recordUsage("seek_confirmation_timeout", fields: [
+            "latency_ms": String(max(
+                Int(Date().timeIntervalSince(requestedAt) * 1_000),
+                0
+            )),
+            "source": Self.sourceLabel(MusicSourceID(
+                bundleIdentifier: sourceBundleIdentifier
+            )),
+            "target_permille": String(Int(
+                (min(max(targetProgress, 0), 1) * 1_000).rounded()
+            ))
+        ])
     }
 
     func refreshPlaybackPositionNow() -> (music: MusicState, status: MusicSourceStatus) {
@@ -2326,7 +2382,8 @@ final class MusicAdapterCoordinator {
             break
         }
         if let expectation = pendingAppleMusicPlaybackControl {
-            switch expectation.resolution(for: snapshot, at: Date()) {
+            let now = Date()
+            switch expectation.resolution(for: snapshot, at: now) {
             case .reject:
                 appleMusicTransitionTimeline.record(
                     .snapshotRejected,
@@ -2334,6 +2391,36 @@ final class MusicAdapterCoordinator {
                 )
                 return .rejected
             case .acceptAndClear:
+                let matchesExpectedTrack = snapshot.instance == expectation.instance
+                    && snapshot.track?.identity == expectation.trackIdentity
+                if matchesExpectedTrack,
+                   snapshot.playbackState == expectation.targetState {
+                    recordUsage("playback_confirmed", fields: [
+                        "evidence": "apple_event",
+                        "latency_ms": String(max(
+                            Int(now.timeIntervalSince(expectation.issuedAt) * 1_000),
+                            0
+                        )),
+                        "source": "apple-music",
+                        "target_playback": Self.playbackStateLabel(
+                            expectation.targetState
+                        )
+                    ])
+                } else if matchesExpectedTrack,
+                          now.timeIntervalSince(expectation.issuedAt)
+                            >= AppleMusicPlaybackControlExpectation
+                                .staleSnapshotGraceInterval {
+                    recordUsage("playback_confirmation_timeout", fields: [
+                        "latency_ms": String(max(
+                            Int(now.timeIntervalSince(expectation.issuedAt) * 1_000),
+                            0
+                        )),
+                        "source": "apple-music",
+                        "target_playback": Self.playbackStateLabel(
+                            expectation.targetState
+                        )
+                    ])
+                }
                 clearAppleMusicPlaybackControlExpectation()
             }
         }
@@ -2361,6 +2448,14 @@ final class MusicAdapterCoordinator {
                   let self,
                   appleMusicControlGeneration == generation,
                   pendingAppleMusicPlaybackControl == expectation else { return }
+            self.recordUsage("playback_confirmation_timeout", fields: [
+                "latency_ms": String(max(
+                    Int(Date().timeIntervalSince(expectation.issuedAt) * 1_000),
+                    0
+                )),
+                "source": "apple-music",
+                "target_playback": Self.playbackStateLabel(expectation.targetState)
+            ])
             pendingAppleMusicPlaybackControl = nil
             appleMusicPlaybackExpectationTask = nil
             scheduleAppleMusicRefresh(force: true)
@@ -3619,7 +3714,9 @@ final class MusicAdapterCoordinator {
 
         return observePlaybackConfirmation(
             isPlaying: inferredQishuiIsPlaying,
-            operationID: operation.id
+            operationID: operation.id,
+            evidence: "ax_progress",
+            confirmedAt: checkedAt
         )
     }
 
@@ -3633,7 +3730,12 @@ final class MusicAdapterCoordinator {
               matches(track: track, identity: operation.trackIdentity),
               let isPlaying = track.isPlaying else { return }
 
-        let didAccept = observePlaybackConfirmation(isPlaying: isPlaying, operationID: operation.id)
+        let didAccept = observePlaybackConfirmation(
+            isPlaying: isPlaying,
+            operationID: operation.id,
+            evidence: "mediaremote",
+            confirmedAt: snapshot.checkedAt
+        )
         if didAccept {
             updateCachedPlaybackOverride(from: track, operation: operation, checkedAt: snapshot.checkedAt)
         }
@@ -3689,7 +3791,12 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func observePlaybackConfirmation(isPlaying: Bool, operationID: Int) -> Bool {
+    private func observePlaybackConfirmation(
+        isPlaying: Bool,
+        operationID: Int,
+        evidence: String,
+        confirmedAt: Date
+    ) -> Bool {
         guard var operation = pendingPlaybackOperation,
               operation.id == operationID else { return false }
 
@@ -3702,6 +3809,15 @@ final class MusicAdapterCoordinator {
             return false
         }
 
+        recordUsage("playback_confirmed", fields: [
+            "evidence": evidence,
+            "latency_ms": String(max(
+                Int(confirmedAt.timeIntervalSince(operation.issuedAt) * 1_000),
+                0
+            )),
+            "source": "qishui",
+            "target_playback": operation.targetIsPlaying ? "playing" : "paused"
+        ])
         finishPendingPlaybackOperation(id: operation.id)
         return true
     }
@@ -3723,6 +3839,17 @@ final class MusicAdapterCoordinator {
     }
 
     private func expirePendingPlaybackOperation(id: Int) {
+        if let operation = pendingPlaybackOperation,
+           operation.id == id {
+            recordUsage("playback_confirmation_timeout", fields: [
+                "latency_ms": String(max(
+                    Int(Date().timeIntervalSince(operation.issuedAt) * 1_000),
+                    0
+                )),
+                "source": "qishui",
+                "target_playback": operation.targetIsPlaying ? "playing" : "paused"
+            ])
+        }
         let timeoutStatus = MusicSourceStatus(
             sourceName: "汽水音乐",
             availability: .qishuiMediaRemoteCached,

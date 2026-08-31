@@ -876,7 +876,9 @@ private struct PendingIslandEvent: Equatable {
 
 private struct PendingMusicSeek {
     let trackSignature: String
+    let sourceBundleIdentifier: String?
     let targetProgress: Double
+    let requestedAt: Date
     let issuedAt: Date
     let isPlaying: Bool
     let expiresAt: Date
@@ -1751,6 +1753,7 @@ final class IslandModel: ObservableObject {
         let requestID = musicSeekRequestID
         let previousSignature = musicSignature(music)
         let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
+        let requestedAt = Date()
         let result = await musicAdapter.seek(
             to: progress,
             interaction: interaction,
@@ -1766,7 +1769,9 @@ final class IslandModel: ObservableObject {
         if didSeek {
             pendingMusicSeek = PendingMusicSeek(
                 trackSignature: musicSignature(result.music),
+                sourceBundleIdentifier: displayedSourceBundleIdentifier,
                 targetProgress: min(max(progress, 0), 1),
+                requestedAt: requestedAt,
                 issuedAt: Date(),
                 isPlaying: result.music.isPlaying,
                 expiresAt: Date().addingTimeInterval(3.5),
@@ -2402,8 +2407,17 @@ final class IslandModel: ObservableObject {
 
     private func reconcilePendingSeek(_ newMusic: MusicState) -> MusicState {
         guard var pendingSeek = pendingMusicSeek else { return newMusic }
-        guard Date() < pendingSeek.expiresAt,
-              musicSignature(newMusic) == pendingSeek.trackSignature else {
+        let now = Date()
+        guard now < pendingSeek.expiresAt else {
+            musicAdapter.noteSeekConfirmationTimeout(
+                sourceBundleIdentifier: pendingSeek.sourceBundleIdentifier,
+                requestedAt: pendingSeek.requestedAt,
+                targetProgress: pendingSeek.targetProgress
+            )
+            pendingMusicSeek = nil
+            return newMusic
+        }
+        guard musicSignature(newMusic) == pendingSeek.trackSignature else {
             pendingMusicSeek = nil
             return newMusic
         }
@@ -2414,10 +2428,15 @@ final class IslandModel: ObservableObject {
             min(max(pendingSeek.targetProgress + elapsedSinceSeek / max($0, 1), 0), 1)
         } ?? pendingSeek.targetProgress
         let tolerance = duration.map { max(0.75 / max($0, 1), 0.002) } ?? 0.01
-        let now = Date()
         if abs(newMusic.progress - expectedProgress) <= tolerance {
             if let matchingSince = pendingSeek.matchingSince,
                now.timeIntervalSince(matchingSince) >= 0.35 {
+                musicAdapter.noteSeekConfirmed(
+                    sourceBundleIdentifier: pendingSeek.sourceBundleIdentifier,
+                    requestedAt: pendingSeek.requestedAt,
+                    targetProgress: pendingSeek.targetProgress,
+                    observedProgress: newMusic.progress
+                )
                 pendingMusicSeek = nil
                 return newMusic
             }

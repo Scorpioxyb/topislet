@@ -7,7 +7,7 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.2-alpha.1 开发候选版**，正在验证汽水音乐进度跳转、单一音乐来源准入、安全媒体控制、Apple Music 与网易云音乐 Alpha 支持和顶部交互。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.2-alpha.2 开发候选版**，正在验证汽水音乐进度跳转、端到端控制确认、单一音乐来源准入、安全媒体控制、Apple Music 与网易云音乐 Alpha 支持和顶部交互。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
@@ -127,7 +127,7 @@ VERSION="0.1.2" bash Scripts/build-release.sh
 swift run DailyUsageAnalyzer --last 24h
 ```
 
-诊断命令不会主动申请权限。`DailyUsageAnalyzer` 只汇总本机 Unified Logging 中的结构化事件，默认把聚合报告写入 `.build/qa/`；曲目只使用 12 位截断哈希指纹，不记录完整歌名、歌手、歌词或封面。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。
+诊断命令不会主动申请权限。`DailyUsageAnalyzer` 只汇总本机 Unified Logging 中的结构化事件，默认把聚合报告写入 `.build/qa/`；可分别统计点击到 UI、播放器权威确认和 seek 真实收敛的延迟。曲目只使用 12 位截断哈希指纹，不记录完整歌名、歌手、歌词或封面。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。
 
 ## 开发
 

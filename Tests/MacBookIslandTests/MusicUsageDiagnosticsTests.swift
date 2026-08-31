@@ -85,6 +85,54 @@ func dailyAnalyzerCorrelatesControlTrackAndArtworkLatency() throws {
 }
 
 @Test
+func dailyAnalyzerSeparatesPlaybackUIAndAuthoritativeConfirmation() {
+    let start = Date(timeIntervalSince1970: 1_500)
+    let records = [
+        TimestampedMusicUsageEvent(
+            timestamp: start,
+            event: MusicUsageEvent(name: "control_issued", fields: [
+                "request": "8", "source": "qishui", "command": "play_pause",
+                "target_playback": "paused"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.025),
+            event: MusicUsageEvent(name: "ui_published", fields: [
+                "source": "qishui", "track": "abc123", "has_artwork": "1",
+                "playback": "paused"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.1),
+            event: MusicUsageEvent(name: "control_result", fields: [
+                "request": "8", "source": "qishui", "command": "play_pause",
+                "target_playback": "paused", "outcome": "accepted",
+                "latency_ms": "100"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.42),
+            event: MusicUsageEvent(name: "playback_confirmed", fields: [
+                "source": "qishui", "target_playback": "paused",
+                "latency_ms": "420"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(1),
+            event: MusicUsageEvent(name: "seek_confirmed", fields: [
+                "source": "qishui", "latency_ms": "680"
+            ])
+        )
+    ]
+    let summary = MusicUsageDailyAnalyzer.analyze(records, generatedAt: start)
+    #expect(summary.controlToPlaybackUILatency.p50Milliseconds == 25)
+    #expect(summary.playbackConfirmationLatency.p50Milliseconds == 420)
+    #expect(summary.playbackConfirmationTimeoutCount == 0)
+    #expect(summary.seekConfirmationLatency.p50Milliseconds == 680)
+    #expect(summary.seekConfirmationTimeoutCount == 0)
+}
+
+@Test
 func dailyAnalyzerReportsOnlyActionableAnomalies() {
     let start = Date(timeIntervalSince1970: 2_000)
     let records = [
@@ -105,9 +153,22 @@ func dailyAnalyzerReportsOnlyActionableAnomalies() {
             event: MusicUsageEvent(name: "seek_result", fields: [
                 "outcome": "rejected", "latency_ms": "20"
             ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.4),
+            event: MusicUsageEvent(name: "playback_confirmation_timeout")
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.5),
+            event: MusicUsageEvent(name: "seek_confirmation_timeout")
         )
     ]
     let summary = MusicUsageDailyAnalyzer.analyze(records, generatedAt: start)
     #expect(summary.rapidSourceSwitchCount == 1)
-    #expect(summary.anomalies == ["seek_rejected=1", "rapid_source_switch=1"])
+    #expect(summary.anomalies == [
+        "seek_rejected=1",
+        "rapid_source_switch=1",
+        "playback_confirmation_timeout=1",
+        "seek_confirmation_timeout=1"
+    ])
 }
