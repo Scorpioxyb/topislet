@@ -4,7 +4,7 @@
 
 - `swift build` 能通过。
 - `Scripts/package-app.sh` 能生成并安装 `/Applications/顶屿.app`。
-- `Scripts/build-release.sh` 能生成 `TopIslet-v0.1.1-arm64.dmg` 和对应 `.sha256`；DMG 可只读挂载，顶层包含“顶屿.app”与指向 `/Applications` 的快捷入口。
+- `Scripts/build-release.sh` 能生成 `TopIslet-v0.1.2-arm64.dmg` 和对应 `.sha256`；DMG 可只读挂载，顶层包含“顶屿.app”与指向 `/Applications` 的快捷入口。
 - 安装包的 `Info.plist` 包含 `CFBundleIconFile=IslandAppIcon`，`Contents/Resources/IslandAppIcon.icns` 存在，并在 Finder、程序坞和“关于”窗口显示新图标。
 - `codesign --verify --deep --strict --verbose=2 "/Applications/顶屿.app"` 通过。
 - `file "/Applications/顶屿.app/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"` 同时包含 `arm64` 和 `x86_64`。
@@ -99,7 +99,7 @@
 - 新旧汽水 PID 短暂并存时，异步歌手、专辑和封面补取必须绑定发起时的 session generation 与 PID；旧 PID 返回的同名歌曲元数据不得合并到当前曲目。
 - 进度条只使用汽水专属 MediaRemote Adapter 的可信 `elapsedTime / duration`；AX 列表时间不得覆盖主进度。
 - 播放中连续读取 `--adapter-status` 时，`elapsedTime` 和 `progress` 应稳定递增，不应倒退或跳到旧歌进度。
-- 当前版本进度条只读显示，不提供点击或拖动跳转；在汽水提供可定向 seek 前，不得调用系统全局 seek。
+- 汽水进度条在实时来源、唯一 PID、有效时长、系统媒体焦点和无竞争播放同时确认时支持点击 / 拖动跳转；任一条件不满足时保持只读，不发送全局 seek。
 
 ## QuickPlayer/QuickTime 并存回归
 
@@ -128,7 +128,7 @@
 
 ## 汽水专属控制
 
-- 汽水音乐单独播放时，播放/暂停、上一首、下一首都命中汽水；进度条保持只读显示。
+- 汽水音乐单独播放时，播放/暂停、上一首、下一首都命中汽水；实时来源满足安全门禁时进度条支持点击 / 拖动跳转，否则保持只读。
 - 汽水重启且从未被辅助功能工具扫描时，第一次播放控制也必须成功，不要求用户先打开汽水窗口或设置页。
 - `--qishui-control-diagnostic` 只读取 `AXManualAccessibility`，不得把 `false` 改为 `true`；属性已开启但仅扫描到不超过 8 个节点时，第一次真实控制应自动重建控件树，重建后输出唯一候选且不激活、移动或点击汽水窗口。
 - 抖音/QuickTime/浏览器视频播放时，播放/暂停、上一首、下一首仍应命中汽水语义控件；视频不能被暂停或切换。

@@ -7,9 +7,9 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.1-alpha.4 开发者预览版**，开发分支正在验证汽水音乐同步、安全媒体控制、Apple Music 与网易云音乐 Alpha 支持和顶部交互。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.2-alpha.1 开发候选版**，正在验证汽水音乐进度跳转、单一音乐来源准入、安全媒体控制、Apple Music 与网易云音乐 Alpha 支持和顶部交互。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
-项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [发布检查清单](Docs/RELEASE_CHECKLIST.md)。
+项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
 Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNING_AND_NOTARIZATION.md)；MediaRemote Adapter 的固定上游 commit、项目补丁和逐字节重建记录见 [供应链与可复现构建](Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md)。
 
@@ -18,7 +18,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 - 围绕 MacBook 摄像头区域显示折叠、紧凑和展开三种状态。
 - 读取汽水音乐的真实歌名、歌手、封面、播放状态与进度。
 - 汽水播放 / 暂停、上一首、下一首只触发汽水窗口内经过结构校验的唯一语义控件，不发送全局媒体键。
-- 进度条显示汽水专属可信进度；当前保持只读，不发送系统全局跳转命令。
+- 进度条显示汽水专属可信进度；在实时来源、唯一 PID、系统媒体焦点和无竞争播放均确认时支持点击 / 拖动跳转，校验失败则保持只读，避免误控其他播放器。
 - Apple Music Alpha 支持可读取歌曲、专辑封面、播放状态与进度，并通过定向 Apple Event 控制播放、切歌和绝对进度；电台曲目没有内嵌封面时，会在后台通过 Apple 公共目录精确匹配封面，不阻塞播放状态响应。前台切换到汽水或 Apple Music 时岛立即跟随，离开音乐应用后再按真实播放状态自动选择。
 - 网易云音乐 Alpha 支持按 `com.netease.163music` 当前 PID 定向读取歌曲、歌手、封面、播放状态和进度，并通过网易云进程内原生“控制”菜单执行播放 / 暂停、上一首和下一首；不使用系统当前媒体，也不会误控视频播放器。当前进度只读。
 - 音乐设置页分别显示支持等级、应用运行状态、权限、连接结果和最近同步状态；Apple Music 适配默认开启，也可随时关闭。
@@ -69,7 +69,7 @@ open "/Applications/顶屿.app"
 生成可分发候选包使用独立脚本：
 
 ```bash
-VERSION="0.1.1" bash Scripts/build-release.sh
+VERSION="0.1.2" bash Scripts/build-release.sh
 ```
 
 脚本会生成包含“顶屿.app”和“Applications”快捷入口的 arm64 DMG，以及对应的 SHA-256 校验和，不会自动发布到 GitHub。
@@ -106,7 +106,7 @@ VERSION="0.1.1" bash Scripts/build-release.sh
 - 网易云音乐当前不提供定向进度跳转；不同封面切歌本机实测约 `0.76s` 原子更新，同专辑同封面仍会保守执行双快照确认。
 - 除汽水、Apple Music 和网易云音乐外，其他媒体应用不会自动获得完整控制能力。
 - 项目依赖 macOS 非公开 MediaRemote 能力，系统更新可能导致兼容性变化。
-- 当前没有汽水专属定向 seek 接口，因此进度条保持只读。
+- 汽水尚未提供客户端专属 seek 接口；当前进度跳转是受保护的系统媒体焦点操作，只在来源、PID、实时状态和竞争播放校验全部通过时执行，不能宣称为真正的汽水定向 seek。
 - Developer ID 签名与 Apple 公证尚未完成，当前本机包只是 ad-hoc 签名开发包。
 - 已通过系统屏幕几何自动适配和 Air 13/15、Pro 14/16 测试矩阵；除当前 15 英寸 Air 外，其他机型仍需要真机截图完成最终像素级验收。
 
@@ -146,7 +146,7 @@ plutil -lint Packaging/Info.plist
 
 - 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - 安全问题请按 [SECURITY.md](SECURITY.md) 的方式私下报告。
-- 发布步骤和未完成门禁见 [Docs/RELEASE_CHECKLIST.md](Docs/RELEASE_CHECKLIST.md)。
+- 发布步骤和未完成门禁见 [Docs/RELEASE_CHECKLIST_0.1.2.md](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
 ## 许可证与第三方组件
 

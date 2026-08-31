@@ -18,6 +18,59 @@ private func candidate(
     )
 }
 
+@Test("来源仲裁在多播放器同时播放时只准入一个来源")
+func admissionPolicyAllowsOnlyOnePlayingSource() {
+    let candidates = [
+        candidate(.qishui, playback: .playing),
+        candidate(.neteaseMusic, playback: .playing),
+        candidate(.appleMusic, playback: .playing)
+    ]
+
+    let admitted = MusicSourceAdmissionPolicy.preferredSource(
+        current: nil,
+        qishui: candidates[0],
+        neteaseMusic: candidates[1],
+        appleMusic: candidates[2],
+        foregroundSource: nil
+    )
+
+    #expect(admitted == .qishui)
+    #expect(MusicSourceAdmissionPolicy.hasCompetingPlayback(
+        excluding: .qishui,
+        candidates: candidates
+    ))
+    #expect(MusicSourceAdmissionPolicy.hasCompetingPlayback(
+        excluding: .neteaseMusic,
+        candidates: candidates
+    ))
+}
+
+@Test("来源仲裁不把缓存播放态当作第二个正在播放来源")
+func admissionPolicyIgnoresCachedPlaybackAsCompetition() {
+    let candidates = [
+        candidate(.qishui, playback: .playing),
+        candidate(.appleMusic, playback: .playing, cached: true)
+    ]
+
+    #expect(!MusicSourceAdmissionPolicy.hasCompetingPlayback(
+        excluding: .qishui,
+        candidates: candidates
+    ))
+}
+
+@Test("前台已适配应用获得唯一来源准入")
+func foregroundSourceGetsExclusiveAdmission() {
+    let admitted = MusicSourceAdmissionPolicy.preferredSource(
+        current: .qishui,
+        qishui: candidate(.qishui, playback: .playing),
+        neteaseMusic: candidate(.neteaseMusic, playback: .playing),
+        appleMusic: candidate(.appleMusic, playback: .playing),
+        foregroundSource: .appleMusic
+    )
+
+    #expect(admitted == .appleMusic)
+}
+
 @Test("三来源同时播放时优先级为汽水、网易云、Apple Music")
 func threeSourcePlaybackPriorityIsStable() {
     let selector = MusicSourceSelector()

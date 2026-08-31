@@ -79,6 +79,10 @@ final class MediaRemoteAdapterStreamSource {
     typealias ChangeHandler = @MainActor @Sendable () -> Void
 
     private let qishuiBundleIdentifier = "com.soda.music"
+    private let seekCommandQueue = DispatchQueue(
+        label: "MacBookIsland.MediaRemoteSeek"
+    )
+    private var seekCommandGeneration = 0
     private var seekTimelineAnchor: MediaRemoteSeekTimelineAnchor?
     private var seekTimelineConfirmationTask: Task<Void, Never>?
     private var process: Process?
@@ -264,6 +268,7 @@ final class MediaRemoteAdapterStreamSource {
         retireProcessIdentifier: Bool = true
     ) {
         qishuiSessionGeneration &+= 1
+        invalidatePendingSeekRequests()
         if retireProcessIdentifier,
            let processIdentifier = pidValue(mergedPayload["processIdentifier"])
                ?? latestRawSnapshot?.currentTrack?.sourceProcessIdentifier {
@@ -289,6 +294,13 @@ final class MediaRemoteAdapterStreamSource {
         sampleOrigin = .unknown
         lastPlaybackEvidenceAt = nil
         lastPlaybackEvidenceTrackIdentity = nil
+    }
+
+    func invalidatePendingSeekRequests() {
+        seekCommandGeneration &+= 1
+        seekTimelineConfirmationTask?.cancel()
+        seekTimelineConfirmationTask = nil
+        clearSeekTimelineAnchor()
     }
 
     func refreshOnce() -> MediaRemoteNowPlayingSnapshot {
@@ -367,6 +379,73 @@ final class MediaRemoteAdapterStreamSource {
             requestSessionGeneration: requestSessionGeneration,
             expectedProcessIdentifier: expectedProcessIdentifier
         )
+    }
+
+    func seek(
+        to elapsedTime: TimeInterval,
+        coalescingDelayNanoseconds: UInt64
+    ) async -> Bool {
+        guard let paths = adapterPaths(),
+              elapsedTime.isFinite,
+              elapsedTime >= 0 else { return false }
+
+        seekCommandGeneration &+= 1
+        let generation = seekCommandGeneration
+        let currentTrack = latestRawSnapshot?.currentTrack ?? latestSnapshot?.currentTrack
+        let currentTrackIdentity = currentTrack.map(trackTimelineIdentity)
+        let positionMicros = max(
+            Int64((elapsedTime * 1_000_000).rounded()),
+            0
+        )
+
+        do {
+            try await Task.sleep(nanoseconds: coalescingDelayNanoseconds)
+        } catch {
+            return false
+        }
+        guard generation == seekCommandGeneration,
+              hasVerifiedQishuiClientState(),
+              let currentTrackIdentity else { return false }
+
+        let bundleIdentifier = qishuiBundleIdentifier
+        let expectedProcessIdentifier = runningQishuiProcessIdentifier()
+        guard expectedProcessIdentifier != nil else { return false }
+
+        let didSeek = await withCheckedContinuation { continuation in
+            seekCommandQueue.async {
+                let sourceIsStillQishui = Self.isCurrentQishuiPlaybackSource(
+                    script: paths.script,
+                    framework: paths.framework,
+                    bundleIdentifier: bundleIdentifier,
+                    expectedProcessIdentifier: expectedProcessIdentifier
+                )
+                let didSeek = sourceIsStillQishui && Self.runCommand(
+                    script: paths.script,
+                    framework: paths.framework,
+                    arguments: ["seek", "\(positionMicros)"]
+                )
+                continuation.resume(returning: didSeek)
+            }
+        }
+
+        guard didSeek, generation == seekCommandGeneration else {
+            return false
+        }
+
+        let now = Date()
+        seekTimelineAnchor = MediaRemoteSeekTimelineAnchor(
+            trackIdentity: currentTrackIdentity,
+            targetElapsedTime: elapsedTime,
+            elapsedTime: elapsedTime,
+            issuedAt: now,
+            updatedAt: now,
+            isPlaying: currentTrack?.isPlaying ?? true,
+            confirmationDeadline: now.addingTimeInterval(5),
+            didObserveTarget: false,
+            coherentSince: nil
+        )
+        scheduleSeekTimelineConfirmationTimeout(for: now)
+        return true
     }
 
     private func applyPlaybackPositionPayload(
@@ -1647,6 +1726,64 @@ final class MediaRemoteAdapterStreamSource {
         }
     }
 
+    nonisolated private static func runCommand(
+        script: URL,
+        framework: URL,
+        arguments: [String]
+    ) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [script.path, framework.path] + arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let deadline = Date().addingTimeInterval(2.0)
+            while process.isRunning, Date() < deadline {
+                usleep(20_000)
+            }
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+                return false
+            }
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated private static func isCurrentQishuiPlaybackSource(
+        script: URL,
+        framework: URL,
+        bundleIdentifier: String,
+        expectedProcessIdentifier: pid_t?
+    ) -> Bool {
+        guard let expectedProcessIdentifier,
+              let data = runGetData(
+                  script: script,
+                  framework: framework,
+                  bundleIdentifier: nil,
+                  includeArtwork: false
+              ),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let payload = object as? [String: Any],
+              payload["bundleIdentifier"] as? String == bundleIdentifier else {
+            return false
+        }
+
+        let processIdentifier: pid_t?
+        if let value = payload["processIdentifier"] as? NSNumber {
+            processIdentifier = value.int32Value
+        } else if let value = payload["processIdentifier"] as? String {
+            processIdentifier = Int32(value)
+        } else {
+            processIdentifier = nil
+        }
+        return processIdentifier == expectedProcessIdentifier
+    }
+
     nonisolated static func runGetDataForTesting(
         script: URL,
         includeArtwork: Bool
@@ -1843,6 +1980,12 @@ final class MediaRemoteAdapterStreamSource {
         return app.bundleIdentifier == qishuiBundleIdentifier
             || app.executableURL?.path.hasPrefix("/Applications/汽水音乐.app/") == true
             || app.bundleURL?.path.hasPrefix("/Applications/汽水音乐.app/") == true
+    }
+
+    private func runningQishuiProcessIdentifier() -> pid_t? {
+        let identifiers = runningQishuiProcessIdentifiersProvider()
+        guard identifiers.count == 1 else { return nil }
+        return identifiers.first
     }
 
     private func scheduleRestart(

@@ -8,6 +8,44 @@ func qishuiDedicatedReadCannotAuthorizeGlobalSeek() {
     #expect(!MusicAdapterRegistry.qishui.capabilities.contains(.absoluteSeek))
 }
 
+@Test("汽水受保护进度跳转只接受已验证且无竞争的实时状态")
+func guardedQishuiSeekRequiresExclusiveLiveState() {
+    #expect(QishuiSeekSafety.allowsGuardedSeek(
+        hasVerifiedQishuiSource: true,
+        hasCurrentTrack: true,
+        hasDuration: true,
+        isCached: false,
+        hasCompetingPlayback: false
+    ))
+    #expect(!QishuiSeekSafety.allowsGuardedSeek(
+        hasVerifiedQishuiSource: true,
+        hasCurrentTrack: true,
+        hasDuration: true,
+        isCached: false,
+        hasCompetingPlayback: true
+    ))
+    #expect(!QishuiSeekSafety.allowsGuardedSeek(
+        hasVerifiedQishuiSource: true,
+        hasCurrentTrack: true,
+        hasDuration: true,
+        isCached: true,
+        hasCompetingPlayback: false
+    ))
+    #expect(!QishuiSeekSafety.allowsGuardedSeek(
+        hasVerifiedQishuiSource: false,
+        hasCurrentTrack: true,
+        hasDuration: true,
+        isCached: false,
+        hasCompetingPlayback: false
+    ))
+}
+
+@Test("点击进度的合并窗口短于拖动窗口")
+func clickSeekUsesShorterCoalescingWindow() {
+    #expect(MusicSeekInteraction.click.coalescingDelayNanoseconds
+        < MusicSeekInteraction.drag.coalescingDelayNanoseconds)
+}
+
 @Test("暂停锚点保持用户点击时的位置")
 func pauseAnchorUsesRequestPosition() {
     let requestElapsed: TimeInterval = 42.0

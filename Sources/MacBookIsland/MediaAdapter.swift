@@ -46,17 +46,33 @@ enum MusicSeekInteraction {
     var coalescingDelayNanoseconds: UInt64 {
         switch self {
         case .click:
-            return 60_000_000
+            return 20_000_000
         case .drag:
-            return 180_000_000
+            return 90_000_000
         }
     }
 }
 
 enum QishuiSeekSafety {
-    // Even MRMediaRemoteSendCommandToPlayer routes seek through the system media
-    // focus on macOS 26.5.2. Keep Qishui read-only until it exposes targeted seek.
+    // The adapter's seek command still follows the system media focus. It is
+    // therefore only admitted after a fresh, PID-matched Qishui focus check.
     static let supportsTargetedSeek = false
+    static let supportsGuardedMediaFocusSeek = true
+
+    static func allowsGuardedSeek(
+        hasVerifiedQishuiSource: Bool,
+        hasCurrentTrack: Bool,
+        hasDuration: Bool,
+        isCached: Bool,
+        hasCompetingPlayback: Bool
+    ) -> Bool {
+        supportsGuardedMediaFocusSeek
+            && hasVerifiedQishuiSource
+            && hasCurrentTrack
+            && hasDuration
+            && !isCached
+            && !hasCompetingPlayback
+    }
 }
 
 enum NeteaseMusicVerificationPolicy {
@@ -1170,13 +1186,41 @@ final class MusicAdapterCoordinator {
         let binding = DisplayedMusicControlBinding(
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
-        if binding?.source == .appleMusic {
-            return await seekAppleMusic(
-                to: progress,
-                interaction: interaction
+        guard let binding else {
+            return (
+                selectedMusicState(),
+                MusicSourceStatus(
+                    sourceName: "顶屿",
+                    availability: .systemNowPlayingUnavailable,
+                    headline: "未执行进度跳转",
+                    detail: "岛当前显示的音乐来源不可识别；为避免控制其他应用，本次操作已取消。",
+                    checkedAt: Date()
+                )
             )
         }
-        if binding?.source == .neteaseMusic {
+        guard let authorization = MusicControlAuthorization(
+            binding: binding,
+            selection: selectedMusicSelection()
+        ) else {
+            return (
+                selectedMusicState(),
+                MusicSourceStatus(
+                    sourceName: "顶屿",
+                    availability: .systemNowPlayingUnavailable,
+                    headline: "已取消进度跳转",
+                    detail: "音乐来源已切换；旧进度跳转请求已取消。",
+                    checkedAt: Date()
+                )
+            )
+        }
+        if binding.source == .appleMusic {
+            return await seekAppleMusic(
+                to: progress,
+                interaction: interaction,
+                authorization: authorization
+            )
+        }
+        if binding.source == .neteaseMusic {
             let status = MusicSourceStatus(
                 sourceName: "网易云音乐",
                 availability: .neteaseMusicSynced,
@@ -1186,21 +1230,104 @@ final class MusicAdapterCoordinator {
             )
             return (neteaseMusicState(), status)
         }
-        _ = progress
-        _ = interaction
-        cachedStatus = MusicSourceStatus(
+
+        guard progress.isFinite,
+              (0...1).contains(progress),
+              let snapshot = latestMediaRemoteSnapshot,
+              snapshot.isVerifiedQishuiSource,
+              let track = snapshot.currentTrack,
+              let duration = track.duration,
+              duration > 0 else {
+            let status = MusicSourceStatus(
+                sourceName: "汽水实时适配器",
+                availability: .qishuiMediaRemoteSynced,
+                headline: "当前不能拖动进度",
+                detail: "汽水当前没有暴露可验证的歌曲时长或专属播放状态，进度条保持只读。",
+                checkedAt: Date()
+            )
+            return (currentQishuiMusicState(), status)
+        }
+
+        let isCached = snapshot.sampleOrigin == .cached
+            || cachedStatus.availability == .qishuiMediaRemoteCached
+        let hasCompetingPlayback = hasCompetingMusicPlayback(excluding: .qishui)
+        guard QishuiSeekSafety.allowsGuardedSeek(
+            hasVerifiedQishuiSource: snapshot.isVerifiedQishuiSource,
+            hasCurrentTrack: true,
+            hasDuration: true,
+            isCached: isCached,
+            hasCompetingPlayback: hasCompetingPlayback
+        ) else {
+            let detail = hasCompetingPlayback
+                ? "检测到其他已适配音乐源同时播放；为避免系统焦点跳转到错误播放器，进度条暂时保持只读。"
+                : "汽水当前处于缓存或未确认状态；为避免误控其他播放器，进度条暂时保持只读。"
+            let status = MusicSourceStatus(
+                sourceName: "汽水实时适配器",
+                availability: .qishuiMediaRemoteCached,
+                headline: "当前不能拖动进度",
+                detail: detail,
+                checkedAt: Date()
+            )
+            return (currentQishuiMusicState(), status)
+        }
+
+        guard authorization.isValid(for: selectedMusicSelection()) else {
+            return (
+                selectedMusicState(),
+                MusicSourceStatus(
+                    sourceName: "顶屿",
+                    availability: .systemNowPlayingUnavailable,
+                    headline: "已取消进度跳转",
+                    detail: "进度跳转发送前音乐来源已经切换；本次操作未执行。",
+                    checkedAt: Date()
+                )
+            )
+        }
+
+        let targetProgress = min(max(progress, 0), 1)
+        let targetElapsed = duration * targetProgress
+        let didSeek = await mediaRemoteAdapterStreamSource.seek(
+            to: targetElapsed,
+            coalescingDelayNanoseconds: interaction.coalescingDelayNanoseconds
+        )
+        guard authorization.isValid(for: selectedMusicSelection()) else {
+            return (
+                selectedMusicState(),
+                MusicSourceStatus(
+                    sourceName: "顶屿",
+                    availability: .systemNowPlayingUnavailable,
+                    headline: "已取消进度跳转",
+                    detail: "进度跳转完成前音乐来源已经切换；本次操作结果不进入当前岛。",
+                    checkedAt: Date()
+                )
+            )
+        }
+        let status = MusicSourceStatus(
             sourceName: "汽水实时适配器",
-            availability: .systemNowPlayingUnavailable,
-            headline: "当前不能拖动进度",
-            detail: "汽水音乐尚未提供可定向调用的进度跳转接口。为避免把操作发送给抖音等系统当前媒体，顶屿已停用全局进度跳转。",
+            availability: didSeek ? .qishuiControlSent : .qishuiMediaRemoteSynced,
+            headline: didSeek ? "已跳转播放进度" : "未跳转播放进度",
+            detail: didSeek
+                ? "已在汽水仍占用系统媒体焦点时发送跳转请求，等待实时状态确认。"
+                : "汽水系统媒体焦点校验未通过，未发送进度跳转。",
             checkedAt: Date()
         )
-        return (currentQishuiMusicState(), cachedStatus)
+        guard didSeek else {
+            return (currentQishuiMusicState(), status)
+        }
+
+        resetPendingPlaybackOperation(clearTimelineFloor: true)
+        var optimisticMusic = currentQishuiMusicState()
+        optimisticMusic.progress = targetProgress
+        optimisticMusic.elapsedTime = targetElapsed
+        optimisticMusic.duration = duration
+        cachedStatus = status
+        return (optimisticMusic, status)
     }
 
     private func seekAppleMusic(
         to progress: Double,
-        interaction: MusicSeekInteraction
+        interaction: MusicSeekInteraction,
+        authorization: MusicControlAuthorization
     ) async -> (music: MusicState, status: MusicSourceStatus) {
         guard appleMusicEnabled,
               progress.isFinite,
@@ -1228,7 +1355,8 @@ final class MusicAdapterCoordinator {
         guard appleMusicEnabled,
               AppleMusicAppAdapter.isRunning,
               latestAppleMusicSnapshot?.instance == instance,
-              latestAppleMusicSnapshot?.track?.identity == track.identity else {
+              latestAppleMusicSnapshot?.track?.identity == track.identity,
+              authorization.isValid(for: selectedMusicSelection()) else {
             let status = MusicSourceStatus(
                 sourceName: "Apple Music",
                 availability: .appleMusicSynced,
@@ -2228,6 +2356,7 @@ final class MusicAdapterCoordinator {
             foregroundSource: foregroundMusicSource
         )
         if selection.generation != previousSelection.generation {
+            mediaRemoteAdapterStreamSource.invalidatePendingSeekRequests()
             logger.notice(
                 "Music source changed from=\(Self.sourceLabel(previousSelection.source), privacy: .public) to=\(Self.sourceLabel(selection.source), privacy: .public) foreground=\(Self.sourceLabel(self.foregroundMusicSource), privacy: .public)"
             )
@@ -2329,6 +2458,19 @@ final class MusicAdapterCoordinator {
             hasTrack: hasTrack,
             playback: playback,
             isCached: cachedStatus.availability == .qishuiMediaRemoteCached
+        )
+    }
+
+    private func hasCompetingMusicPlayback(
+        excluding source: MusicSourceID
+    ) -> Bool {
+        MusicSourceAdmissionPolicy.hasCompetingPlayback(
+            excluding: source,
+            candidates: [
+                qishuiSourceCandidate(),
+                neteaseMusicSourceCandidate(),
+                appleMusicSourceCandidate()
+            ]
         )
     }
 
@@ -2745,6 +2887,14 @@ final class MusicAdapterCoordinator {
             let effectiveTrack = isCachedMediaFocus
                 ? cachedPlaybackTrack(from: liveTrack)
                 : liveTrack
+            let canGuardedSeek = QishuiSeekSafety.allowsGuardedSeek(
+                hasVerifiedQishuiSource: snapshot.isVerifiedQishuiSource,
+                hasCurrentTrack: true,
+                hasDuration: effectiveTrack.duration.map { $0 > 0 } ?? false,
+                isCached: isCachedMediaFocus
+                    || snapshot.sampleOrigin == .cached,
+                hasCompetingPlayback: hasCompetingMusicPlayback(excluding: .qishui)
+            )
             return MusicState(
                 track: realTrack(from: effectiveTrack, statusLine: statusLine),
                 isPlaying: effectiveTrack.isPlaying ?? false,
@@ -2752,9 +2902,7 @@ final class MusicAdapterCoordinator {
                 lyricIndex: 0,
                 elapsedTime: effectiveTrack.elapsedTime,
                 duration: effectiveTrack.duration,
-                canSeek: QishuiSeekSafety.supportsTargetedSeek
-                    && !isCachedMediaFocus
-                    && (effectiveTrack.duration.map { $0 > 0 } ?? false),
+                canSeek: canGuardedSeek,
                 isPlaybackPending: pendingPlaybackOperation != nil,
                 canPlayPause: controlsAvailable,
                 canPreviousTrack: controlsAvailable,

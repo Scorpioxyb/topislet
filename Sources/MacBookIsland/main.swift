@@ -5322,6 +5322,7 @@ struct ProgressPill: View {
 
     @State private var dragProgress: Double?
     @State private var isDragging = false
+    @State private var isPointerDown = false
     @State private var seekGeneration = 0
 
     private var displayedProgress: Double {
@@ -5360,43 +5361,55 @@ struct ProgressPill: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                SpatialTapGesture()
-                    .exclusively(before: DragGesture(minimumDistance: 3))
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        guard case let .second(drag) = value,
-                              onSeek != nil else { return }
-                        if !isDragging {
+                        guard onSeek != nil else { return }
+                        if !isPointerDown {
+                            isPointerDown = true
                             seekGeneration += 1
                         }
-                        isDragging = true
-                        dragProgress = min(max(drag.location.x / availableWidth, 0), 1)
-                        onPreviewChanged?(dragProgress)
+                        let hasMoved = abs(value.translation.width) >= 3
+                            || abs(value.translation.height) >= 3
+                        guard hasMoved else { return }
+                        if !isDragging {
+                            isDragging = true
+                        }
+                        let targetProgress = min(
+                            max(value.location.x / availableWidth, 0),
+                            1
+                        )
+                        dragProgress = targetProgress
+                        onPreviewChanged?(targetProgress)
                     }
                     .onEnded { value in
-                        switch value {
-                        case let .first(tap):
-                            guard onSeek != nil else { return }
-                            seekGeneration += 1
+                        guard onSeek != nil else {
+                            isPointerDown = false
                             isDragging = false
-                            let targetProgress = min(max(tap.location.x / availableWidth, 0), 1)
-                            dragProgress = targetProgress
-                            onPreviewChanged?(targetProgress)
-                            submitSeek(to: targetProgress, interaction: .click)
-                        case let .second(drag):
-                            let targetProgress = min(max(drag.location.x / availableWidth, 0), 1)
-                            dragProgress = targetProgress
-                            isDragging = false
-                            guard onSeek != nil else {
-                                dragProgress = nil
-                                onPreviewChanged?(nil)
-                                return
-                            }
-                            submitSeek(to: targetProgress, interaction: .drag)
+                            dragProgress = nil
+                            onPreviewChanged?(nil)
+                            return
                         }
+                        let targetProgress = min(
+                            max(value.location.x / availableWidth, 0),
+                            1
+                        )
+                        let interaction: MusicSeekInteraction = isDragging
+                            ? .drag
+                            : .click
+                        dragProgress = targetProgress
+                        onPreviewChanged?(targetProgress)
+                        isPointerDown = false
+                        isDragging = false
+                        submitSeek(to: targetProgress, interaction: interaction)
                     }
             )
         }
         .frame(width: width, height: onSeek == nil ? 4 : 22)
+        .onDisappear {
+            isPointerDown = false
+            isDragging = false
+            dragProgress = nil
+        }
     }
 
     private func submitSeek(to targetProgress: Double, interaction: MusicSeekInteraction) {

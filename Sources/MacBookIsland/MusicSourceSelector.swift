@@ -76,6 +76,94 @@ struct MusicControlAuthorization: Equatable, Sendable {
     }
 }
 
+enum MusicSourceAdmissionPolicy {
+    static func preferredSource(
+        current: MusicSourceID?,
+        qishui: MusicSourceCandidate,
+        neteaseMusic: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate,
+        foregroundSource: MusicSourceID?
+    ) -> MusicSourceID? {
+        if let foregroundSource,
+           candidate(
+               for: foregroundSource,
+               qishui: qishui,
+               neteaseMusic: neteaseMusic,
+               appleMusic: appleMusic
+           )?.isAvailable == true {
+            return foregroundSource
+        }
+
+        let qishuiPlaying = qishui.isSelectable
+            && qishui.playback == .playing
+            && !qishui.isCached
+        let neteaseMusicPlaying = neteaseMusic.isSelectable
+            && neteaseMusic.playback == .playing
+        let appleMusicPlaying = appleMusic.isSelectable
+            && appleMusic.playback == .playing
+
+        if qishuiPlaying {
+            return .qishui
+        }
+        if neteaseMusicPlaying {
+            return .neteaseMusic
+        }
+        if appleMusicPlaying {
+            return .appleMusic
+        }
+
+        if let current,
+           candidate(
+               for: current,
+               qishui: qishui,
+               neteaseMusic: neteaseMusic,
+               appleMusic: appleMusic
+           )?.isSelectable == true {
+            return current
+        }
+        if qishui.isSelectable {
+            return .qishui
+        }
+        if neteaseMusic.isSelectable {
+            return .neteaseMusic
+        }
+        if appleMusic.isSelectable {
+            return .appleMusic
+        }
+        return nil
+    }
+
+    static func hasCompetingPlayback(
+        excluding source: MusicSourceID,
+        candidates: [MusicSourceCandidate]
+    ) -> Bool {
+        candidates.contains { candidate in
+            candidate.source != source
+                && candidate.isSelectable
+                && candidate.playback == .playing
+                && !candidate.isCached
+        }
+    }
+
+    private static func candidate(
+        for source: MusicSourceID?,
+        qishui: MusicSourceCandidate,
+        neteaseMusic: MusicSourceCandidate,
+        appleMusic: MusicSourceCandidate
+    ) -> MusicSourceCandidate? {
+        switch source {
+        case .qishui:
+            return qishui
+        case .neteaseMusic:
+            return neteaseMusic
+        case .appleMusic:
+            return appleMusic
+        case nil:
+            return nil
+        }
+    }
+}
+
 final class MusicSourceSelector {
     static let qishuiSwitchDelay: TimeInterval = 0.2
     static let neteaseMusicSwitchDelay: TimeInterval = 0.25
@@ -104,7 +192,7 @@ final class MusicSourceSelector {
             neteaseMusic: neteaseMusic,
             appleMusic: appleMusic
         )
-        let preferred = preferredSource(
+        let preferred = MusicSourceAdmissionPolicy.preferredSource(
             current: selection.source,
             qishui: qishui,
             neteaseMusic: neteaseMusic,
@@ -145,62 +233,6 @@ final class MusicSourceSelector {
             return selection
         }
         return commit(preferred)
-    }
-
-    private func preferredSource(
-        current: MusicSourceID?,
-        qishui: MusicSourceCandidate,
-        neteaseMusic: MusicSourceCandidate,
-        appleMusic: MusicSourceCandidate,
-        foregroundSource: MusicSourceID?
-    ) -> MusicSourceID? {
-        if let foregroundSource,
-           candidate(
-               for: foregroundSource,
-               qishui: qishui,
-               neteaseMusic: neteaseMusic,
-               appleMusic: appleMusic
-           )?.isAvailable == true {
-            return foregroundSource
-        }
-
-        let qishuiPlaying = qishui.isSelectable
-            && qishui.playback == .playing
-            && !qishui.isCached
-        let appleMusicPlaying = appleMusic.isSelectable
-            && appleMusic.playback == .playing
-        let neteaseMusicPlaying = neteaseMusic.isSelectable
-            && neteaseMusic.playback == .playing
-
-        if qishuiPlaying {
-            return .qishui
-        }
-        if neteaseMusicPlaying {
-            return .neteaseMusic
-        }
-        if appleMusicPlaying {
-            return .appleMusic
-        }
-
-        if let current,
-           candidate(
-               for: current,
-               qishui: qishui,
-               neteaseMusic: neteaseMusic,
-               appleMusic: appleMusic
-           )?.isSelectable == true {
-            return current
-        }
-        if qishui.isSelectable {
-            return .qishui
-        }
-        if neteaseMusic.isSelectable {
-            return .neteaseMusic
-        }
-        if appleMusic.isSelectable {
-            return .appleMusic
-        }
-        return nil
     }
 
     private func candidate(
