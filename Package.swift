@@ -10,12 +10,13 @@ let package = Package(
     products: [
         .executable(name: "MacBookIsland", targets: ["MacBookIsland"]),
         .executable(name: "QishuiProbe", targets: ["QishuiProbe"]),
-        .executable(name: "QishuiStateProbe", targets: ["QishuiStateProbe"])
+        .executable(name: "QishuiStateProbe", targets: ["QishuiStateProbe"]),
+        .executable(name: "DailyUsageAnalyzer", targets: ["DailyUsageAnalyzer"])
     ],
     targets: [
         .executableTarget(
             name: "MacBookIsland",
-            dependencies: ["AppleMusicBridge"]
+            dependencies: ["AppleMusicBridge", "MusicUsageDiagnostics"]
         ),
         .target(
             name: "AppleMusicBridge",
@@ -25,11 +26,20 @@ let package = Package(
                 .linkedFramework("ScriptingBridge")
             ]
         ),
+        .target(name: "MusicUsageDiagnostics"),
+        .executableTarget(
+            name: "DailyUsageAnalyzer",
+            dependencies: ["MusicUsageDiagnostics"]
+        ),
         .executableTarget(name: "QishuiProbe"),
         .executableTarget(name: "QishuiStateProbe"),
         .testTarget(
             name: "MacBookIslandTests",
-            dependencies: ["MacBookIsland", "AppleMusicBridge"]
+            dependencies: [
+                "MacBookIsland",
+                "AppleMusicBridge",
+                "MusicUsageDiagnostics"
+            ]
         )
     ]
 )

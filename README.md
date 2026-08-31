@@ -124,9 +124,10 @@ VERSION="0.1.2" bash Scripts/build-release.sh
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --eventkit-status
 .build/debug/MacBookIsland --display-geometry
+swift run DailyUsageAnalyzer --last 24h
 ```
 
-诊断命令不会主动申请权限。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。
+诊断命令不会主动申请权限。`DailyUsageAnalyzer` 只汇总本机 Unified Logging 中的结构化事件，默认把聚合报告写入 `.build/qa/`；曲目只使用 12 位截断哈希指纹，不记录完整歌名、歌手、歌词或封面。开发调查记录见 [汽水适配说明](Docs/qishui-adapter-notes.md)。
 
 ## 开发
 

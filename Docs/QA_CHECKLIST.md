@@ -213,4 +213,9 @@
 .build/debug/MacBookIsland --mediaremote-status
 .build/debug/MacBookIsland --eventkit-status
 pgrep -af 'mediaremote-adapter.pl.*stream-client.*com.soda.music'
+swift run DailyUsageAnalyzer --last 24h
 ```
+
+- 日常使用分析只读取 `io.github.scorpioxyb.topislet` 的本机 Unified Logging，默认输出到 `.build/qa/`。
+- 报告必须包含结构化事件数、来源快速切换、控制 / seek 成功率，以及切歌 UI 与封面延迟；测试汇报只列通过数量和异常。
+- 日志不得包含完整歌名、歌手、歌词、封面数据、账号标识或用户文件路径。

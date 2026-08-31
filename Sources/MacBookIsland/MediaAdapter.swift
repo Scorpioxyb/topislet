@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import MusicUsageDiagnostics
 import OSLog
 import SwiftUI
 
@@ -382,6 +383,10 @@ final class MusicAdapterCoordinator {
         subsystem: "io.github.scorpioxyb.topislet",
         category: "MusicAdapter"
     )
+    private let usageLogger = Logger(
+        subsystem: "io.github.scorpioxyb.topislet",
+        category: "MusicUsage"
+    )
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
@@ -432,6 +437,15 @@ final class MusicAdapterCoordinator {
     private var pendingAppleMusicPlaybackControl: AppleMusicPlaybackControlExpectation?
     private var appleMusicPlaybackExpectationTask: Task<Void, Never>?
     private var lastAppleMusicUIPublishFingerprint: String?
+    private var usageObservationStartedAt: Date?
+    private var usageRequestID: UInt64 = 0
+    private var lastUsageTrackFingerprint: String?
+    private var lastUsageTrackSource = "none"
+    private var lastUsageTrackHadArtwork = false
+    private var usageArtworkPendingSince: [String: Date] = [:]
+    private var lastUsagePlaybackFingerprint: String?
+    private var lastUsageSyncFingerprint: String?
+    private var lastUsageUIPublishFingerprint: String?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -455,6 +469,9 @@ final class MusicAdapterCoordinator {
     }
 
     func startRealtimeObservation(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
+        let now = Date()
+        usageObservationStartedAt = now
+        recordUsage("observation_start")
         isRealtimeObservationRunning = true
         realtimeUpdateHandler = onUpdate
         startQishuiLifecycleObservation()
@@ -479,6 +496,13 @@ final class MusicAdapterCoordinator {
     }
 
     func stopRealtimeObservation() {
+        let durationMilliseconds = usageObservationStartedAt.map {
+            max(Int(Date().timeIntervalSince($0) * 1_000), 0)
+        } ?? 0
+        recordUsage("observation_stop", fields: [
+            "duration_ms": String(durationMilliseconds)
+        ])
+        usageObservationStartedAt = nil
         isRealtimeObservationRunning = false
         realtimeUpdateHandler = nil
         stopQishuiLifecycleObservation()
@@ -577,6 +601,37 @@ final class MusicAdapterCoordinator {
     }
 
     func performControl(
+        _ command: MusicControlCommand,
+        displayedSourceBundleIdentifier: String?
+    ) async -> MusicControlOutcome {
+        usageRequestID &+= 1
+        let requestID = usageRequestID
+        let source = Self.sourceLabel(MusicSourceID(
+            bundleIdentifier: displayedSourceBundleIdentifier
+        ))
+        let commandLabel = Self.commandLabel(command)
+        let startedAt = Date()
+        recordUsage("control_issued", fields: [
+            "command": commandLabel,
+            "request": String(requestID),
+            "source": source
+        ])
+        let outcome = await performControlImplementation(
+            command,
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        )
+        recordUsage("control_result", fields: [
+            "command": commandLabel,
+            "latency_ms": String(max(Int(Date().timeIntervalSince(startedAt) * 1_000), 0)),
+            "outcome": outcome.didSendCommand ? "accepted" : "rejected",
+            "request": String(requestID),
+            "status": outcome.status.availability.rawValue,
+            "source": source
+        ])
+        return outcome
+    }
+
+    private func performControlImplementation(
         _ command: MusicControlCommand,
         displayedSourceBundleIdentifier: String?
     ) async -> MusicControlOutcome {
@@ -1128,6 +1183,36 @@ final class MusicAdapterCoordinator {
     }
 
     func noteMusicUIPublished(_ state: MusicState) {
+        if state.hasCurrentTrack {
+            let source = Self.sourceLabel(MusicSourceID(
+                bundleIdentifier: state.track.sourceBundleIdentifier
+            ))
+            let trackFingerprint = MusicUsageTrackFingerprint.make(
+                source: source,
+                title: state.track.title,
+                artist: state.track.artist
+            )
+            let hasArtwork = state.track.hasArtwork
+                || state.track.artworkData != nil
+                || state.track.artworkURL != nil
+            let uiFingerprint = [
+                source,
+                trackFingerprint,
+                hasArtwork ? "artwork" : "no-artwork",
+                state.isPlaying ? "playing" : "paused"
+            ].joined(separator: ":")
+            if uiFingerprint != lastUsageUIPublishFingerprint {
+                lastUsageUIPublishFingerprint = uiFingerprint
+                recordUsage("ui_published", fields: [
+                    "has_artwork": hasArtwork ? "1" : "0",
+                    "playback": state.isPlaying ? "playing" : "paused",
+                    "source": source,
+                    "track": trackFingerprint
+                ])
+            }
+        } else {
+            lastUsageUIPublishFingerprint = nil
+        }
         guard state.track.sourceBundleIdentifier
             == MusicAdapterRegistry.appleMusic.descriptor.bundleIdentifier else {
             lastAppleMusicUIPublishFingerprint = nil
@@ -1179,6 +1264,41 @@ final class MusicAdapterCoordinator {
     }
 
     func seek(
+        to progress: Double,
+        interaction: MusicSeekInteraction,
+        displayedSourceBundleIdentifier: String?
+    ) async -> (music: MusicState, status: MusicSourceStatus) {
+        usageRequestID &+= 1
+        let requestID = usageRequestID
+        let source = Self.sourceLabel(MusicSourceID(
+            bundleIdentifier: displayedSourceBundleIdentifier
+        ))
+        let startedAt = Date()
+        recordUsage("seek_issued", fields: [
+            "interaction": Self.seekInteractionLabel(interaction),
+            "request": String(requestID),
+            "source": source,
+            "target_permille": String(Int((min(max(progress, 0), 1) * 1_000).rounded()))
+        ])
+        let result = await performSeek(
+            to: progress,
+            interaction: interaction,
+            displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
+        )
+        let accepted = result.status.availability == .qishuiControlSent
+            || result.status.availability == .appleMusicControlSent
+        recordUsage("seek_result", fields: [
+            "interaction": Self.seekInteractionLabel(interaction),
+            "latency_ms": String(max(Int(Date().timeIntervalSince(startedAt) * 1_000), 0)),
+            "outcome": accepted ? "accepted" : "rejected",
+            "request": String(requestID),
+            "status": result.status.availability.rawValue,
+            "source": source
+        ])
+        return result
+    }
+
+    private func performSeek(
         to progress: Double,
         interaction: MusicSeekInteraction,
         displayedSourceBundleIdentifier: String?
@@ -1558,6 +1678,7 @@ final class MusicAdapterCoordinator {
         realtimeRefreshInFlight = true
         _ = refreshSourceStatus()
         let update = selectedMusicUpdate()
+        recordUsageState(update.music, status: update.sourceStatus)
         onUpdate(update.music, update.sourceStatus)
         realtimeRefreshInFlight = false
 
@@ -1571,6 +1692,7 @@ final class MusicAdapterCoordinator {
 
     private func publishCurrentState() {
         let update = selectedMusicUpdate()
+        recordUsageState(update.music, status: update.sourceStatus)
         realtimeUpdateHandler?(update.music, update.sourceStatus)
     }
 
@@ -1731,6 +1853,11 @@ final class MusicAdapterCoordinator {
                    }) {
                     return
                 }
+                self.recordUsage("source_process", fields: [
+                    "lifecycle": "terminate",
+                    "pid": String(terminatedApplication?.processIdentifier ?? 0),
+                    "source": Self.sourceLabel(source)
+                ])
                 if self.foregroundMusicSource == source {
                     self.foregroundMusicSource = nil
                 }
@@ -1765,13 +1892,19 @@ final class MusicAdapterCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            let bundleIdentifier = (
+            let launchedApplication = (
                 notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication
-            )?.bundleIdentifier
+            )
+            let bundleIdentifier = launchedApplication?.bundleIdentifier
             guard let source = Self.musicSourceID(for: bundleIdentifier) else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.recordUsage("source_process", fields: [
+                    "lifecycle": "launch",
+                    "pid": String(launchedApplication?.processIdentifier ?? 0),
+                    "source": Self.sourceLabel(source)
+                ])
                 switch source {
                 case .qishui:
                     self.lastSourceRefreshAt = nil
@@ -2360,6 +2493,22 @@ final class MusicAdapterCoordinator {
             logger.notice(
                 "Music source changed from=\(Self.sourceLabel(previousSelection.source), privacy: .public) to=\(Self.sourceLabel(selection.source), privacy: .public) foreground=\(Self.sourceLabel(self.foregroundMusicSource), privacy: .public)"
             )
+            let reason: String
+            if selection.source != nil,
+               selection.source == foregroundMusicSource {
+                reason = "foreground"
+            } else if selection.source == nil {
+                reason = "unavailable"
+            } else {
+                reason = "admission"
+            }
+            recordUsage("source_change", fields: [
+                "foreground": Self.sourceLabel(foregroundMusicSource),
+                "from": Self.sourceLabel(previousSelection.source),
+                "generation": String(selection.generation),
+                "reason": reason,
+                "to": Self.sourceLabel(selection.source)
+            ])
         }
         return selection
     }
@@ -2378,6 +2527,121 @@ final class MusicAdapterCoordinator {
             return "apple-music"
         case nil:
             return "none"
+        }
+    }
+
+    nonisolated private static func commandLabel(_ command: MusicControlCommand) -> String {
+        switch command {
+        case .playPause:
+            return "play_pause"
+        case .nextTrack:
+            return "next"
+        case .previousTrack:
+            return "previous"
+        }
+    }
+
+    nonisolated private static func seekInteractionLabel(
+        _ interaction: MusicSeekInteraction
+    ) -> String {
+        switch interaction {
+        case .click:
+            return "click"
+        case .drag:
+            return "drag"
+        }
+    }
+
+    private func recordUsage(_ name: String, fields: [String: String] = [:]) {
+        let message = MusicUsageEvent(name: name, fields: fields).encodedMessage
+        usageLogger.notice("\(message, privacy: .public)")
+    }
+
+    private func recordUsageState(
+        _ state: MusicState,
+        status: MusicSourceStatus
+    ) {
+        let sourceID = MusicSourceID(
+            bundleIdentifier: state.track.sourceBundleIdentifier
+        ) ?? musicSourceSelector.selection.source
+        let source = Self.sourceLabel(sourceID)
+        let syncFingerprint = "\(source):\(status.availability.rawValue)"
+        if syncFingerprint != lastUsageSyncFingerprint {
+            lastUsageSyncFingerprint = syncFingerprint
+            recordUsage("sync_state", fields: [
+                "source": source,
+                "status": status.availability.rawValue
+            ])
+        }
+
+        guard state.hasCurrentTrack else {
+            if let previousTrack = lastUsageTrackFingerprint {
+                recordUsage("track_empty", fields: [
+                    "source": lastUsageTrackSource,
+                    "track": previousTrack
+                ])
+            }
+            lastUsageTrackFingerprint = nil
+            lastUsageTrackSource = source
+            lastUsageTrackHadArtwork = false
+            lastUsagePlaybackFingerprint = nil
+            return
+        }
+
+        let trackFingerprint = MusicUsageTrackFingerprint.make(
+            source: source,
+            title: state.track.title,
+            artist: state.track.artist
+        )
+        let artworkKey = "\(source):\(trackFingerprint)"
+        let hasArtwork = state.track.hasArtwork
+            || state.track.artworkData != nil
+            || state.track.artworkURL != nil
+        let didChangeTrack = trackFingerprint != lastUsageTrackFingerprint
+            || source != lastUsageTrackSource
+        if didChangeTrack {
+            lastUsageTrackFingerprint = trackFingerprint
+            lastUsageTrackSource = source
+            lastUsageTrackHadArtwork = hasArtwork
+            if !hasArtwork {
+                usageArtworkPendingSince[artworkKey] = Date()
+                while usageArtworkPendingSince.count > 12,
+                      let oldest = usageArtworkPendingSince.min(
+                        by: { $0.value < $1.value }
+                      )?.key {
+                    usageArtworkPendingSince.removeValue(forKey: oldest)
+                }
+            }
+            recordUsage("track_changed", fields: [
+                "can_seek": state.canSeek ? "1" : "0",
+                "has_artist": state.track.artist.isEmpty ? "0" : "1",
+                "has_artwork": hasArtwork ? "1" : "0",
+                "has_duration": state.duration != nil ? "1" : "0",
+                "has_lyrics": state.track.lyrics.isEmpty ? "0" : "1",
+                "playback": state.isPlaying ? "playing" : "paused",
+                "source": source,
+                "track": trackFingerprint
+            ])
+        } else if hasArtwork, !lastUsageTrackHadArtwork {
+            let latencyMilliseconds = usageArtworkPendingSince
+                .removeValue(forKey: artworkKey)
+                .map { max(Int(Date().timeIntervalSince($0) * 1_000), 0) }
+            lastUsageTrackHadArtwork = true
+            recordUsage("artwork_ready", fields: [
+                "latency_ms": String(latencyMilliseconds ?? 0),
+                "source": source,
+                "track": trackFingerprint
+            ])
+        }
+
+        let playbackFingerprint = "\(source):\(trackFingerprint):\(state.isPlaying)"
+        if playbackFingerprint != lastUsagePlaybackFingerprint {
+            lastUsagePlaybackFingerprint = playbackFingerprint
+            recordUsage("playback_state", fields: [
+                "source": source,
+                "state": state.isPlaying ? "playing" : "paused",
+                "track": trackFingerprint
+            ])
         }
     }
 
