@@ -387,6 +387,7 @@ final class MusicAdapterCoordinator {
         subsystem: "io.github.scorpioxyb.topislet",
         category: "MusicUsage"
     )
+    private let usageHeartbeatInterval: TimeInterval = 15 * 60
     private let automaticRefreshInterval: TimeInterval = 5.0
     private let playbackPositionRefreshInterval: TimeInterval = 2.0
     private var latestQishuiSnapshot: QishuiDirectSnapshot?
@@ -438,6 +439,7 @@ final class MusicAdapterCoordinator {
     private var appleMusicPlaybackExpectationTask: Task<Void, Never>?
     private var lastAppleMusicUIPublishFingerprint: String?
     private var usageObservationStartedAt: Date?
+    private var lastUsageHeartbeatAt: Date?
     private var usageRequestID: UInt64 = 0
     private var lastUsageTrackFingerprint: String?
     private var lastUsageTrackSource = "none"
@@ -471,6 +473,7 @@ final class MusicAdapterCoordinator {
     func startRealtimeObservation(onUpdate: @escaping (MusicState, MusicSourceStatus) -> Void) {
         let now = Date()
         usageObservationStartedAt = now
+        lastUsageHeartbeatAt = now
         recordUsage("observation_start")
         isRealtimeObservationRunning = true
         realtimeUpdateHandler = onUpdate
@@ -503,6 +506,7 @@ final class MusicAdapterCoordinator {
             "duration_ms": String(durationMilliseconds)
         ])
         usageObservationStartedAt = nil
+        lastUsageHeartbeatAt = nil
         isRealtimeObservationRunning = false
         realtimeUpdateHandler = nil
         stopQishuiLifecycleObservation()
@@ -1181,7 +1185,9 @@ final class MusicAdapterCoordinator {
                 minimumInterval: verificationInterval
             )
         }
-        return selectedMusicUpdate(for: selectedSource)
+        let update = selectedMusicUpdate(for: selectedSource)
+        recordUsageHeartbeatIfNeeded(update.music)
+        return update
     }
 
     func currentState() -> MusicState {
@@ -2650,6 +2656,24 @@ final class MusicAdapterCoordinator {
     private func recordUsage(_ name: String, fields: [String: String] = [:]) {
         let message = MusicUsageEvent(name: name, fields: fields).encodedMessage
         usageLogger.notice("\(message, privacy: .public)")
+    }
+
+    private func recordUsageHeartbeatIfNeeded(_ state: MusicState, now: Date = Date()) {
+        guard isRealtimeObservationRunning,
+              now.timeIntervalSince(lastUsageHeartbeatAt ?? .distantPast)
+                >= usageHeartbeatInterval else { return }
+        lastUsageHeartbeatAt = now
+        let source = Self.sourceLabel(MusicSourceID(
+            bundleIdentifier: state.track.sourceBundleIdentifier
+        ) ?? musicSourceSelector.selection.source)
+        recordUsage("observation_heartbeat", fields: [
+            "has_track": state.hasCurrentTrack ? "1" : "0",
+            "playback": state.isPlaying ? "playing" : "paused",
+            "source": source,
+            "uptime_ms": String(max(Int(
+                now.timeIntervalSince(usageObservationStartedAt ?? now) * 1_000
+            ), 0))
+        ])
     }
 
     private func recordUsageState(

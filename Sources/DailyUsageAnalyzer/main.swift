@@ -125,11 +125,21 @@ private func run() throws {
     let anomalyText = report.anomalies.isEmpty
         ? "无异常"
         : report.anomalies.joined(separator: ", ")
+    let coverageText: String
+    switch report.sampleCoverage.status {
+    case "complete": coverageText = "样本完整"
+    case "partial": coverageText = "样本不完整"
+    default: coverageText = "无媒体活动样本"
+    }
     print(
         "日常日志：\(report.structuredEventCount) 个结构化事件；"
         + "控制 \(report.controls.accepted)/\(report.controls.total)；"
-        + "seek \(report.seeks.accepted)/\(report.seeks.total)；\(anomalyText)"
+        + "seek \(report.seeks.accepted)/\(report.seeks.total)；"
+        + "\(coverageText)；\(anomalyText)"
     )
+    if !report.sampleCoverage.missingSampleKinds.isEmpty {
+        print("缺少样本：\(report.sampleCoverage.missingSampleKinds.joined(separator: ", "))")
+    }
     print("报告：\(configuration.outputURL.path)")
 }
 

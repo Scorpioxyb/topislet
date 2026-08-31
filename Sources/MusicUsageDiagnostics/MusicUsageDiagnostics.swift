@@ -95,6 +95,17 @@ public struct MusicUsageOutcomeSummary: Codable, Equatable, Sendable {
     public let latency: MusicUsageLatencySummary
 }
 
+public struct MusicUsageSampleCoverage: Codable, Equatable, Sendable {
+    public let status: String
+    public let observationHeartbeatCount: Int
+    public let mediaPresenceHeartbeatCount: Int
+    public let heartbeatGapCount: Int
+    public let maximumHeartbeatGapMilliseconds: Int?
+    public let sourceEventCounts: [String: Int]
+    public let mediaActivityEventCount: Int
+    public let missingSampleKinds: [String]
+}
+
 public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let generatedAt: Date
@@ -121,6 +132,7 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let controlToArtworkLatency: MusicUsageLatencySummary
     public let seekConfirmationLatency: MusicUsageLatencySummary
     public let seekConfirmationTimeoutCount: Int
+    public let sampleCoverage: MusicUsageSampleCoverage
     public let anomalies: [String]
 }
 
@@ -143,6 +155,12 @@ public enum MusicUsageDailyAnalyzer {
         let records = records.sorted { $0.timestamp < $1.timestamp }
         var observationStarts = 0
         var observationStops = 0
+        var observationHeartbeats = 0
+        var mediaPresenceHeartbeats = 0
+        var heartbeatGaps: [Int] = []
+        var pendingHeartbeatGaps: [Int] = []
+        var observationCheckpoint: Date?
+        var observationSessionHasHeartbeat = false
         var sourceSwitches = 0
         var rapidSourceSwitches = 0
         var emptySources = 0
@@ -164,6 +182,8 @@ public enum MusicUsageDailyAnalyzer {
         var controlToArtworkLatencies: [Int] = []
         var seekConfirmationLatencies: [Int] = []
         var seekConfirmationTimeouts = 0
+        var acceptedPlayPauseControls = 0
+        var sourceEventCounts: [String: Int] = [:]
         var issuedControls: [String: PendingControl] = [:]
         var pendingTrackControlBySource: [String: PendingControl] = [:]
         var pendingPlaybackControlBySource: [String: PendingControl] = [:]
@@ -173,15 +193,47 @@ public enum MusicUsageDailyAnalyzer {
 
         for record in records {
             let event = record.event
+            if let source = event.fields["source"], source != "none" {
+                sourceEventCounts[source, default: 0] += 1
+            }
             switch event.name {
             case "observation_start":
                 observationStarts += 1
+                observationCheckpoint = record.timestamp
+                observationSessionHasHeartbeat = false
+                pendingHeartbeatGaps.removeAll(keepingCapacity: true)
+            case "observation_heartbeat":
+                observationHeartbeats += 1
+                if event.fields["has_track"] == "1" {
+                    mediaPresenceHeartbeats += 1
+                }
+                if let observationCheckpoint {
+                    pendingHeartbeatGaps.append(milliseconds(
+                        from: observationCheckpoint,
+                        to: record.timestamp
+                    ))
+                }
+                observationCheckpoint = record.timestamp
+                observationSessionHasHeartbeat = true
             case "observation_stop":
                 observationStops += 1
+                if observationSessionHasHeartbeat, let observationCheckpoint {
+                    pendingHeartbeatGaps.append(milliseconds(
+                        from: observationCheckpoint,
+                        to: record.timestamp
+                    ))
+                    heartbeatGaps.append(contentsOf: pendingHeartbeatGaps)
+                }
+                observationCheckpoint = nil
+                observationSessionHasHeartbeat = false
+                pendingHeartbeatGaps.removeAll(keepingCapacity: true)
             case "source_change":
                 sourceSwitches += 1
                 let from = event.fields["from"] ?? "unknown"
                 let to = event.fields["to"] ?? "unknown"
+                if event.fields["source"] == nil, to != "none" {
+                    sourceEventCounts[to, default: 0] += 1
+                }
                 sourceTransitions["\(from)->\(to)", default: 0] += 1
                 if to == "none" {
                     emptySources += 1
@@ -234,6 +286,9 @@ public enum MusicUsageDailyAnalyzer {
                         targetPlayback: event.fields["target_playback"]
                     )
                 if command == "play_pause" {
+                    if accepted {
+                        acceptedPlayPauseControls += 1
+                    }
                     if !accepted,
                        pendingPlaybackControlBySource[source]?.timestamp
                         == resolvedIssued.timestamp {
@@ -331,6 +386,14 @@ public enum MusicUsageDailyAnalyzer {
             }
         }
 
+        if observationSessionHasHeartbeat, let observationCheckpoint {
+            pendingHeartbeatGaps.append(milliseconds(
+                from: observationCheckpoint,
+                to: generatedAt
+            ))
+            heartbeatGaps.append(contentsOf: pendingHeartbeatGaps)
+        }
+
         let unresolvedArtworkCount = pendingArtworkByTrack.values.filter {
             generatedAt.timeIntervalSince($0.timestamp) >= 5
         }.count
@@ -354,8 +417,44 @@ public enum MusicUsageDailyAnalyzer {
             anomalies.append("seek_confirmation_timeout=\(seekConfirmationTimeouts)")
         }
 
+        let mediaActivityEventCount = sourceSwitches
+            + trackChanges
+            + controlAccepted
+            + controlRejected
+            + seekAccepted
+            + seekRejected
+            + mediaPresenceHeartbeats
+        var missingSampleKinds: [String] = []
+        if trackChanges == 0 {
+            missingSampleKinds.append("track_change")
+        }
+        if sourceSwitches == 0 {
+            missingSampleKinds.append("source_switch")
+        }
+        if controlAccepted + controlRejected == 0 {
+            missingSampleKinds.append("control")
+        }
+        if seekAccepted + seekRejected == 0 {
+            missingSampleKinds.append("seek")
+        }
+        if acceptedPlayPauseControls
+            > playbackConfirmationLatencies.count + playbackConfirmationTimeouts {
+            missingSampleKinds.append("playback_confirmation")
+        }
+        if seekAccepted > seekConfirmationLatencies.count + seekConfirmationTimeouts {
+            missingSampleKinds.append("seek_confirmation")
+        }
+        let coverageStatus: String
+        if mediaActivityEventCount == 0 {
+            coverageStatus = "no_media_activity"
+        } else if missingSampleKinds.isEmpty {
+            coverageStatus = "complete"
+        } else {
+            coverageStatus = "partial"
+        }
+
         return MusicUsageDailySummary(
-            schemaVersion: 2,
+            schemaVersion: 3,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -388,6 +487,16 @@ public enum MusicUsageDailyAnalyzer {
             controlToArtworkLatency: latencySummary(controlToArtworkLatencies),
             seekConfirmationLatency: latencySummary(seekConfirmationLatencies),
             seekConfirmationTimeoutCount: seekConfirmationTimeouts,
+            sampleCoverage: MusicUsageSampleCoverage(
+                status: coverageStatus,
+                observationHeartbeatCount: observationHeartbeats,
+                mediaPresenceHeartbeatCount: mediaPresenceHeartbeats,
+                heartbeatGapCount: heartbeatGaps.filter { $0 > 20 * 60 * 1_000 }.count,
+                maximumHeartbeatGapMilliseconds: heartbeatGaps.max(),
+                sourceEventCounts: sourceEventCounts,
+                mediaActivityEventCount: mediaActivityEventCount,
+                missingSampleKinds: missingSampleKinds
+            ),
             anomalies: anomalies
         )
     }
