@@ -7,7 +7,7 @@
 
 ## 发布状态
 
-当前版本为 **v0.1.2-alpha.4 设计候选版**，正在验证三态连续形变、展开音乐布局、单次控制反馈、专辑色进度轨，以及既有汽水音乐、Apple Music 与网易云音乐能力的零回归。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+当前版本为 **v0.1.2-alpha.5 设计候选版**，正在验证专辑色进度轨的黑底感知校正、切歌颜色连续性，以及既有三态形变、音乐控制和汽水音乐、Apple Music、网易云音乐能力的零回归。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 

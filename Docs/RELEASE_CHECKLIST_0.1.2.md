@@ -1,13 +1,13 @@
 # v0.1.2 GitHub 发布检查清单
 
-目标 Tag：`v0.1.2-alpha.4`
+目标 Tag：`v0.1.2-alpha.5`
 
-目标 App 版本：`0.1.2 (22)`
+目标 App 版本：`0.1.2 (23)`
 
 ## P0 代码与实机
 
 - [x] 建立 v0.1.2 范围、质量指标和独立发布清单。
-- [x] 新增三来源定向、Apple Music 电台占位、多显示器稳定绑定、登录项、布局恢复、减少动态效果、显示热变化、汽水状态流封面、端到端日常结构化日志和展开音乐布局回归，完整 214 项自动化测试通过。
+- [x] 新增三来源定向、Apple Music 电台占位、多显示器稳定绑定、登录项、布局恢复、减少动态效果、显示热变化、汽水状态流封面、端到端日常结构化日志、展开音乐布局和专辑色情境适配回归，完整 218 项自动化测试通过。
 - [x] 来源仲裁只向岛内发布一个已适配音乐来源；多来源同时播放时按前台来源或稳定播放优先级单选，缓存态和未适配媒体不参与放行。
 - [x] 恢复汽水进度条点击 / 拖动跳转：仅在汽水来源、PID、实时状态、时长和系统媒体焦点全部匹配时发送受保护 seek；其他情况保持只读并拒绝发送。
 - [x] CI 增加汽水控制不得改写 `AXMinimized` 的静态门禁。
@@ -21,6 +21,7 @@
 - [ ] 展开、收回、外部点击和连续反向悬停通过视觉验收。
 - [x] `swift test`、Release 构建和窗口锚定脚本通过；双屏实测悬停响应 `55ms`、最终安装版移出收回响应 `404ms`，中心无迁屏漂移。
 - [x] alpha.4 展开音乐布局、纯黑主体、专辑色进度轨、隐藏式拖动点和单次按钮反馈完成；统一形变脚本验证单窗口、12 秒稳定悬停与收回途中反向展开通过。
+- [x] alpha.5 专辑色黑底感知校正、灰阶中性回退和切歌延迟封面无白闪完成；218 项测试、Release 安装、严格签名和单窗口动画门禁通过，见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha5-smart-accent-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha5-smart-accent-candidate.md)。
 
 ## P1 产品完整性
 
@@ -36,13 +37,14 @@
 
 ## 发布
 
-- [x] `Packaging/Info.plist` 更新为 `0.1.2 (22)`。
+- [x] `Packaging/Info.plist` 更新为 `0.1.2 (23)`。
 - [x] README、CHANGELOG、ROADMAP、已知限制和支持矩阵同步。
 - [x] 从干净提交构建 `TopIslet-v0.1.2-arm64.dmg`。
 - [x] DMG、App 签名、arm64、macOS 26.0 最低版本和 SHA-256 验证通过。
 - [x] alpha.4 build 22 从干净提交 `c21cc1aeeaabe76318739fa6748323e976b76250` 重建并通过独立 DMG 校验，最终 SHA-256 为 `bedc25ab1fece8812a450ebac8bc8b9433e2e4f7f64fb69e8e95eb94c8e7158f`；见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md)。
 - [ ] 两条 GitHub CI 通过，工作区干净。
-- [ ] 产品负责人体验确认后创建精确 Tag `v0.1.2-alpha.4` 并上传 GitHub Release。
+- [ ] alpha.5 build 23 从干净提交重建并通过独立 DMG 校验，记录最终 SHA-256。
+- [ ] 产品负责人体验确认后创建精确 Tag `v0.1.2-alpha.5` 并上传 GitHub Release。
 - [ ] 从 GitHub Release 重新下载、安装并完成发布后验收。
 
 ## 当前分发限制

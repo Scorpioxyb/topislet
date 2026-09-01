@@ -885,6 +885,25 @@ struct ArtworkAccentComponents: Sendable {
     let red: Double
     let green: Double
     let blue: Double
+
+    var relativeLuminance: Double {
+        func linearized(_ component: Double) -> Double {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return linearized(red) * 0.2126
+            + linearized(green) * 0.7152
+            + linearized(blue) * 0.0722
+    }
+}
+
+enum ArtworkAccentTransitionPolicy {
+    static let missingArtworkGraceNanoseconds: UInt64 = 650_000_000
+
+    static func shouldDelayNeutralFallback(hasCurrentTrack: Bool) -> Bool {
+        hasCurrentTrack
+    }
 }
 
 func artworkAccentComponents(from data: Data) -> ArtworkAccentComponents? {
@@ -955,7 +974,9 @@ private func normalizedArtworkAccent(
     let minimum = min(red, green, blue)
     let delta = maximum - minimum
     guard maximum > 0, delta / maximum >= 0.12 else {
-        return ArtworkAccentComponents(red: 0.86, green: 0.86, blue: 0.86)
+        return artworkAccentWithBlackBackgroundContrast(
+            ArtworkAccentComponents(red: 0.86, green: 0.86, blue: 0.86)
+        )
     }
 
     var hue: Double
@@ -974,7 +995,53 @@ private func normalizedArtworkAccent(
         saturation = min(saturation, 0.40)
     }
     let brightness = min(max(maximum, 0.72), 0.96)
-    return rgbComponents(hue: hue, saturation: saturation, brightness: brightness)
+    return artworkAccentWithBlackBackgroundContrast(
+        rgbComponents(hue: hue, saturation: saturation, brightness: brightness)
+    )
+}
+
+private func artworkAccentWithBlackBackgroundContrast(
+    _ accent: ArtworkAccentComponents
+) -> ArtworkAccentComponents {
+    if accent.relativeLuminance > 0.52 {
+        var lower = 0.0
+        var upper = 1.0
+        var result = accent
+        for _ in 0..<14 {
+            let scale = (lower + upper) / 2
+            let candidate = ArtworkAccentComponents(
+                red: accent.red * scale,
+                green: accent.green * scale,
+                blue: accent.blue * scale
+            )
+            if candidate.relativeLuminance > 0.52 {
+                upper = scale
+            } else {
+                result = candidate
+                lower = scale
+            }
+        }
+        return result
+    }
+    guard accent.relativeLuminance < 0.20 else { return accent }
+    var lower = 0.0
+    var upper = 1.0
+    var result = accent
+    for _ in 0..<14 {
+        let amount = (lower + upper) / 2
+        let candidate = ArtworkAccentComponents(
+            red: accent.red + (1 - accent.red) * amount,
+            green: accent.green + (1 - accent.green) * amount,
+            blue: accent.blue + (1 - accent.blue) * amount
+        )
+        if candidate.relativeLuminance >= 0.20 {
+            result = candidate
+            upper = amount
+        } else {
+            lower = amount
+        }
+    }
+    return result
 }
 
 private func rgbComponents(
@@ -2285,7 +2352,10 @@ final class IslandModel: ObservableObject {
                 isUserExpandedMusicPresentation = false
                 mode = .compact
             }
-            refreshMusicAccent(for: reconciledMusic.track)
+            refreshMusicAccent(
+                for: reconciledMusic.track,
+                hasCurrentTrack: reconciledMusic.hasCurrentTrack
+            )
             confirmTrackControlFeedbackIfNeeded(
                 with: reconciledMusic,
                 generation: trackControlConfirmationGeneration
@@ -2339,8 +2409,12 @@ final class IslandModel: ObservableObject {
         finishTrackControlFeedback(pendingTrackControl, generation: generation)
     }
 
-    private func refreshMusicAccent(for track: MusicTrack) {
-        let identity = artworkAccentIdentity(for: track)
+    private func refreshMusicAccent(
+        for track: MusicTrack,
+        hasCurrentTrack: Bool
+    ) {
+        let identity = "\(hasCurrentTrack ? "active" : "inactive")\u{1f}"
+            + artworkAccentIdentity(for: track)
         guard identity != musicAccentIdentity else { return }
         musicAccentIdentity = identity
         musicAccentGeneration += 1
@@ -2350,10 +2424,29 @@ final class IslandModel: ObservableObject {
         let inlineData = track.artworkData
         let artworkURL = track.artworkURL
         guard inlineData != nil || artworkURL != nil else {
-            withAnimation(.easeInOut(duration: 0.20)) {
-                musicAccentColor = .white
+            guard ArtworkAccentTransitionPolicy.shouldDelayNeutralFallback(
+                hasCurrentTrack: hasCurrentTrack
+            ) else {
+                withAnimation(.easeInOut(duration: 0.20)) {
+                    musicAccentColor = .white
+                }
+                musicAccentTask = nil
+                return
             }
-            musicAccentTask = nil
+            let fallbackColor = Color(white: 0.74)
+            let graceNanoseconds = ArtworkAccentTransitionPolicy
+                .missingArtworkGraceNanoseconds
+            musicAccentTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: graceNanoseconds)
+                guard !Task.isCancelled,
+                      let self,
+                      generation == musicAccentGeneration,
+                      identity == musicAccentIdentity else { return }
+                withAnimation(.easeInOut(duration: 0.24)) {
+                    musicAccentColor = fallbackColor
+                }
+                musicAccentTask = nil
+            }
             return
         }
 
@@ -2373,8 +2466,14 @@ final class IslandModel: ObservableObject {
             guard !Task.isCancelled,
                   let self,
                   generation == musicAccentGeneration,
-                  identity == musicAccentIdentity,
-                  let components else { return }
+                  identity == musicAccentIdentity else { return }
+            guard let components else {
+                withAnimation(.easeInOut(duration: 0.24)) {
+                    musicAccentColor = Color(white: 0.74)
+                }
+                musicAccentTask = nil
+                return
+            }
             withAnimation(.easeInOut(duration: 0.20)) {
                 musicAccentColor = Color(
                     red: components.red,
