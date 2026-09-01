@@ -743,9 +743,15 @@ final class MusicAdapterCoordinator {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
 
-        let controlAvailability = await probeQishuiControlAvailability(
-            processIdentifier: targetProcessIdentifier
-        )
+        let controlAvailability: QishuiControlAvailability
+        if latestQishuiControlAvailability.requiresPreflightBeforeControl {
+            controlAvailability = await probeQishuiControlAvailability(
+                processIdentifier: targetProcessIdentifier
+            )
+            latestQishuiControlAvailability = controlAvailability
+        } else {
+            controlAvailability = latestQishuiControlAvailability
+        }
         guard controlAttemptGeneration == controlGeneration else {
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
         }
@@ -756,7 +762,6 @@ final class MusicAdapterCoordinator {
                 selectedSource: musicSourceSelector.selection.source
             )
         }
-        latestQishuiControlAvailability = controlAvailability
         guard controlAvailability.allowsControl else {
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水音乐",
@@ -2779,6 +2784,16 @@ final class MusicAdapterCoordinator {
                 "source": source,
                 "track": trackFingerprint
             ])
+            if sourceID == .qishui,
+               latestQishuiControlAvailability.allowsCachePrewarmAfterTrackChange {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                    guard let self,
+                          self.isRealtimeObservationRunning,
+                          self.latestQishuiControlAvailability
+                            .allowsCachePrewarmAfterTrackChange else { return }
+                    self.scheduleQishuiControlAvailabilityRefresh()
+                }
+            }
         } else if hasArtwork, !lastUsageTrackHadArtwork {
             let latencyMilliseconds = usageArtworkPendingSince
                 .removeValue(forKey: artworkKey)

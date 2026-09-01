@@ -206,3 +206,23 @@ func qishuiControlAvailabilityRequiresUniqueSemanticCandidate() {
     #expect(!QishuiControlAvailability.controlTreeUnavailable.allowsControl)
     #expect(!QishuiControlAvailability.windowClosed.allowsControl)
 }
+
+@Test("已验证汽水控件跳过重复预检，其他状态仍需重新确认")
+func qishuiControlPreflightReusesOnlyVerifiedAvailability() {
+    #expect(!QishuiControlAvailability.available.requiresPreflightBeforeControl)
+    #expect(QishuiControlAvailability.windowClosed.requiresPreflightBeforeControl)
+    #expect(QishuiControlAvailability.controlTreeUnavailable.requiresPreflightBeforeControl)
+    #expect(QishuiControlAvailability.accessibilityRequired.requiresPreflightBeforeControl)
+    #expect(QishuiControlAvailability.notRunning.requiresPreflightBeforeControl)
+    #expect(QishuiControlAvailability.unknown.requiresPreflightBeforeControl)
+}
+
+@Test("只有已验证汽水控件在切歌后允许事件驱动预热")
+func qishuiControlPrewarmRequiresVerifiedAvailability() {
+    #expect(QishuiControlAvailability.available.allowsCachePrewarmAfterTrackChange)
+    #expect(!QishuiControlAvailability.windowClosed.allowsCachePrewarmAfterTrackChange)
+    #expect(!QishuiControlAvailability.controlTreeUnavailable.allowsCachePrewarmAfterTrackChange)
+    #expect(!QishuiControlAvailability.accessibilityRequired.allowsCachePrewarmAfterTrackChange)
+    #expect(!QishuiControlAvailability.notRunning.allowsCachePrewarmAfterTrackChange)
+    #expect(!QishuiControlAvailability.unknown.allowsCachePrewarmAfterTrackChange)
+}

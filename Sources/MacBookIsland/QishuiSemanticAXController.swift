@@ -15,6 +15,14 @@ enum QishuiControlAvailability: String, Equatable, Sendable {
         self == .available
     }
 
+    var requiresPreflightBeforeControl: Bool {
+        !allowsControl
+    }
+
+    var allowsCachePrewarmAfterTrackChange: Bool {
+        allowsControl
+    }
+
     var unavailableReason: String? {
         switch self {
         case .available:
