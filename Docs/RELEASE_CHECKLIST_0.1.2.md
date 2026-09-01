@@ -43,7 +43,7 @@
 - [x] DMG、App 签名、arm64、macOS 26.0 最低版本和 SHA-256 验证通过。
 - [x] alpha.4 build 22 从干净提交 `c21cc1aeeaabe76318739fa6748323e976b76250` 重建并通过独立 DMG 校验，最终 SHA-256 为 `bedc25ab1fece8812a450ebac8bc8b9433e2e4f7f64fb69e8e95eb94c8e7158f`；见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md)。
 - [ ] 两条 GitHub CI 通过，工作区干净。
-- [ ] alpha.5 build 23 从干净提交重建并通过独立 DMG 校验，记录最终 SHA-256。
+- [x] alpha.5 build 23 从干净源提交 `89aca56` 重建并通过独立 DMG 校验，SHA-256 为 `95f748f7772d44ccc798795da4ca7030336486e524265d081ec0d46b25a0efeb`；见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha5-smart-accent-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha5-smart-accent-candidate.md)。
 - [ ] 产品负责人体验确认后创建精确 Tag `v0.1.2-alpha.5` 并上传 GitHub Release。
 - [ ] 从 GitHub Release 重新下载、安装并完成发布后验收。
 
