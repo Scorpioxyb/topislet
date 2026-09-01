@@ -649,7 +649,7 @@ struct IslandInteractionRegions: Equatable {
 
 enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
-        mode == .expanded ? 0.24 : 0.18
+        mode == .expanded ? 0.28 : 0.20
     }
 
     static func frameDuration(
@@ -661,7 +661,7 @@ enum IslandMotion {
 
     static func timingFunction(for mode: IslandMode) -> CAMediaTimingFunction {
         if mode == .expanded {
-            return CAMediaTimingFunction(controlPoints: 0.25, 0.10, 0.25, 1.0)
+            return CAMediaTimingFunction(controlPoints: 0.20, 0.85, 0.25, 1.0)
         }
         return CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
     }
@@ -672,34 +672,30 @@ enum IslandMotion {
     ) -> Animation? {
         guard !reduceMotion else { return nil }
         if mode == .expanded {
-            return .timingCurve(0.25, 0.10, 0.25, 1.0, duration: duration(for: mode))
+            return .timingCurve(0.20, 0.85, 0.25, 1.0, duration: duration(for: mode))
         }
         return .timingCurve(0.40, 0.0, 0.20, 1.0, duration: duration(for: mode))
-    }
-
-    static func headerContentAnimation(
-        for mode: IslandMode,
-        reduceMotion: Bool
-    ) -> Animation {
-        .easeOut(duration: reduceMotion ? 0.04 : mode == .expanded ? 0.07 : 0.055)
-    }
-
-    static func bodyContentAnimation(
-        for mode: IslandMode,
-        reduceMotion: Bool
-    ) -> Animation {
-        if reduceMotion {
-            return .easeOut(duration: 0.05)
-        }
-        if mode == .expanded {
-            return .easeOut(duration: 0.12).delay(0.055)
-        }
-        return .easeOut(duration: 0.06)
     }
 
     static func featureContentAnimation(reduceMotion: Bool) -> Animation {
         .easeInOut(duration: reduceMotion ? 0.05 : 0.14)
     }
+}
+
+enum ExpandedMusicLayout {
+    static let contentWidth: CGFloat = 408
+    static let artworkSize: CGFloat = 92
+    static let artworkToDetailsSpacing: CGFloat = 12
+    static let detailsWidth: CGFloat = 304
+    static let timelineWidth: CGFloat = 220
+    static let timelineToTimeSpacing: CGFloat = 10
+    static let timeWidth: CGFloat = 74
+    static let controlRailWidth: CGFloat = timelineWidth
+    static let modeButtonsWidth: CGFloat = 56
+    static let titleToModeButtonsSpacing: CGFloat = 12
+    static let titleWidth: CGFloat = detailsWidth
+        - modeButtonsWidth
+        - titleToModeButtonsSpacing
 }
 
 enum IslandDisplayRefreshPolicy {
@@ -2941,7 +2937,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let returnMode: IslandMode = model.mode == .collapsed ? .collapsed : .compact
             hoverEnterTask?.cancel()
             hoverEnterTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 45_000_000)
+                try? await Task.sleep(nanoseconds: 30_000_000)
                 guard !Task.isCancelled,
                       let self,
                       hoverGeneration == generation,
@@ -4278,61 +4274,33 @@ struct IslandRootView: View {
                 ) {
                     Color.clear
                 }
-                .animation(
-                    IslandMotion.geometryAnimation(
-                        for: model.mode,
-                        reduceMotion: model.reduceMotionEnabled
-                    ),
-                    value: model.mode
-                )
 
                 ZStack {
                     CollapsedIsland(model: model)
                         .opacity(model.mode == .collapsed ? 1 : 0)
-                        .animation(
-                            IslandMotion.headerContentAnimation(
-                                for: model.mode,
-                                reduceMotion: model.reduceMotionEnabled
-                            ),
-                            value: model.mode
-                        )
                         .allowsHitTesting(model.mode == .collapsed)
                         .accessibilityHidden(model.mode != .collapsed)
 
                     CompactIsland(model: model)
                         .opacity(model.mode == .compact ? 1 : 0)
-                        .animation(
-                            IslandMotion.headerContentAnimation(
-                                for: model.mode,
-                                reduceMotion: model.reduceMotionEnabled
-                            ),
-                            value: model.mode
-                        )
                         .allowsHitTesting(model.mode == .compact)
                         .accessibilityHidden(model.mode != .compact)
 
                     ExpandedIsland(model: model)
                         .opacity(model.mode == .expanded ? 1 : 0)
-                        .animation(
-                            IslandMotion.headerContentAnimation(
-                                for: model.mode,
-                                reduceMotion: model.reduceMotionEnabled
-                            ),
-                            value: model.mode
-                        )
                         .allowsHitTesting(model.mode == .expanded)
                         .accessibilityHidden(model.mode != .expanded)
                 }
                 .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
-                .animation(
-                    IslandMotion.geometryAnimation(
-                        for: model.mode,
-                        reduceMotion: model.reduceMotionEnabled
-                    ),
-                    value: model.mode
-                )
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .animation(
+                IslandMotion.geometryAnimation(
+                    for: model.mode,
+                    reduceMotion: model.reduceMotionEnabled
+                ),
+                value: model.mode
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(
@@ -4519,20 +4487,13 @@ struct ExpandedIslandBodyPanel: View {
                 width: model.expandedWidth,
                 height: model.expandedBodyHeight,
                 cornerRadius: 24,
-                fillOpacity: 0.99,
-                strokeOpacity: 0.03,
+                fillOpacity: 1,
+                strokeOpacity: 0,
                 shadowOpacity: 0
             ) {
                 Color.clear
             }
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-            .animation(
-                IslandMotion.geometryAnimation(
-                    for: model.mode,
-                    reduceMotion: model.reduceMotionEnabled
-                ),
-                value: model.mode
-            )
 
             ZStack(alignment: .topTrailing) {
                 switch model.activeFeature {
@@ -4589,23 +4550,9 @@ struct ExpandedIslandBodyPanel: View {
             }
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
             .opacity(model.mode == .expanded ? 1 : 0)
-            .animation(
-                IslandMotion.bodyContentAnimation(
-                    for: model.mode,
-                    reduceMotion: model.reduceMotionEnabled
-                ),
-                value: model.mode
-            )
             .mask {
                 Rectangle()
                     .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
-                    .animation(
-                        IslandMotion.geometryAnimation(
-                            for: model.mode,
-                            reduceMotion: model.reduceMotionEnabled
-                        ),
-                        value: model.mode
-                    )
             }
             .allowsHitTesting(model.mode == .expanded)
         }
@@ -4623,9 +4570,9 @@ struct WindowModeButtons: View {
             } label: {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(.white.opacity(0.68))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .background(Circle().fill(Color.white.opacity(0.06)))
             }
             .buttonStyle(.plain)
             .help("收起")
@@ -4635,9 +4582,9 @@ struct WindowModeButtons: View {
             } label: {
                 Image(systemName: "minus")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(.white.opacity(0.68))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .background(Circle().fill(Color.white.opacity(0.06)))
             }
             .buttonStyle(.plain)
             .help("最小化")
@@ -4671,7 +4618,11 @@ struct CompactMusic: View {
                 .frame(width: model.notchWidth, height: model.topBandHeight)
 
             HStack(spacing: 9) {
-                ProgressPill(progress: model.music.progress, width: 54)
+                ProgressPill(
+                    progress: model.music.progress,
+                    width: 54,
+                    accentColor: model.musicAccentColor
+                )
 
                 StatusDot(
                     isActive: model.statusWaveIsActive,
@@ -4826,8 +4777,8 @@ struct ExpandedMusic: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            AlbumArt(track: model.music.track, size: 88)
+        HStack(alignment: .center, spacing: ExpandedMusicLayout.artworkToDetailsSpacing) {
+            AlbumArt(track: model.music.track, size: ExpandedMusicLayout.artworkSize)
 
             VStack(alignment: .leading, spacing: 6) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -4840,8 +4791,7 @@ struct ExpandedMusic: View {
                         .lineLimit(1)
                         .foregroundStyle(.white.opacity(0.58))
                 }
-                .padding(.trailing, 72)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: ExpandedMusicLayout.titleWidth, alignment: .leading)
 
                 MusicProgressRow(model: model)
 
@@ -4861,10 +4811,7 @@ struct ExpandedMusic: View {
 
                 HStack(spacing: 12) {
                     ControlButton(
-                        icon: "backward.fill",
-                        feedbackToken: model.pendingTrackControl == .previousTrack
-                            ? model.trackControlFeedbackGeneration
-                            : 0
+                        icon: "backward.fill"
                     ) {
                         model.previousTrack()
                     }
@@ -4882,8 +4829,7 @@ struct ExpandedMusic: View {
 
                     ControlButton(
                         icon: model.music.isPlaying ? "pause.fill" : "play.fill",
-                        prominent: true,
-                        feedbackToken: model.playPauseFeedbackGeneration
+                        prominent: true
                     ) {
                         model.playPause()
                     }
@@ -4900,10 +4846,7 @@ struct ExpandedMusic: View {
                     )
 
                     ControlButton(
-                        icon: "forward.fill",
-                        feedbackToken: model.pendingTrackControl == .nextTrack
-                            ? model.trackControlFeedbackGeneration
-                            : 0
+                        icon: "forward.fill"
                     ) {
                         model.nextTrack()
                     }
@@ -4919,13 +4862,12 @@ struct ExpandedMusic: View {
                                 : model.music.controlUnavailableReason ?? "下一首当前不可用"
                     )
                 }
-                .frame(width: 224, alignment: .center)
+                .frame(width: ExpandedMusicLayout.controlRailWidth, alignment: .center)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(width: 308, alignment: .leading)
+            .frame(width: ExpandedMusicLayout.detailsWidth, alignment: .leading)
         }
-        .frame(width: 408, alignment: .center)
-        .offset(x: 2)
+        .frame(width: ExpandedMusicLayout.contentWidth, alignment: .center)
     }
 }
 
@@ -4934,10 +4876,11 @@ private struct MusicProgressRow: View {
     @State private var scrubPreviewProgress: Double?
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ExpandedMusicLayout.timelineToTimeSpacing) {
             ProgressPill(
                 progress: model.music.progress,
-                width: 224,
+                width: ExpandedMusicLayout.timelineWidth,
+                accentColor: model.musicAccentColor,
                 onPreviewChanged: { progress in
                     model.setMusicScrubbing(progress != nil)
                     guard let progress else {
@@ -4965,7 +4908,7 @@ private struct MusicProgressRow: View {
                 .minimumScaleFactor(0.72)
                 .allowsTightening(true)
                 .foregroundStyle(.white.opacity(0.52))
-                .frame(width: 74, alignment: .leading)
+                .frame(width: ExpandedMusicLayout.timeWidth, alignment: .leading)
         }
         .onDisappear {
             model.setMusicScrubbing(false)
@@ -5217,13 +5160,11 @@ struct ControlButton: View {
     let icon: String
     var prominent = false
     var size: CGFloat = 30
-    var feedbackToken: UInt64 = 0
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
-    @State private var feedbackPulse = false
-    @State private var feedbackTask: Task<Void, Never>?
+    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
@@ -5232,25 +5173,22 @@ struct ControlButton: View {
                     .fill(
                         prominent
                             ? Color.white
-                            : Color.white.opacity(feedbackPulse ? 0.24 : 0.1)
+                            : Color.white.opacity(isHovering ? 0.16 : 0.1)
                     )
 
                 Image(systemName: icon)
                     .font(.system(size: prominent ? 13 : 12, weight: .bold))
                     .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
-                    .scaleEffect(
-                        feedbackPulse && !reduceMotion && !prominent ? 1.1 : 1
-                    )
                     .id(icon)
                     .transition(iconTransition)
             }
             .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
-            .scaleEffect(
-                feedbackPulse && prominent && !reduceMotion ? 0.96 : 1
-            )
         }
         .buttonStyle(IslandControlButtonStyle())
         .opacity(isEnabled ? 1 : 0.38)
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .animation(
             reduceMotion
                 ? .easeOut(duration: 0.08)
@@ -5259,15 +5197,6 @@ struct ControlButton: View {
                     : .interactiveSpring(response: 0.2, dampingFraction: 0.86),
             value: icon
         )
-        .onChange(of: feedbackToken) { _, token in
-            guard token > 0 else { return }
-            triggerFeedbackPulse(token: token)
-        }
-        .onDisappear {
-            feedbackTask?.cancel()
-            feedbackTask = nil
-            feedbackPulse = false
-        }
     }
 
     private var iconTransition: AnyTransition {
@@ -5278,21 +5207,6 @@ struct ControlButton: View {
         )
     }
 
-    private func triggerFeedbackPulse(token: UInt64) {
-        feedbackTask?.cancel()
-        feedbackPulse = false
-        withAnimation(.easeOut(duration: reduceMotion ? 0.05 : 0.08)) {
-            feedbackPulse = true
-        }
-
-        feedbackTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: reduceMotion ? 90_000_000 : 120_000_000)
-            guard !Task.isCancelled, token == feedbackToken else { return }
-            withAnimation(.easeOut(duration: reduceMotion ? 0.08 : 0.14)) {
-                feedbackPulse = false
-            }
-        }
-    }
 }
 
 private struct IslandControlButtonStyle: ButtonStyle {
@@ -5300,8 +5214,8 @@ private struct IslandControlButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
-            .brightness(configuration.isPressed ? 0.08 : 0)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .brightness(configuration.isPressed ? 0.1 : 0)
             .animation(
                 reduceMotion
                     ? .easeOut(duration: 0.06)
@@ -5336,12 +5250,14 @@ struct TextButton: View {
 struct ProgressPill: View {
     let progress: Double
     let width: CGFloat
+    var accentColor: Color = .white
     var onPreviewChanged: ((Double?) -> Void)? = nil
     var onSeek: ((Double, MusicSeekInteraction) async -> Bool)? = nil
 
     @State private var dragProgress: Double?
     @State private var isDragging = false
     @State private var isPointerDown = false
+    @State private var isHovering = false
     @State private var seekGeneration = 0
 
     private var displayedProgress: Double {
@@ -5363,22 +5279,33 @@ struct ProgressPill: View {
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 Capsule()
-                    .fill(Color.white.opacity(isDragging ? 0.96 : 0.88))
+                    .fill(accentColor.opacity(isDragging ? 1 : 0.92))
                     .frame(width: progressWidth, height: 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 if onSeek != nil {
                     Circle()
-                        .fill(Color.white)
+                        .fill(accentColor)
                         .frame(width: knobSize, height: knobSize)
                         .scaleEffect(isDragging ? 1.25 : 1)
                         .shadow(color: Color.black.opacity(isDragging ? 0.42 : 0.28), radius: isDragging ? 5 : 3, x: 0, y: 1)
+                        .opacity(isHovering || isPointerDown || isDragging ? 1 : 0)
+                        .animation(.easeOut(duration: 0.1), value: isHovering)
                         .animation(.easeOut(duration: 0.12), value: isDragging)
                         .offset(x: knobX)
                         .frame(maxHeight: .infinity, alignment: .center)
                 }
             }
+            .animation(
+                dragProgress == nil && !isPointerDown && !isDragging
+                    ? .linear(duration: 0.4)
+                    : nil,
+                value: displayedProgress
+            )
             .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
+            }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -5423,10 +5350,11 @@ struct ProgressPill: View {
                     }
             )
         }
-        .frame(width: width, height: onSeek == nil ? 4 : 22)
+        .frame(width: width, height: onSeek == nil ? 4 : 24)
         .onDisappear {
             isPointerDown = false
             isDragging = false
+            isHovering = false
             dragProgress = nil
         }
     }

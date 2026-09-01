@@ -241,6 +241,29 @@ func interpolatedWindowFramesStayTopAnchoredAndCentered() {
     #expect(frames.map(\.height) == frames.map(\.height).sorted())
 }
 
+@Test("展开音乐布局保持封面、时间轴和控制轨道对齐")
+func expandedMusicLayoutKeepsPrimaryContentAligned() {
+    #expect(
+        ExpandedMusicLayout.contentWidth
+            == ExpandedMusicLayout.artworkSize
+                + ExpandedMusicLayout.artworkToDetailsSpacing
+                + ExpandedMusicLayout.detailsWidth
+    )
+    #expect(
+        ExpandedMusicLayout.detailsWidth
+            == ExpandedMusicLayout.timelineWidth
+                + ExpandedMusicLayout.timelineToTimeSpacing
+                + ExpandedMusicLayout.timeWidth
+    )
+    #expect(ExpandedMusicLayout.controlRailWidth == ExpandedMusicLayout.timelineWidth)
+    #expect(
+        ExpandedMusicLayout.titleWidth
+            + ExpandedMusicLayout.titleToModeButtonsSpacing
+            + ExpandedMusicLayout.modeButtonsWidth
+            == ExpandedMusicLayout.detailsWidth
+    )
+}
+
 @Test("MacBook 机型矩阵使用系统刘海宽度和高度")
 func macBookDisplayMatrixUsesSystemCameraHousingGeometry() {
     let profiles = [
@@ -412,10 +435,10 @@ func reducedMotionDisablesWindowGeometryAnimation() {
     #expect(IslandMotion.geometryAnimation(for: .compact, reduceMotion: true) == nil)
 }
 
-@Test("关闭减少动态效果时保留原有窗口动画时长")
-func standardMotionKeepsExistingWindowAnimation() {
-    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: false) == 0.24)
-    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: false) == 0.18)
+@Test("关闭减少动态效果时使用统一形变时间轴")
+func standardMotionUsesUnifiedWindowAnimation() {
+    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: false) == 0.28)
+    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: false) == 0.20)
     #expect(IslandMotion.geometryAnimation(for: .expanded, reduceMotion: false) != nil)
 }
 
