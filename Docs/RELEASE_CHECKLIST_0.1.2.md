@@ -40,7 +40,7 @@
 - [x] README、CHANGELOG、ROADMAP、已知限制和支持矩阵同步。
 - [x] 从干净提交构建 `TopIslet-v0.1.2-arm64.dmg`。
 - [x] DMG、App 签名、arm64、macOS 26.0 最低版本和 SHA-256 验证通过。
-- [x] alpha.4 build 22 独立 DMG 校验通过，SHA-256 为 `46db26ba256441d2a3b76a7b7bd1167120e6d8ed9220016f275b8720fa2e402c`；见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md)。
+- [x] alpha.4 build 22 从干净提交 `c21cc1aeeaabe76318739fa6748323e976b76250` 重建并通过独立 DMG 校验，最终 SHA-256 为 `bedc25ab1fece8812a450ebac8bc8b9433e2e4f7f64fb69e8e95eb94c8e7158f`；见 [`Docs/acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md`](acceptance/2026-09-01-v0.1.2-alpha4-design-candidate.md)。
 - [ ] 两条 GitHub CI 通过，工作区干净。
 - [ ] 产品负责人体验确认后创建精确 Tag `v0.1.2-alpha.4` 并上传 GitHub Release。
 - [ ] 从 GitHub Release 重新下载、安装并完成发布后验收。
