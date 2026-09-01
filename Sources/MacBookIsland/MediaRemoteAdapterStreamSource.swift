@@ -54,6 +54,30 @@ private enum MediaRemotePayloadTrackRelationship {
     case ambiguousPlaybackPatch
 }
 
+enum QishuiTrackTransitionStage: String, Equatable, Sendable {
+    case firstCandidate = "first_candidate"
+    case atomicComplete = "atomic_complete"
+}
+
+struct QishuiTrackTransitionStageEvent: Equatable, Sendable {
+    let transitionID: String
+    let stage: QishuiTrackTransitionStage
+    let latencyMilliseconds: Int
+    let hasArtist: Bool
+    let hasArtwork: Bool
+    let hasAlbum: Bool
+    let hasDuration: Bool
+    let wasDeferred: Bool
+}
+
+private struct PendingQishuiTrackTransitionObservation {
+    let transitionID: String
+    let startedAt: Date
+    let baselineIdentity: String?
+    var didObserveFirstCandidate = false
+    var didObserveAtomicComplete = false
+}
+
 struct MediaRemoteStreamLifecycle {
     private(set) var generation: UInt64 = 0
     private(set) var isStopping = true
@@ -77,6 +101,9 @@ struct MediaRemoteStreamLifecycle {
 @MainActor
 final class MediaRemoteAdapterStreamSource {
     typealias ChangeHandler = @MainActor @Sendable () -> Void
+    typealias TrackTransitionStageHandler = @MainActor (
+        QishuiTrackTransitionStageEvent
+    ) -> Void
 
     private let qishuiBundleIdentifier = "com.soda.music"
     private let seekCommandQueue = DispatchQueue(
@@ -120,6 +147,8 @@ final class MediaRemoteAdapterStreamSource {
     private var streamLifecycle = MediaRemoteStreamLifecycle()
     private var restartTask: Task<Void, Never>?
     private var changeHandler: ChangeHandler?
+    private var trackTransitionStageHandler: TrackTransitionStageHandler?
+    private var pendingTrackTransitionObservation: PendingQishuiTrackTransitionObservation?
     private let runningQishuiProcessIdentifiersProvider: () -> Set<pid_t>
 
     init(
@@ -132,6 +161,26 @@ final class MediaRemoteAdapterStreamSource {
         }
     ) {
         self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider
+    }
+
+    func setTrackTransitionStageHandler(_ handler: TrackTransitionStageHandler?) {
+        trackTransitionStageHandler = handler
+    }
+
+    func beginTrackTransitionObservation(
+        transitionID: String,
+        startedAt: Date = Date()
+    ) {
+        pendingTrackTransitionObservation = PendingQishuiTrackTransitionObservation(
+            transitionID: transitionID,
+            startedAt: startedAt,
+            baselineIdentity: payloadTrackIdentity(lastPublishedPayload)
+        )
+    }
+
+    func endTrackTransitionObservation(transitionID: String) {
+        guard pendingTrackTransitionObservation?.transitionID == transitionID else { return }
+        pendingTrackTransitionObservation = nil
     }
 
     func start(onChange: @escaping ChangeHandler) {
@@ -277,6 +326,7 @@ final class MediaRemoteAdapterStreamSource {
         outputBuffer.removeAll()
         mergedPayload.removeAll()
         lastPublishedPayload.removeAll()
+        pendingTrackTransitionObservation = nil
         clearDeferredTrackPublication()
         latestSnapshot = nil
         latestRawSnapshot = nil
@@ -506,6 +556,11 @@ final class MediaRemoteAdapterStreamSource {
                 from: lastPublishedPayload,
                 to: mergedPayload
             )
+        observePendingTrackTransition(
+            payload: mergedPayload,
+            shouldDefer: shouldDefer,
+            observedAt: receivedAt
+        )
         if shouldDefer {
             beginDeferredTrackPublication(
                 timelinePayload: payload,
@@ -640,6 +695,11 @@ final class MediaRemoteAdapterStreamSource {
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
             : shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload)
+        observePendingTrackTransition(
+            payload: mergedPayload,
+            shouldDefer: shouldDefer,
+            observedAt: receivedAt
+        )
         if shouldDefer {
             beginDeferredTrackPublication(timelinePayload: payload)
             scheduleDeferredTrackPublication(onChange: onChange)
@@ -1000,6 +1060,11 @@ final class MediaRemoteAdapterStreamSource {
         let shouldDefer = deferredTrackPublicationStartedAt != nil
             ? shouldDeferDeferredTrackPublication(mergedPayload)
             : shouldDeferTrackPublication(from: lastPublishedPayload, to: mergedPayload)
+        observePendingTrackTransition(
+            payload: mergedPayload,
+            shouldDefer: shouldDefer,
+            observedAt: receivedAt
+        )
         if shouldDefer {
             beginDeferredTrackPublication(
                 timelinePayload: envelope.payload,
@@ -1143,7 +1208,13 @@ final class MediaRemoteAdapterStreamSource {
                         identityPayload: payload,
                         receivedAt: Date()
                     )
-                    if self.shouldDeferDeferredTrackPublication(payload),
+                    let shouldDefer = self.shouldDeferDeferredTrackPublication(payload)
+                    self.observePendingTrackTransition(
+                        payload: payload,
+                        shouldDefer: shouldDefer,
+                        observedAt: Date()
+                    )
+                    if shouldDefer,
                        Date().timeIntervalSince(
                         self.deferredTrackPublicationStartedAt ?? Date()
                        ) < 2.4 {
@@ -1182,6 +1253,58 @@ final class MediaRemoteAdapterStreamSource {
                 onChange: onChange,
                 allowsMetadataRefresh: false
             )
+        }
+    }
+
+    private func observePendingTrackTransition(
+        payload: [String: Any],
+        shouldDefer: Bool,
+        observedAt: Date
+    ) {
+        guard var observation = pendingTrackTransitionObservation,
+              let candidateIdentity = payloadTrackIdentity(payload),
+              candidateIdentity != observation.baselineIdentity else { return }
+
+        let presence = (
+            hasArtist: stringValue(payload["artist"])?.adapterTrimmedNonEmpty != nil,
+            hasArtwork: payloadArtworkData(payload) != nil,
+            hasAlbum: stringValue(payload["album"])?.adapterTrimmedNonEmpty != nil,
+            hasDuration: doubleValue(payload["duration"]) != nil
+        )
+        let latencyMilliseconds = max(
+            Int(observedAt.timeIntervalSince(observation.startedAt) * 1_000),
+            0
+        )
+        var events: [QishuiTrackTransitionStageEvent] = []
+        if !observation.didObserveFirstCandidate {
+            observation.didObserveFirstCandidate = true
+            events.append(QishuiTrackTransitionStageEvent(
+                transitionID: observation.transitionID,
+                stage: .firstCandidate,
+                latencyMilliseconds: latencyMilliseconds,
+                hasArtist: presence.hasArtist,
+                hasArtwork: presence.hasArtwork,
+                hasAlbum: presence.hasAlbum,
+                hasDuration: presence.hasDuration,
+                wasDeferred: shouldDefer
+            ))
+        }
+        if !shouldDefer, !observation.didObserveAtomicComplete {
+            observation.didObserveAtomicComplete = true
+            events.append(QishuiTrackTransitionStageEvent(
+                transitionID: observation.transitionID,
+                stage: .atomicComplete,
+                latencyMilliseconds: latencyMilliseconds,
+                hasArtist: presence.hasArtist,
+                hasArtwork: presence.hasArtwork,
+                hasAlbum: presence.hasAlbum,
+                hasDuration: presence.hasDuration,
+                wasDeferred: false
+            ))
+        }
+        pendingTrackTransitionObservation = observation
+        for event in events {
+            trackTransitionStageHandler?(event)
         }
     }
 

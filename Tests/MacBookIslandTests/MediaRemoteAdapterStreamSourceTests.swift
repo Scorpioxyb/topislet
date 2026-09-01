@@ -843,6 +843,89 @@ func trackTransitionRetainsPreviousCompleteSnapshotUntilAtomicCommit() throws {
     #expect(committed.sampleID == first.sampleID + 1)
 }
 
+@Test("切歌阶段观察只输出匿名字段完整性和延迟")
+@MainActor
+func trackTransitionStagesExposePresenceWithoutMetadata() throws {
+    let source = makeStreamSource()
+    let startedAt = Date(timeIntervalSince1970: 2_200)
+    let artworkA = Data([0x01])
+    let artworkB = Data([0x02])
+    let initial = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "private-song-a",
+        "title": "Private Song A",
+        "artist": "Private Artist A",
+        "album": "Private Album A",
+        "duration": 180.0,
+        "playing": 1,
+        "artworkData": artworkA.base64EncodedString()
+    ])
+    let candidate = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "temporary-private-song-b",
+        "title": "Private Song B",
+        "artist": "Private Artist A",
+        "album": "Private Album A",
+        "duration": 180.0,
+        "playing": 1
+    ])
+    let complete = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music",
+        "contentItemIdentifier": "private-song-b",
+        "title": "Private Song B",
+        "artist": "Private Artist B",
+        "album": "Private Album B",
+        "duration": 210.0,
+        "playing": 1,
+        "artworkData": artworkB.base64EncodedString()
+    ])
+    var events: [QishuiTrackTransitionStageEvent] = []
+    source.setTrackTransitionStageHandler { events.append($0) }
+
+    _ = source.ingestStreamEnvelopeForTesting(
+        initial,
+        receivedAt: startedAt,
+        receivedUptime: 220
+    )
+    source.beginTrackTransitionObservation(
+        transitionID: "q7",
+        startedAt: startedAt.addingTimeInterval(0.2)
+    )
+    _ = source.ingestStreamEnvelopeForTesting(
+        candidate,
+        receivedAt: startedAt.addingTimeInterval(0.3),
+        receivedUptime: 220.3
+    )
+    _ = source.ingestStreamEnvelopeForTesting(
+        complete,
+        receivedAt: startedAt.addingTimeInterval(0.8),
+        receivedUptime: 220.8
+    )
+
+    #expect(events == [
+        QishuiTrackTransitionStageEvent(
+            transitionID: "q7",
+            stage: .firstCandidate,
+            latencyMilliseconds: 99,
+            hasArtist: true,
+            hasArtwork: false,
+            hasAlbum: true,
+            hasDuration: true,
+            wasDeferred: true
+        ),
+        QishuiTrackTransitionStageEvent(
+            transitionID: "q7",
+            stage: .atomicComplete,
+            latencyMilliseconds: 599,
+            hasArtist: true,
+            hasArtwork: true,
+            hasAlbum: true,
+            hasDuration: true,
+            wasDeferred: false
+        )
+    ])
+}
+
 @Test("十次连续切歌始终原子提交完整元数据")
 @MainActor
 func tenSequentialTrackTransitionsNeverPublishMixedMetadata() throws {

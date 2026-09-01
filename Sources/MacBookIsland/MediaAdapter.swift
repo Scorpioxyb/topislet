@@ -204,6 +204,13 @@ private struct PendingPlaybackOperation {
     var observedOppositeState: Bool
 }
 
+private struct PendingUsageQishuiTrackTransition {
+    let transitionID: String
+    let startedAt: Date
+    let baselineTrackFingerprint: String?
+    var atomicCompleteEvent: QishuiTrackTransitionStageEvent?
+}
+
 private struct PlaybackTimelineFloor {
     let trackIdentity: PlaybackTrackIdentity
     let elapsedTime: TimeInterval
@@ -463,6 +470,7 @@ final class MusicAdapterCoordinator {
     private var lastUsagePlaybackFingerprint: String?
     private var lastUsageSyncFingerprint: String?
     private var lastUsageUIPublishFingerprint: String?
+    private var pendingUsageQishuiTrackTransition: PendingUsageQishuiTrackTransition?
     private var cachedStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -497,6 +505,9 @@ final class MusicAdapterCoordinator {
         if appleMusicEnabled {
             startAppleMusicObservation()
         }
+        mediaRemoteAdapterStreamSource.setTrackTransitionStageHandler { [weak self] event in
+            self?.recordQishuiTrackTransitionStage(event)
+        }
         mediaRemoteAdapterStreamSource.start { [weak self] in
             guard let self else { return }
             self.refreshFromRealtimeSignal(onUpdate: onUpdate)
@@ -528,6 +539,8 @@ final class MusicAdapterCoordinator {
         stopNeteaseMusicObservation()
         stopAppleMusicObservation()
         foregroundMusicSource = nil
+        pendingUsageQishuiTrackTransition = nil
+        mediaRemoteAdapterStreamSource.setTrackTransitionStageHandler(nil)
         mediaRemoteAdapterStreamSource.stop()
         qishuiAXChangeMonitor.stop()
         cancelQishuiControlAvailabilityScheduling()
@@ -630,9 +643,17 @@ final class MusicAdapterCoordinator {
         ))
         let commandLabel = Self.commandLabel(command)
         let startedAt = Date()
+        let baselineState = selectedMusicState()
+        let baselineTrackFingerprint = baselineState.hasCurrentTrack
+            ? MusicUsageTrackFingerprint.make(
+                source: source,
+                title: baselineState.track.title,
+                artist: baselineState.track.artist
+            )
+            : nil
         let targetPlayback: String?
         if command == .playPause {
-            targetPlayback = selectedMusicState().isPlaying ? "paused" : "playing"
+            targetPlayback = baselineState.isPlaying ? "paused" : "playing"
         } else {
             targetPlayback = nil
         }
@@ -649,9 +670,16 @@ final class MusicAdapterCoordinator {
             command,
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
+        let completedAt = Date()
+        let isAcceptedQishuiTrackTransition = outcome.didSendCommand
+            && source == "qishui"
+            && (command == .nextTrack || command == .previousTrack)
+        let transitionID = isAcceptedQishuiTrackTransition
+            ? "q\(requestID)"
+            : nil
         var resultFields = [
             "command": commandLabel,
-            "latency_ms": String(max(Int(Date().timeIntervalSince(startedAt) * 1_000), 0)),
+            "latency_ms": String(max(Int(completedAt.timeIntervalSince(startedAt) * 1_000), 0)),
             "outcome": outcome.didSendCommand ? "accepted" : "rejected",
             "request": String(requestID),
             "status": outcome.status.availability.rawValue,
@@ -660,7 +688,34 @@ final class MusicAdapterCoordinator {
         if let targetPlayback {
             resultFields["target_playback"] = targetPlayback
         }
+        if let transitionID {
+            resultFields["transition"] = transitionID
+        }
         recordUsage("control_result", fields: resultFields)
+        if let transitionID {
+            pendingUsageQishuiTrackTransition = PendingUsageQishuiTrackTransition(
+                transitionID: transitionID,
+                startedAt: completedAt,
+                baselineTrackFingerprint: baselineTrackFingerprint
+            )
+            mediaRemoteAdapterStreamSource.beginTrackTransitionObservation(
+                transitionID: transitionID,
+                startedAt: completedAt
+            )
+            recordQishuiTrackTransitionStage(
+                transitionID: transitionID,
+                stage: "control_result",
+                latencyMilliseconds: 0,
+                hasArtist: !baselineState.track.artist.isEmpty,
+                hasArtwork: baselineState.track.hasArtwork
+                    || baselineState.track.artworkData != nil
+                    || baselineState.track.artworkURL != nil,
+                hasAlbum: !(latestMediaRemoteSnapshot?.currentTrack?.album ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                hasDuration: baselineState.duration != nil,
+                wasDeferred: false
+            )
+        }
         return outcome
     }
 
@@ -1249,6 +1304,28 @@ final class MusicAdapterCoordinator {
                     "source": source,
                     "track": trackFingerprint
                 ])
+            }
+            if source == "qishui",
+               let transition = pendingUsageQishuiTrackTransition,
+               let completeEvent = transition.atomicCompleteEvent,
+               trackFingerprint != transition.baselineTrackFingerprint {
+                recordQishuiTrackTransitionStage(
+                    transitionID: transition.transitionID,
+                    stage: "ui_published",
+                    latencyMilliseconds: max(
+                        Int(Date().timeIntervalSince(transition.startedAt) * 1_000),
+                        0
+                    ),
+                    hasArtist: !state.track.artist.isEmpty,
+                    hasArtwork: hasArtwork,
+                    hasAlbum: completeEvent.hasAlbum,
+                    hasDuration: state.duration != nil,
+                    wasDeferred: false
+                )
+                mediaRemoteAdapterStreamSource.endTrackTransitionObservation(
+                    transitionID: transition.transitionID
+                )
+                pendingUsageQishuiTrackTransition = nil
             }
         } else {
             lastUsageUIPublishFingerprint = nil
@@ -2697,6 +2774,50 @@ final class MusicAdapterCoordinator {
     private func recordUsage(_ name: String, fields: [String: String] = [:]) {
         let message = MusicUsageEvent(name: name, fields: fields).encodedMessage
         usageLogger.notice("\(message, privacy: .public)")
+    }
+
+    private func recordQishuiTrackTransitionStage(
+        _ event: QishuiTrackTransitionStageEvent
+    ) {
+        guard var transition = pendingUsageQishuiTrackTransition,
+              transition.transitionID == event.transitionID else { return }
+        recordQishuiTrackTransitionStage(
+            transitionID: event.transitionID,
+            stage: event.stage.rawValue,
+            latencyMilliseconds: event.latencyMilliseconds,
+            hasArtist: event.hasArtist,
+            hasArtwork: event.hasArtwork,
+            hasAlbum: event.hasAlbum,
+            hasDuration: event.hasDuration,
+            wasDeferred: event.wasDeferred
+        )
+        if event.stage == .atomicComplete {
+            transition.atomicCompleteEvent = event
+            pendingUsageQishuiTrackTransition = transition
+        }
+    }
+
+    private func recordQishuiTrackTransitionStage(
+        transitionID: String,
+        stage: String,
+        latencyMilliseconds: Int,
+        hasArtist: Bool,
+        hasArtwork: Bool,
+        hasAlbum: Bool,
+        hasDuration: Bool,
+        wasDeferred: Bool
+    ) {
+        recordUsage("track_transition_stage", fields: [
+            "deferred": wasDeferred ? "1" : "0",
+            "has_album": hasAlbum ? "1" : "0",
+            "has_artist": hasArtist ? "1" : "0",
+            "has_artwork": hasArtwork ? "1" : "0",
+            "has_duration": hasDuration ? "1" : "0",
+            "latency_ms": String(max(latencyMilliseconds, 0)),
+            "source": "qishui",
+            "stage": stage,
+            "transition": transitionID
+        ])
     }
 
     private func recordUsageHeartbeatIfNeeded(_ state: MusicState, now: Date = Date()) {
