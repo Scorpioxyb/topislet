@@ -132,6 +132,8 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let controlToArtworkLatency: MusicUsageLatencySummary
     public let seekConfirmationLatency: MusicUsageLatencySummary
     public let seekConfirmationTimeoutCount: Int
+    public let seekCancellationCount: Int
+    public let seekCancellationReasons: [String: Int]
     public let sampleCoverage: MusicUsageSampleCoverage
     public let anomalies: [String]
 }
@@ -182,6 +184,8 @@ public enum MusicUsageDailyAnalyzer {
         var controlToArtworkLatencies: [Int] = []
         var seekConfirmationLatencies: [Int] = []
         var seekConfirmationTimeouts = 0
+        var seekCancellations = 0
+        var seekCancellationReasons: [String: Int] = [:]
         var acceptedPlayPauseControls = 0
         var sourceEventCounts: [String: Int] = [:]
         var issuedControls: [String: PendingControl] = [:]
@@ -333,6 +337,10 @@ public enum MusicUsageDailyAnalyzer {
                 }
             case "seek_confirmation_timeout":
                 seekConfirmationTimeouts += 1
+            case "seek_cancelled":
+                seekCancellations += 1
+                let reason = event.fields["reason"] ?? "unknown"
+                seekCancellationReasons[reason, default: 0] += 1
             case "ui_published":
                 guard let source = event.fields["source"],
                       let track = event.fields["track"] else { break }
@@ -441,7 +449,8 @@ public enum MusicUsageDailyAnalyzer {
             > playbackConfirmationLatencies.count + playbackConfirmationTimeouts {
             missingSampleKinds.append("playback_confirmation")
         }
-        if seekAccepted > seekConfirmationLatencies.count + seekConfirmationTimeouts {
+        if seekAccepted
+            > seekConfirmationLatencies.count + seekConfirmationTimeouts + seekCancellations {
             missingSampleKinds.append("seek_confirmation")
         }
         let coverageStatus: String
@@ -454,7 +463,7 @@ public enum MusicUsageDailyAnalyzer {
         }
 
         return MusicUsageDailySummary(
-            schemaVersion: 3,
+            schemaVersion: 4,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -487,6 +496,8 @@ public enum MusicUsageDailyAnalyzer {
             controlToArtworkLatency: latencySummary(controlToArtworkLatencies),
             seekConfirmationLatency: latencySummary(seekConfirmationLatencies),
             seekConfirmationTimeoutCount: seekConfirmationTimeouts,
+            seekCancellationCount: seekCancellations,
+            seekCancellationReasons: seekCancellationReasons,
             sampleCoverage: MusicUsageSampleCoverage(
                 status: coverageStatus,
                 observationHeartbeatCount: observationHeartbeats,

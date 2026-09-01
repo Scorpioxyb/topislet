@@ -196,7 +196,7 @@ func dailyAnalyzerDoesNotTreatMissingUsageAsPassingCoverage() {
         records,
         generatedAt: start.addingTimeInterval(16 * 60)
     )
-    #expect(summary.schemaVersion == 3)
+    #expect(summary.schemaVersion == 4)
     #expect(summary.sampleCoverage.status == "no_media_activity")
     #expect(summary.sampleCoverage.observationHeartbeatCount == 1)
     #expect(summary.sampleCoverage.mediaPresenceHeartbeatCount == 0)
@@ -269,4 +269,107 @@ func dailyAnalyzerMarksEndToEndSamplesComplete() {
     #expect(summary.sampleCoverage.missingSampleKinds.isEmpty)
     #expect(summary.sampleCoverage.sourceEventCounts == ["qishui": 6])
     #expect(summary.anomalies.isEmpty)
+}
+
+@Test
+func dailyAnalyzerTreatsCancelledSeeksAsTerminalCoverage() {
+    let start = Date(timeIntervalSince1970: 5_000)
+    let records = [
+        TimestampedMusicUsageEvent(
+            timestamp: start,
+            event: MusicUsageEvent(name: "source_change", fields: [
+                "from": "none", "to": "qishui"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.1),
+            event: MusicUsageEvent(name: "track_changed", fields: [
+                "source": "qishui", "track": "abc123", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.2),
+            event: MusicUsageEvent(name: "control_result", fields: [
+                "request": "1", "source": "qishui", "command": "next",
+                "outcome": "accepted", "latency_ms": "20"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.3),
+            event: MusicUsageEvent(name: "seek_result", fields: [
+                "source": "qishui", "outcome": "accepted", "latency_ms": "15"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.4),
+            event: MusicUsageEvent(name: "seek_cancelled", fields: [
+                "source": "qishui", "reason": "superseded", "latency_ms": "100"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.5),
+            event: MusicUsageEvent(name: "seek_result", fields: [
+                "source": "qishui", "outcome": "accepted", "latency_ms": "15"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.6),
+            event: MusicUsageEvent(name: "seek_cancelled", fields: [
+                "source": "qishui", "reason": "track_changed", "latency_ms": "100"
+            ])
+        )
+    ]
+    let summary = MusicUsageDailyAnalyzer.analyze(
+        records,
+        generatedAt: start.addingTimeInterval(1)
+    )
+    #expect(summary.schemaVersion == 4)
+    #expect(summary.seekCancellationCount == 2)
+    #expect(summary.seekCancellationReasons == [
+        "superseded": 1,
+        "track_changed": 1
+    ])
+    #expect(summary.sampleCoverage.status == "complete")
+    #expect(!summary.sampleCoverage.missingSampleKinds.contains("seek_confirmation"))
+    #expect(summary.anomalies.isEmpty)
+}
+
+@Test
+func dailyAnalyzerKeepsAcceptedSeekWithoutTerminalPartial() {
+    let start = Date(timeIntervalSince1970: 6_000)
+    let records = [
+        TimestampedMusicUsageEvent(
+            timestamp: start,
+            event: MusicUsageEvent(name: "source_change", fields: [
+                "from": "none", "to": "qishui"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.1),
+            event: MusicUsageEvent(name: "track_changed", fields: [
+                "source": "qishui", "track": "abc123", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.2),
+            event: MusicUsageEvent(name: "control_result", fields: [
+                "request": "1", "source": "qishui", "command": "next",
+                "outcome": "accepted", "latency_ms": "20"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.3),
+            event: MusicUsageEvent(name: "seek_result", fields: [
+                "source": "qishui", "outcome": "accepted", "latency_ms": "15"
+            ])
+        )
+    ]
+    let summary = MusicUsageDailyAnalyzer.analyze(
+        records,
+        generatedAt: start.addingTimeInterval(1)
+    )
+    #expect(summary.seekCancellationCount == 0)
+    #expect(summary.seekCancellationReasons.isEmpty)
+    #expect(summary.sampleCoverage.status == "partial")
+    #expect(summary.sampleCoverage.missingSampleKinds == ["seek_confirmation"])
 }

@@ -54,6 +54,14 @@ enum MusicSeekInteraction {
     }
 }
 
+enum MusicSeekCancellationReason: String {
+    case superseded
+    case trackChanged = "track_changed"
+    case sourceChanged = "source_changed"
+    case sourceExited = "source_exited"
+    case stateReset = "state_reset"
+}
+
 enum QishuiSeekSafety {
     // The adapter's seek command still follows the system media focus. It is
     // therefore only admitted after a fresh, PID-matched Qishui focus check.
@@ -1293,6 +1301,27 @@ final class MusicAdapterCoordinator {
                 Int(Date().timeIntervalSince(requestedAt) * 1_000),
                 0
             )),
+            "source": Self.sourceLabel(MusicSourceID(
+                bundleIdentifier: sourceBundleIdentifier
+            )),
+            "target_permille": String(Int(
+                (min(max(targetProgress, 0), 1) * 1_000).rounded()
+            ))
+        ])
+    }
+
+    func noteSeekCancelled(
+        sourceBundleIdentifier: String?,
+        requestedAt: Date,
+        targetProgress: Double,
+        reason: MusicSeekCancellationReason
+    ) {
+        recordUsage("seek_cancelled", fields: [
+            "latency_ms": String(max(
+                Int(Date().timeIntervalSince(requestedAt) * 1_000),
+                0
+            )),
+            "reason": reason.rawValue,
             "source": Self.sourceLabel(MusicSourceID(
                 bundleIdentifier: sourceBundleIdentifier
             )),

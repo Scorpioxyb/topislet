@@ -134,7 +134,10 @@ private func run() throws {
     print(
         "日常日志：\(report.structuredEventCount) 个结构化事件；"
         + "控制 \(report.controls.accepted)/\(report.controls.total)；"
-        + "seek \(report.seeks.accepted)/\(report.seeks.total)；"
+        + "seek \(report.seeks.accepted)/\(report.seeks.total)"
+        + "（确认 \(report.seekConfirmationLatency.count) / "
+        + "超时 \(report.seekConfirmationTimeoutCount) / "
+        + "取消 \(report.seekCancellationCount)）；"
         + "\(coverageText)；\(anomalyText)"
     )
     if !report.sampleCoverage.missingSampleKinds.isEmpty {

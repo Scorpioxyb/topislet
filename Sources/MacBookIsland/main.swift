@@ -1447,7 +1447,7 @@ final class IslandModel: ObservableObject {
             return
         }
         noteDirectControlInteraction()
-        pendingMusicSeek = nil
+        cancelPendingMusicSeek(reason: .superseded)
         let previousSignature = musicSignature(music)
         let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
@@ -1495,7 +1495,7 @@ final class IslandModel: ObservableObject {
             return
         }
         noteDirectControlInteraction()
-        pendingMusicSeek = nil
+        cancelPendingMusicSeek(reason: .superseded)
         let previousSignature = musicSignature(music)
         let displayedSourceBundleIdentifier = music.track.sourceBundleIdentifier
         let feedbackGeneration = beginTrackControlFeedback(
@@ -1822,12 +1822,43 @@ final class IslandModel: ObservableObject {
             interaction: interaction,
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
-        guard requestID == musicSeekRequestID else { return true }
-        guard music.track.sourceBundleIdentifier
-            == displayedSourceBundleIdentifier else { return true }
         let didSeek = result.status.availability == .qishuiControlSent
             || result.status.availability == .appleMusicControlSent
-        pendingMusicSeek = nil
+        guard requestID == musicSeekRequestID else {
+            if didSeek {
+                let currentSourceBundleIdentifier = music.track.sourceBundleIdentifier
+                let reason: MusicSeekCancellationReason
+                if currentSourceBundleIdentifier == displayedSourceBundleIdentifier {
+                    reason = .superseded
+                } else if currentSourceBundleIdentifier == nil {
+                    reason = .sourceExited
+                } else {
+                    reason = .sourceChanged
+                }
+                musicAdapter.noteSeekCancelled(
+                    sourceBundleIdentifier: displayedSourceBundleIdentifier,
+                    requestedAt: requestedAt,
+                    targetProgress: progress,
+                    reason: reason
+                )
+            }
+            return true
+        }
+        guard music.track.sourceBundleIdentifier
+            == displayedSourceBundleIdentifier else {
+            if didSeek {
+                musicAdapter.noteSeekCancelled(
+                    sourceBundleIdentifier: displayedSourceBundleIdentifier,
+                    requestedAt: requestedAt,
+                    targetProgress: progress,
+                    reason: music.track.sourceBundleIdentifier == nil
+                        ? .sourceExited
+                        : .sourceChanged
+                )
+            }
+            return true
+        }
+        cancelPendingMusicSeek(reason: .superseded)
         applyMusicUpdate(result.music, status: result.status, forceMusic: true)
         if didSeek {
             pendingMusicSeek = PendingMusicSeek(
@@ -1859,6 +1890,7 @@ final class IslandModel: ObservableObject {
     func stop() {
         ticker?.invalidate()
         ticker = nil
+        cancelPendingMusicSeek(reason: .stateReset)
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
         musicAccentTask?.cancel()
@@ -2293,7 +2325,11 @@ final class IslandModel: ObservableObject {
         if newStatus?.availability == .qishuiNotRunning {
             resetMusicPresentationAfterSourceExit()
         } else if MusicUpdatePolicy.didChangeSource(current: music, candidate: newMusic) {
-            resetPendingMusicControlPresentation()
+            resetPendingMusicControlPresentation(
+                seekCancellationReason: newMusic.track.sourceBundleIdentifier == nil
+                    ? .sourceExited
+                    : .sourceChanged
+            )
         }
         if isMusicScrubbing, !forceMusic {
             if let newStatus,
@@ -2369,7 +2405,7 @@ final class IslandModel: ObservableObject {
     }
 
     private func resetMusicPresentationAfterSourceExit() {
-        resetPendingMusicControlPresentation()
+        resetPendingMusicControlPresentation(seekCancellationReason: .sourceExited)
         if activeFeature == .music,
            !hasPendingNotification,
            MusicPresentationTransitionPolicy
@@ -2380,7 +2416,9 @@ final class IslandModel: ObservableObject {
         }
     }
 
-    private func resetPendingMusicControlPresentation() {
+    private func resetPendingMusicControlPresentation(
+        seekCancellationReason: MusicSeekCancellationReason
+    ) {
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
         trackControlFeedbackTask?.cancel()
@@ -2389,9 +2427,20 @@ final class IslandModel: ObservableObject {
         pendingTrackControlBaselineSignature = nil
         pendingTrackControlGeneration = nil
         pendingTrackControlChainCount = 0
-        pendingMusicSeek = nil
+        cancelPendingMusicSeek(reason: seekCancellationReason)
         musicSeekRequestID += 1
         isMusicScrubbing = false
+    }
+
+    private func cancelPendingMusicSeek(reason: MusicSeekCancellationReason) {
+        guard let pendingSeek = pendingMusicSeek else { return }
+        musicAdapter.noteSeekCancelled(
+            sourceBundleIdentifier: pendingSeek.sourceBundleIdentifier,
+            requestedAt: pendingSeek.requestedAt,
+            targetProgress: pendingSeek.targetProgress,
+            reason: reason
+        )
+        pendingMusicSeek = nil
     }
 
     private func confirmTrackControlFeedbackIfNeeded(
@@ -2513,7 +2562,7 @@ final class IslandModel: ObservableObject {
             return newMusic
         }
         guard musicSignature(newMusic) == pendingSeek.trackSignature else {
-            pendingMusicSeek = nil
+            cancelPendingMusicSeek(reason: .trackChanged)
             return newMusic
         }
 
