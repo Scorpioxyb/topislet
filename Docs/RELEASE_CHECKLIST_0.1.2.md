@@ -35,6 +35,10 @@
 - [x] 辅助功能授权失效时，汽水 / 网易云控制按钮提供可点击的恢复入口，授权状态每 0.5 秒自动刷新；汽水安装版授权恢复后播放 / 暂停、上一首、下一首回归通过。详见 [`Docs/acceptance/2026-08-30-v0.1.2-accessibility-recovery.md`](acceptance/2026-08-30-v0.1.2-accessibility-recovery.md)。
 - [x] 新增本机日常使用日志与 `DailyUsageAnalyzer`：匿名曲目标识、来源 / 控制 / seek / UI / 封面 / 权威确认事件可聚合为 P50/P95；15 分钟健康心跳和样本覆盖状态会区分无媒体活动、部分样本与完整样本，原始音乐内容不进入日志或 Git；8 项日志与心跳契约测试通过。
 
+## 长稳门禁复核
+
+- [x] 2026-09-03 复核 `.build/qa/topislet-final-candidate-2h-2026-07-26.json`：`completed=true`、观察 `7200.019981s`、`1438` 个样本、`violations=[]`；结束 RSS 增长 `1.28%`、physical footprint 增长 `12.46%`，均低于 `15%` 门槛。详见 [`Docs/acceptance/2026-09-03-v0.1.2-final-candidate-health-check.md`](acceptance/2026-09-03-v0.1.2-final-candidate-health-check.md)。
+
 ## 发布
 
 - [x] `Packaging/Info.plist` 更新为 `0.1.2 (23)`。

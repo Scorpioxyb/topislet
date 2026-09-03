@@ -153,11 +153,7 @@ final class MediaRemoteAdapterStreamSource {
 
     init(
         runningQishuiProcessIdentifiersProvider: @escaping () -> Set<pid_t> = {
-            Set(
-                NSRunningApplication.runningApplications(
-                    withBundleIdentifier: "com.soda.music"
-                ).filter { !$0.isTerminated }.map(\.processIdentifier)
-            )
+            Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
         }
     ) {
         self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider

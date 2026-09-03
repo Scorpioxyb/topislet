@@ -281,9 +281,7 @@ if CommandLine.arguments.contains("--qishui-control-diagnostic") {
 }
 
 if CommandLine.arguments.contains("--qishui-control-availability") {
-    let processIdentifier = NSRunningApplication.runningApplications(
-        withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
-    ).first(where: { !$0.isTerminated })?.processIdentifier
+    let processIdentifier = QishuiProcessLocator.application()?.processIdentifier
     let availability = QishuiSemanticAXController().controlAvailability(
         processIdentifier: processIdentifier
     )

@@ -25,7 +25,6 @@ struct QishuiDirectSnapshot: Equatable {
 }
 
 final class QishuiAdapter {
-    private let bundleIdentifier = "com.soda.music"
     private let fileManager = FileManager.default
     private let axReader = QishuiAXReader(imagePrefixes: [])
     private var lastProcessIdentifier: pid_t?
@@ -33,7 +32,7 @@ final class QishuiAdapter {
         .appendingPathComponent("Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic")
 
     func isRunning() -> Bool {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first != nil
+        QishuiProcessLocator.isRunning()
     }
 
     func invalidateAXCache() {
@@ -41,7 +40,9 @@ final class QishuiAdapter {
     }
 
     func snapshot() -> QishuiDirectSnapshot {
-        let runningApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first
+        let runningApp = QishuiProcessLocator.application(
+            preferredProcessIdentifier: lastProcessIdentifier
+        )
         guard let runningApp else {
             lastProcessIdentifier = nil
             axReader.invalidateCache()

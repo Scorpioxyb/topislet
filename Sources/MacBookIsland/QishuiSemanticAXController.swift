@@ -113,7 +113,6 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         let next: ElementIdentity
     }
 
-    private let bundleIdentifier = "com.soda.music"
     private let maximumDepth = 18
     private let maximumNodeCount = 8_000
     private let messagingTimeout: Float = 0.08
@@ -134,11 +133,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             )
         }
 
-        let runningApplications = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleIdentifier)
-        let app = expectedProcessIdentifier.flatMap { processIdentifier in
-            runningApplications.first { $0.processIdentifier == processIdentifier }
-        } ?? (expectedProcessIdentifier == nil ? runningApplications.first : nil)
+        let app = QishuiProcessLocator.application(
+            preferredProcessIdentifier: expectedProcessIdentifier,
+            requirePreferredProcessIdentifier: expectedProcessIdentifier != nil
+        )
         guard let app else {
             cachedControls = nil
             return QishuiSemanticAXControlResult(
@@ -216,9 +214,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard AXIsProcessTrusted(),
-              let app = NSRunningApplication
-                .runningApplications(withBundleIdentifier: bundleIdentifier)
-                .first else {
+              let app = QishuiProcessLocator.application() else {
             return false
         }
         return enableManualAccessibility(
@@ -273,9 +269,9 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard AXIsProcessTrusted() else { return "accessibilityTrusted=false" }
-        guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first else { return "qishuiRunning=false" }
+        guard let app = QishuiProcessLocator.application() else {
+            return "qishuiRunning=false"
+        }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         let manualAccessibilityEnabled = boolAttribute(
             application,
@@ -403,13 +399,10 @@ final class QishuiSemanticAXController: @unchecked Sendable {
     static func windowAvailability(
         processIdentifier expectedProcessIdentifier: pid_t?
     ) -> QishuiControlAvailability {
-        let runningApplications = NSRunningApplication.runningApplications(
-            withBundleIdentifier: "com.soda.music"
-        )
         guard let processIdentifier = expectedProcessIdentifier,
-              runningApplications.contains(where: {
-                  !$0.isTerminated && $0.processIdentifier == processIdentifier
-              }) else {
+              QishuiProcessLocator.isRunning(
+                  processIdentifier: processIdentifier
+              ) else {
             return .notRunning
         }
         guard AXIsProcessTrusted() else { return .accessibilityRequired }

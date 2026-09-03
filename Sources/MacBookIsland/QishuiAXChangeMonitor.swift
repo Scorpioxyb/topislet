@@ -4,7 +4,6 @@ import Foundation
 
 @MainActor
 final class QishuiAXChangeMonitor {
-    private let bundleIdentifier = "com.soda.music"
     private let axMessageTimeout: Float = 0.2
     private let debounceInterval: TimeInterval = 0.35
     private let reattachInterval: TimeInterval = 12.0
@@ -61,7 +60,7 @@ final class QishuiAXChangeMonitor {
 
     private func refreshObservedTargets(force: Bool = false) {
         guard AXIsProcessTrusted(),
-              let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first else {
+              let app = QishuiProcessLocator.application() else {
             tearDownObserver()
             return
         }

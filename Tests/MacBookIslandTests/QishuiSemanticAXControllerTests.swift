@@ -226,3 +226,27 @@ func qishuiControlPrewarmRequiresVerifiedAvailability() {
     #expect(!QishuiControlAvailability.notRunning.allowsCachePrewarmAfterTrackChange)
     #expect(!QishuiControlAvailability.unknown.allowsCachePrewarmAfterTrackChange)
 }
+
+@Test("汽水进程定位优先使用已验证的 MediaRemote PID")
+func qishuiProcessSelectionPrefersVerifiedMediaRemotePID() {
+    #expect(QishuiProcessSelectionPolicy.preferredProcessIdentifier(
+        verifiedMediaRemoteProcessIdentifier: 222,
+        directSnapshotProcessIdentifier: 111,
+        runningProcessIdentifiers: [111, 222]
+    ) == 222)
+    #expect(QishuiProcessSelectionPolicy.preferredProcessIdentifier(
+        verifiedMediaRemoteProcessIdentifier: 999,
+        directSnapshotProcessIdentifier: 111,
+        runningProcessIdentifiers: [111, 222]
+    ) == 111)
+    #expect(QishuiProcessSelectionPolicy.preferredProcessIdentifier(
+        verifiedMediaRemoteProcessIdentifier: nil,
+        directSnapshotProcessIdentifier: nil,
+        runningProcessIdentifiers: [111, 222]
+    ) == nil)
+    #expect(QishuiProcessSelectionPolicy.preferredProcessIdentifier(
+        verifiedMediaRemoteProcessIdentifier: nil,
+        directSnapshotProcessIdentifier: nil,
+        runningProcessIdentifiers: [222]
+    ) == 222)
+}

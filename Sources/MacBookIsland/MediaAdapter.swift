@@ -760,7 +760,7 @@ final class MusicAdapterCoordinator {
         if binding.source == .neteaseMusic {
             return await performNeteaseMusicControl(command)
         }
-        let canAttemptControl = latestQishuiSnapshot?.isRunning == true || qishuiAdapter.isRunning()
+        let canAttemptControl = runningQishuiApplication() != nil
         guard canAttemptControl else {
             markQishuiNotRunning()
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
@@ -789,10 +789,7 @@ final class MusicAdapterCoordinator {
             }
         }
 
-        let targetProcessIdentifier = latestQishuiSnapshot?.processIdentifier
-            ?? NSRunningApplication.runningApplications(
-                withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
-            ).first?.processIdentifier
+        let targetProcessIdentifier = runningQishuiApplication()?.processIdentifier
         guard let targetProcessIdentifier else {
             markQishuiNotRunning()
             return MusicControlOutcome(status: cachedStatus, didSendCommand: false)
@@ -1206,6 +1203,34 @@ final class MusicAdapterCoordinator {
                 )
             }
         }
+    }
+
+    private func runningQishuiApplication() -> NSRunningApplication? {
+        let runningApplications = QishuiProcessLocator.runningApplications()
+        let runningProcessIdentifiers = Set(
+            runningApplications.map(\.processIdentifier)
+        )
+        let verifiedMediaRemoteProcessIdentifier: pid_t?
+        if latestMediaRemoteSnapshot?.isVerifiedQishuiSource == true {
+            verifiedMediaRemoteProcessIdentifier = latestMediaRemoteSnapshot?
+                .currentTrack?
+                .sourceProcessIdentifier
+        } else {
+            verifiedMediaRemoteProcessIdentifier = nil
+        }
+        let preferredProcessIdentifier = QishuiProcessSelectionPolicy
+            .preferredProcessIdentifier(
+                verifiedMediaRemoteProcessIdentifier: verifiedMediaRemoteProcessIdentifier,
+                directSnapshotProcessIdentifier: latestQishuiSnapshot?.processIdentifier,
+                runningProcessIdentifiers: runningProcessIdentifiers
+            )
+        if let preferredProcessIdentifier {
+            return runningApplications.first {
+                $0.processIdentifier == preferredProcessIdentifier
+            }
+        }
+        guard runningApplications.count == 1 else { return nil }
+        return runningApplications.first
     }
 
     private func synchronizeAfterQueuedTrackControl(
@@ -1773,9 +1798,7 @@ final class MusicAdapterCoordinator {
         }
         qishuiControlAvailabilityGeneration &+= 1
         let generation = qishuiControlAvailabilityGeneration
-        guard let processIdentifier = NSRunningApplication.runningApplications(
-            withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
-        ).first(where: { !$0.isTerminated })?.processIdentifier else {
+        guard let processIdentifier = runningQishuiApplication()?.processIdentifier else {
             qishuiControlAvailabilityRefreshQueued = false
             qishuiControlAvailabilityRetryAttempt = 0
             guard latestQishuiControlAvailability != .notRunning else { return }
@@ -1796,12 +1819,9 @@ final class MusicAdapterCoordinator {
                     return
                 }
                 self.qishuiControlAvailabilityRefreshInFlight = false
-                guard NSRunningApplication.runningApplications(
-                        withBundleIdentifier: MusicAdapterRegistry.qishui.descriptor.bundleIdentifier
-                      ).contains(where: {
-                          !$0.isTerminated
-                              && $0.processIdentifier == processIdentifier
-                      }) else {
+                guard QishuiProcessLocator.isRunning(
+                    processIdentifier: processIdentifier
+                ) else {
                     self.markQishuiNotRunning()
                     return
                 }
@@ -1857,6 +1877,11 @@ final class MusicAdapterCoordinator {
 
         realtimeRefreshInFlight = true
         _ = refreshSourceStatus()
+        if latestMediaRemoteSnapshot?.isVerifiedQishuiSource == true,
+           latestMediaRemoteSnapshot?.currentTrack != nil,
+           latestQishuiControlAvailability != .available {
+            scheduleQishuiControlAvailabilityRefresh()
+        }
         let update = selectedMusicUpdate()
         recordUsageState(update.music, status: update.sourceStatus)
         onUpdate(update.music, update.sourceStatus)
