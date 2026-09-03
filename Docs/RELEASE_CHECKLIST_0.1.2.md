@@ -39,6 +39,10 @@
 
 - [x] 2026-09-03 复核 `.build/qa/topislet-final-candidate-2h-2026-07-26.json`：`completed=true`、观察 `7200.019981s`、`1438` 个样本、`violations=[]`；结束 RSS 增长 `1.28%`、physical footprint 增长 `12.46%`，均低于 `15%` 门槛。详见 [`Docs/acceptance/2026-09-03-v0.1.2-final-candidate-health-check.md`](acceptance/2026-09-03-v0.1.2-final-candidate-health-check.md)。
 
+## v0.1.3 开发复核
+
+- [x] 2026-09-04 build 30 安装版汽水三键长窗口回归完成：播放 / 暂停 2/2、上一首 / 下一首各 1/1 均接受；切歌过渡包继续由原子门禁拦截，约 3 秒后完整状态收敛。当前汽水完整状态 P95 超过 500ms 的 P0 未因本次三键通过而关闭，详见 [`Docs/acceptance/2026-09-04-v0.1.3-qishui-three-control-runtime.md`](acceptance/2026-09-04-v0.1.3-qishui-three-control-runtime.md)。
+
 ## 发布
 
 - [x] `Packaging/Info.plist` 更新为 `0.1.2 (23)`。
