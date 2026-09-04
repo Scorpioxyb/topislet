@@ -15,6 +15,6 @@
 
 The application bundles `MediaRemoteAdapter.framework` and `mediaremote-adapter.pl`. Project-specific `get-client` and `stream-client` commands read the `com.soda.music` state. The experimental `send-client` command is retained for diagnostics only: it does not guarantee isolation from the system-wide current media focus and is not used by product controls.
 
-The exact upstream commit, project patch, build command and byte-for-byte verification record are documented in `Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md`. The committed rebuild script reproduces the bundled universal framework with SHA-256 `3446ebb0889757c8d4cee0ac7a577bbbd530e3ba61225d30b47e3b85d31f95ab` on the recorded toolchain.
+The exact upstream commit, project patch, build command and byte-for-byte verification record are documented in `Docs/MEDIAREMOTE_ADAPTER_REPRODUCIBILITY.md`. The committed rebuild script reproduces the bundled universal framework with SHA-256 `080c9cd816dcd7d5871a2c3a2b2012bdfe0ed03792c1c7b5b8d062d434b6f7f7` on the recorded toolchain.
 
 The BSD 3-Clause license requires its copyright notice, conditions and disclaimer to accompany source and binary redistributions. The release packaging script copies this notice into the App bundle.

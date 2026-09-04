@@ -169,7 +169,7 @@ new file mode 100644
 index 0000000..cd0aa17
 --- /dev/null
 +++ b/src/adapter/client.h
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,12 @@
 +// Copyright (c) 2025 Jonas van den Berg
 +// This file is licensed under the BSD 3-Clause License.
 +
@@ -179,6 +179,7 @@ index 0000000..cd0aa17
 +#import <Foundation/Foundation.h>
 +
 +id findNowPlayingClient(NSString *bundleIdentifier);
++void invalidateNowPlayingClientCache(void);
 +
 +#endif // MEDIAREMOTEADAPTER_ADAPTER_CLIENT_H
 diff --git a/src/adapter/client.m b/src/adapter/client.m
@@ -186,7 +187,7 @@ new file mode 100644
 index 0000000..d06b23f
 --- /dev/null
 +++ b/src/adapter/client.m
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,122 @@
 +// Copyright (c) 2025 Jonas van den Berg
 +// This file is licensed under the BSD 3-Clause License.
 +
@@ -197,12 +198,79 @@ index 0000000..d06b23f
 +
 +#define CLIENT_LOOKUP_TIMEOUT_MILLIS 1000
 +
++static id g_cachedClient = nil;
++static NSString *g_cachedBundleIdentifier = nil;
++static pid_t g_cachedProcessIdentifier = 0;
++static NSObject *g_clientCacheLock = nil;
++
++static NSObject *clientCacheLock(void) {
++    static dispatch_once_t onceToken;
++    dispatch_once(&onceToken, ^{
++        g_clientCacheLock = [NSObject new];
++    });
++    return g_clientCacheLock;
++}
++
++void invalidateNowPlayingClientCache(void) {
++    @synchronized (clientCacheLock()) {
++        g_cachedClient = nil;
++        g_cachedBundleIdentifier = nil;
++        g_cachedProcessIdentifier = 0;
++    }
++}
++
++static BOOL cachedClientStillTargets(NSString *bundleIdentifier) {
++    if (!g_cachedClient ||
++        ![g_cachedBundleIdentifier isEqualToString:bundleIdentifier] ||
++        !g_mediaRemote.clientGetBundleIdentifier ||
++        !g_mediaRemote.clientGetParentAppBundleIdentifier) {
++        return NO;
++    }
++
++    const void *client = (__bridge const void *)g_cachedClient;
++    CFStringRef bundle = g_mediaRemote.clientGetBundleIdentifier(client);
++    CFStringRef parent =
++        g_mediaRemote.clientGetParentAppBundleIdentifier(client);
++    BOOL matches = (bundle && [(__bridge NSString *)bundle
++                               isEqualToString:bundleIdentifier]) ||
++                   (parent && [(__bridge NSString *)parent
++                               isEqualToString:bundleIdentifier]);
++    if (!matches) {
++        return NO;
++    }
++
++    if (g_mediaRemote.clientGetProcessIdentifier) {
++        pid_t processIdentifier =
++            g_mediaRemote.clientGetProcessIdentifier(client);
++        if (processIdentifier <= 0 ||
++            processIdentifier != g_cachedProcessIdentifier) {
++            return NO;
++        }
++        NSRunningApplication *application =
++            [NSRunningApplication runningApplicationWithProcessIdentifier:
++                                      processIdentifier];
++        if (!application || application.isTerminated) {
++            return NO;
++        }
++    }
++    return YES;
++}
++
 +id findNowPlayingClient(NSString *bundleIdentifier) {
 +    if ([bundleIdentifier length] == 0 ||
 +        !g_mediaRemote.getNowPlayingClients ||
 +        !g_mediaRemote.clientGetBundleIdentifier ||
 +        !g_mediaRemote.clientGetParentAppBundleIdentifier) {
 +        return nil;
++    }
++
++    @synchronized (clientCacheLock()) {
++        if (cachedClientStillTargets(bundleIdentifier)) {
++            return g_cachedClient;
++        }
++        g_cachedClient = nil;
++        g_cachedBundleIdentifier = nil;
++        g_cachedProcessIdentifier = 0;
 +    }
 +
 +    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
@@ -229,6 +297,14 @@ index 0000000..d06b23f
 +                           isEqualToString:bundleIdentifier]) ||
 +            (parent && [(__bridge NSString *)parent
 +                           isEqualToString:bundleIdentifier])) {
++            @synchronized (clientCacheLock()) {
++                g_cachedClient = candidate;
++                g_cachedBundleIdentifier = [bundleIdentifier copy];
++                g_cachedProcessIdentifier =
++                    g_mediaRemote.clientGetProcessIdentifier
++                        ? g_mediaRemote.clientGetProcessIdentifier(client)
++                        : 0;
++            }
 +            return candidate;
 +        }
 +    }
@@ -447,7 +523,7 @@ new file mode 100644
 index 0000000..5b5c538
 --- /dev/null
 +++ b/src/adapter/stream_client.m
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,84 @@
 +// Copyright (c) 2025 Jonas van den Berg
 +// This file is licensed under the BSD 3-Clause License.
 +
@@ -455,6 +531,7 @@ index 0000000..5b5c538
 +#import <Foundation/Foundation.h>
 +
 +#import "adapter/env.h"
++#import "adapter/client.h"
 +#import "adapter/get_client.h"
 +#import "adapter/globals.h"
 +#import "private/MediaRemote.h"
@@ -508,6 +585,10 @@ index 0000000..5b5c538
 +                                         object:nil
 +                                          queue:nil
 +                                     usingBlock:^(NSNotification *note) {
++                                       if ([note.name isEqualToString:
++                                                kMRMediaRemoteNowPlayingApplicationDidChangeNotification]) {
++                                           invalidateNowPlayingClientCache();
++                                       }
 +                                       scheduleEmit();
 +                                     }];
 +        [observers addObject:observer];
@@ -519,6 +600,7 @@ index 0000000..5b5c538
 +    for (id observer in observers) {
 +        [center removeObserver:observer];
 +    }
++    invalidateNowPlayingClientCache();
 +}
 +
 +void adapter_stream_client_env() {

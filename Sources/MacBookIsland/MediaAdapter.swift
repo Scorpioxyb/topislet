@@ -2249,10 +2249,16 @@ final class MusicAdapterCoordinator {
                 self.latestNeteaseMusicSnapshot = snapshot
                 if snapshot.track?.identity != previousTrackIdentity {
                     let processIdentifier = snapshot.instance?.processIdentifier ?? 0
-                    let trackTitle = snapshot.track?.title ?? "nil"
+                    let trackFingerprint = snapshot.track.map {
+                        MusicUsageTrackFingerprint.make(
+                            source: "netease_music",
+                            title: $0.title,
+                            artist: $0.artist ?? ""
+                        )
+                    } ?? "none"
                     let playbackState = Self.playbackStateLabel(snapshot.playbackState)
                     self.logger.notice(
-                        "Netease snapshot changed pid=\(processIdentifier) track=\(trackTitle, privacy: .public) state=\(playbackState, privacy: .public)"
+                        "Netease snapshot changed pid=\(processIdentifier) track=\(trackFingerprint, privacy: .public) state=\(playbackState, privacy: .public)"
                     )
                 }
             }

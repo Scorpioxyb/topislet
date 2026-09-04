@@ -16,7 +16,7 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter` | `6de4ad829488b12e2b969ddf17e2459f855781b2130f8fb554a40958fe224374` |
+| `MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter` | `080c9cd816dcd7d5871a2c3a2b2012bdfe0ed03792c1c7b5b8d062d434b6f7f7` |
 | `mediaremote-adapter.pl` | `16d37cfdc7886f1f8908a356c0199eb1f0f31a365d3aa705dad73a586cf5392d` |
 
 已确认当前 Framework 同时包含 `arm64` 和 `x86_64`，并可使用下述脚本从固定上游 commit 和仓库补丁逐字节重建。
