@@ -8,17 +8,45 @@
 ## 实际效果
 
 <p align="center">
-  <a href="Docs/assets/recordings/TopIslet-build137-2026-10-06-github-16x9-muted.mp4">
-    <img src="Docs/assets/screenshots/music-demo-build137-cover.png" alt="顶屿音乐控制与实时歌词的实机演示，点击观看 30 秒视频" width="760">
-  </a>
+  <img src="Docs/assets/showcase/music-demo-build137-preview.webp" alt="顶屿从折叠到展开、播放与歌词变化的动态预览" width="800">
 </p>
-<p align="center"><sub>音乐控制与实时歌词 · 尚未发布的本地 build 137 实机录屏（30 秒）</sub></p>
 
-> 公开视频已静音并模糊第三方专辑封面；展示的是开发中的界面效果，不代表下方当前发布版本。
+**[下载完整 30 秒演示视频（MP4）](https://github.com/Scorpioxyb/topislet/raw/refs/heads/main/Docs/assets/recordings/TopIslet-build137-2026-10-06-github-16x9-muted.mp4)** · [阅读本次开发更新](Docs/updates/2026-10-06-music-showcase.md)
+
+上方直接展示约 11 秒循环预览；完整视频包含折叠、展开、点击播放和歌词变化。音乐画面录自本地 **0.1.3 build 137**，公开素材已静音并模糊第三方专辑封面。
+
+### 音乐状态
+
+<p align="center"><img src="Docs/assets/screenshots/music-collapsed-build137.png" alt="音乐折叠态：专辑缩略图、歌曲信息和播放活动" width="760"></p>
+<p align="center"><sub>折叠态：保留歌曲信息，收回完整控制面板</sub></p>
+
+<p align="center"><img src="Docs/assets/screenshots/music-expanded-paused-build137.png" alt="音乐展开态：暂停时显示播放按钮，右侧显示歌词" width="760"></p>
+<p align="center"><sub>展开暂停态：左侧歌曲与控制，右侧歌词与进度</sub></p>
+
+<p align="center"><img src="Docs/assets/screenshots/music-expanded-lyrics-build137.png" alt="音乐播放态：当前句与下一句歌词，以及随播放变化的高亮" width="760"></p>
+<p align="center"><sub>展开播放态：当前句、下一句和播放进度</sub></p>
+
+<details>
+<summary>查看专注计时的实机截图</summary>
+
+<p align="center"><img src="Docs/assets/screenshots/compact-timer.png" alt="专注计时的紧凑状态" width="760"></p>
+<p align="center"><img src="Docs/assets/screenshots/focus-timer.png" alt="专注计时的展开状态" width="760"></p>
+
+上述计时截图为此前开发版本的运行记录。
+
+</details>
+
+> 音乐展示属于开发预览，尚未包含在公开下载包中。录屏只证明其中展示的操作与画面，不代表所有曲目、后台状态或设备场景均已通过验证。
 
 ## 发布状态
 
-当前版本为 **v0.1.2-alpha.5 设计候选版**，正在验证专辑色进度轨的黑底感知校正、切歌颜色连续性，以及既有三态形变、音乐控制和汽水音乐、Apple Music、网易云音乐能力的零回归。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+| 版本范围 | 当前状态 |
+| --- | --- |
+| 公开下载 | [v0.1.1-alpha.4](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.1-alpha.4)，Alpha 开发者预览版 |
+| 本地开发预览 | **0.1.3 build 137**，2026-10-06 实机录屏；对应新代码和安装包尚未公开发布 |
+| 本次 GitHub 更新 | 展示视频、状态截图与[开发日志](Docs/updates/2026-10-06-music-showcase.md)，没有新增 Release |
+
+当前公开 `main` 中的应用代码仍为 v0.1.2-alpha.5 设计候选阶段；README 的 build 137 画面来自后续本地开发。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
