@@ -5,6 +5,17 @@
 
 <img src="Packaging/IslandAppIcon.png" alt="顶屿 App 图标" width="160">
 
+## 实际效果
+
+<p align="center">
+  <a href="Docs/assets/recordings/TopIslet-build137-2026-10-06-github-16x9-muted.mp4">
+    <img src="Docs/assets/screenshots/music-demo-build137-cover.png" alt="顶屿音乐控制与实时歌词的实机演示，点击观看 30 秒视频" width="760">
+  </a>
+</p>
+<p align="center"><sub>音乐控制与实时歌词 · 尚未发布的本地 build 137 实机录屏（30 秒）</sub></p>
+
+> 公开视频已静音并模糊第三方专辑封面；展示的是开发中的界面效果，不代表下方当前发布版本。
+
 ## 发布状态
 
 当前版本为 **v0.1.2-alpha.5 设计候选版**，正在验证专辑色进度轨的黑底感知校正、切歌颜色连续性，以及既有三态形变、音乐控制和汽水音乐、Apple Music、网易云音乐能力的零回归。它不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
