@@ -30,7 +30,7 @@ enum QishuiControlAvailability: String, Equatable, Sendable {
         case .windowClosed:
             return "汽水主窗口已关闭；请先显示或最小化汽水窗口。"
         case .controlTreeUnavailable:
-            return "汽水辅助功能控件暂不可用；顶屿会在后台自动重试。"
+            return "播放控制暂不可用，顶屿正在自动重试。"
         case .accessibilityRequired:
             return "顶屿需要辅助功能权限才能控制汽水音乐。"
         case .notRunning:
@@ -374,12 +374,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         accessibilityTrusted: Bool,
         windowReadSucceeded: Bool,
         reportedWindowCount: Int,
-        standardWindowCount: Int
+        standardWindowCount: Int,
+        auxiliaryWindowCount: Int = 0
     ) -> QishuiControlAvailability {
         guard isRunning else { return .notRunning }
         guard accessibilityTrusted else { return .accessibilityRequired }
         guard windowReadSucceeded else { return .unknown }
-        guard reportedWindowCount > 0 else { return .windowClosed }
+        guard reportedWindowCount > auxiliaryWindowCount else { return .windowClosed }
         return standardWindowCount > 0 ? .available : .controlTreeUnavailable
     }
 
@@ -419,11 +420,23 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             return .unknown
         }
 
+        var auxiliaryWindowCount = 0
         let standardWindowCount = values.reduce(into: 0) { count, value in
             guard CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else {
                 return
             }
             let window = value as! AXUIElement
+            var titleValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                window,
+                kAXTitleAttribute as CFString,
+                &titleValue
+            ) == .success,
+               let title = titleValue as? String,
+               !isPlaybackWindowTitle(title) {
+                auxiliaryWindowCount += 1
+                return
+            }
             var roleValue: CFTypeRef?
             var subroleValue: CFTypeRef?
             guard AXUIElementCopyAttributeValue(
@@ -447,7 +460,8 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             accessibilityTrusted: true,
             windowReadSucceeded: true,
             reportedWindowCount: values.count,
-            standardWindowCount: standardWindowCount
+            standardWindowCount: standardWindowCount,
+            auxiliaryWindowCount: auxiliaryWindowCount
         )
     }
 
@@ -460,7 +474,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             candidateCount: discovery.matches.count,
             attempt: attempt
         ) {
-            if attempt == 0 {
+            if attempt == 0, canRebuildAccessibilityTree(processIdentifier: processIdentifier) {
                 _ = rebuildManualAccessibility(
                     processIdentifier: processIdentifier
                 )
@@ -472,6 +486,31 @@ final class QishuiSemanticAXController: @unchecked Sendable {
             )
         }
         return discovery
+    }
+
+    static func allowsAccessibilityTreeRebuild(
+        playbackWindowCount: Int,
+        minimizedWindowCount: Int?
+    ) -> Bool {
+        playbackWindowCount == 1 && minimizedWindowCount == 0
+    }
+
+    private func canRebuildAccessibilityTree(processIdentifier: pid_t) -> Bool {
+        let windows = standardWindows(processIdentifier: processIdentifier).filter {
+            Self.isPlaybackWindowTitle(stringAttribute($0, kAXTitleAttribute as String))
+        }
+        // Disabling Chromium accessibility discards renderer nodes. A minimized
+        // renderer may not recreate them until the user restores its window.
+        // Keep accessibility enabled and retry reads in that state instead.
+        let minimizedStates = windows.compactMap { window -> Bool? in
+            AXUIElementSetMessagingTimeout(window, messagingTimeout)
+            return boolAttribute(window, kAXMinimizedAttribute as String, defaultValue: nil)
+        }
+        return Self.allowsAccessibilityTreeRebuild(
+            playbackWindowCount: windows.count,
+            minimizedWindowCount: minimizedStates.count == windows.count
+                ? minimizedStates.filter { $0 }.count : nil
+        )
     }
 
     private func discoverControls(
@@ -591,8 +630,16 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         _ window: AXUIElement,
         processIdentifier: pid_t
     ) -> Bool {
-        let windows = standardWindows(processIdentifier: processIdentifier)
+        let windows = standardWindows(processIdentifier: processIdentifier).filter {
+            Self.isPlaybackWindowTitle(stringAttribute($0, kAXTitleAttribute as String))
+        }
         return windows.count == 1 && CFEqual(windows[0], window)
+    }
+
+    static func isPlaybackWindowTitle(_ title: String) -> Bool {
+        // Qishui reports its desktop lyrics as a standard main window too.
+        // It must not invalidate the minimized player's unique-window fallback.
+        title.trimmingCharacters(in: .whitespacesAndNewlines) != "桌面歌词"
     }
 
     private func diagnosticDescription(for match: DiscoveredControls) -> String {
@@ -914,10 +961,18 @@ final class QishuiSemanticAXController: @unchecked Sendable {
     }
 
     private func boolAttribute(_ element: AXUIElement, _ attribute: String) -> Bool {
-        guard let value = copyAttribute(element, attribute) else { return false }
+        boolAttribute(element, attribute, defaultValue: false) ?? false
+    }
+
+    private func boolAttribute(
+        _ element: AXUIElement,
+        _ attribute: String,
+        defaultValue: Bool?
+    ) -> Bool? {
+        guard let value = copyAttribute(element, attribute) else { return defaultValue }
         if let value = value as? Bool { return value }
         if let value = value as? NSNumber { return value.boolValue }
-        return false
+        return defaultValue
     }
 
     private func isVisible(_ element: AXUIElement) -> Bool {

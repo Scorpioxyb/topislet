@@ -138,6 +138,9 @@ private func run() throws {
         + "（确认 \(report.seekConfirmationLatency.count) / "
         + "超时 \(report.seekConfirmationTimeoutCount) / "
         + "取消 \(report.seekCancellationCount)）；"
+        + "汽水切歌 \(report.qishuiTrackTransitions.uiPublishedCount)/"
+        + "\(report.qishuiTrackTransitions.total) 完整发布，"
+        + "原子 P95=\(report.qishuiTrackTransitions.atomicCompleteLatency.p95Milliseconds.map { "\($0)ms" } ?? "无")；"
         + "\(coverageText)；\(anomalyText)"
     )
     if !report.sampleCoverage.missingSampleKinds.isEmpty {

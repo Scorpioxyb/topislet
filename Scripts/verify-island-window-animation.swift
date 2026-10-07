@@ -11,9 +11,17 @@ private let maximumHoverExitStartDuration: TimeInterval = 0.65
 private let sampleInterval: TimeInterval = 0.005
 
 private struct WindowSample {
+    let timestamp: TimeInterval
     let frame: CGRect
     let windowCount: Int
     let pointerLocation: CGPoint
+}
+
+private struct WindowDimensions: Hashable {
+    let width: CGFloat
+    let height: CGFloat
+
+    var size: CGSize { CGSize(width: width, height: height) }
 }
 
 private enum VerificationError: Error, CustomStringConvertible {
@@ -43,11 +51,19 @@ private func appWindows() -> [CGRect] {
 }
 
 private func currentSample() throws -> WindowSample {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+        throw VerificationError.failed("无法确认登录会话状态，不能进行实机交互验收")
+    }
+    guard session["CGSSessionScreenIsLocked"] as? Bool != true,
+          NSWorkspace.shared.frontmostApplication?.bundleIdentifier != "com.apple.loginwindow" else {
+        throw VerificationError.failed("机器已锁屏；本次观察无效，不计为动画通过或产品故障")
+    }
     let windows = appWindows()
     guard let frame = windows.first else {
         throw VerificationError.failed("顶屿窗口未运行")
     }
     return WindowSample(
+        timestamp: ProcessInfo.processInfo.systemUptime,
         frame: frame,
         windowCount: windows.count,
         pointerLocation: CGEvent(source: nil)?.location ?? .zero
@@ -67,7 +83,8 @@ private func postMouseMove(to point: CGPoint) {
 
 private func sampleFrames(
     duration: TimeInterval,
-    keepingPointerAt pinnedPointer: CGPoint? = nil
+    keepingPointerAt pinnedPointer: CGPoint? = nil,
+    interval: TimeInterval = sampleInterval
 ) throws -> [WindowSample] {
     let startedAt = Date()
     var samples: [WindowSample] = []
@@ -83,7 +100,7 @@ private func sampleFrames(
             sample = try currentSample()
         }
         samples.append(sample)
-        usleep(useconds_t(sampleInterval * 1_000_000))
+        usleep(useconds_t(interval * 1_000_000))
     }
     return samples
 }
@@ -146,8 +163,12 @@ private func verifyAnchoring(
         )
     }
     guard maximumTopError <= 0.75 else {
+        let worstFrame = samples.max {
+            abs($0.frame.minY - expectedTop) < abs($1.frame.minY - expectedTop)
+        }?.frame ?? .zero
         throw VerificationError.failed(
-            "动画顶边漂移 \(String(format: "%.2f", maximumTopError))pt"
+            "动画顶边漂移 \(String(format: "%.2f", maximumTopError))pt；"
+                + "预期 \(expectedTop)，最差 frame \(NSStringFromRect(worstFrame))"
         )
     }
 }
@@ -260,6 +281,94 @@ private func verifyHoverResponse(
         )
     }
     return responseDuration
+}
+
+private func observeUserDrivenAnimation() throws {
+    var samplesURL: URL?
+    if let index = CommandLine.arguments.firstIndex(of: "--samples-output") {
+        guard CommandLine.arguments.indices.contains(index + 1) else {
+            throw VerificationError.failed("--samples-output 缺少 CSV 路径")
+        }
+        let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw VerificationError.failed("拒绝覆盖已有窗口采样：\(url.lastPathComponent)")
+        }
+        samplesURL = url
+    }
+    let initial = try currentSample()
+    print("观察已开始：请在 20 秒内展开并收起顶屿。脚本只读取窗口元数据。")
+    fflush(stdout)
+    let startedAt = Date()
+    // WindowServer reads already consume part of the sample period. Keep the
+    // passive observer's idle gap short; the measured frequency gate remains
+    // authoritative, rather than treating the requested interval as frequency.
+    let samples = try sampleFrames(duration: 20, interval: 0.001)
+    let elapsed = Date().timeIntervalSince(startedAt)
+    if let samplesURL {
+        // Persist only window geometry. No image, media content or input events.
+        // Write before verification so a failed gate retains its measured data.
+        let origin = samples.first?.timestamp ?? initial.timestamp
+        var csv = "uptime_seconds,elapsed_seconds,x,y,width,height,window_count\n"
+        for sample in samples {
+            csv += String(format: "%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,%d\n",
+                          sample.timestamp, sample.timestamp - origin,
+                          sample.frame.minX, sample.frame.minY,
+                          sample.frame.width, sample.frame.height, sample.windowCount)
+        }
+        try FileManager.default.createDirectory(
+            at: samplesURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data(csv.utf8).write(to: samplesURL, options: .withoutOverwriting)
+        print("原始窗口元数据已保存：\(samplesURL.lastPathComponent)")
+    }
+    try verifyAnchoring(
+        samples,
+        expectedCenterX: initial.frame.midX,
+        expectedTop: initial.frame.minY
+    )
+    // Use repeated stable states as endpoints. A frame can reach its final
+    // width before its height, so the first maximum-width sample is not one.
+    let groups = Dictionary(grouping: samples) {
+        WindowDimensions(width: $0.frame.width, height: $0.frame.height)
+    }
+    let endpoints = groups.sorted { $0.value.count > $1.value.count }
+        .prefix(2).map(\.key).sorted { $0.width < $1.width }
+    guard endpoints.count == 2,
+          let smallest = endpoints.first?.size,
+          let largest = endpoints.last?.size,
+          largest.width > smallest.width + 1,
+          largest.height > smallest.height + 1 else {
+        throw VerificationError.failed("观察期间未发生展开与收起，不能证明动画通过")
+    }
+    try verifyWindowSizesStayBounded(
+        samples,
+        between: smallest,
+        and: largest
+    )
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        try verifyWindowSizeInterpolation(
+            samples,
+            from: smallest,
+            to: largest
+        )
+    }
+    let screenCenter = NSScreen.main.map { $0.frame.midX } ?? initial.frame.midX
+    let centerError = samples.map { abs($0.frame.midX - screenCenter) }.max() ?? 0
+    let topDrift = samples.map { abs($0.frame.minY - initial.frame.minY) }.max() ?? 0
+    let averageHz = Double(samples.count) / elapsed
+    let maximumSampleGap = zip(samples, samples.dropFirst()).map {
+        $1.timestamp - $0.timestamp
+    }.max() ?? 0
+    print(String(format: "duration=%.4fs averageHz=%.2f maximumSampleGapMs=%.3f screenCenterError=%.3fpt topDrift=%.3fpt", elapsed, averageHz, maximumSampleGap * 1_000, centerError, topDrift))
+    print("尺寸范围：\(NSStringFromSize(smallest)) → \(NSStringFromSize(largest))")
+    guard centerError <= 0.5, topDrift <= 0.5 else {
+        throw VerificationError.failed("严格几何门槛未通过：中心或顶边误差超过 0.5pt")
+    }
+    guard averageHz >= 100 else {
+        throw VerificationError.failed("采样不足 100Hz，不能判定严格动画验收通过；此结果本身不证明产品动画失败")
+    }
+    print("用户操作几何观察通过：\(samples.count) 个元数据样本；窗口数量始终为 1，误差不超过 0.5pt")
+    print("本项不验证逐帧黑边或准确 80ms 反向切换；平均采样频率不保证每次间隔均不超过 10ms")
 }
 
 private func run() throws {
@@ -408,7 +517,11 @@ private func run() throws {
 }
 
 do {
-    try run()
+    if CommandLine.arguments.contains("--observe-only") {
+        try observeUserDrivenAnimation()
+    } else {
+        try run()
+    }
 } catch {
     fputs("error: \(error)\n", stderr)
     exit(1)

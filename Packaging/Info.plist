@@ -2,37 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>zh_CN</string>
-    <key>CFBundleExecutable</key>
-    <string>MacBookIsland</string>
-    <key>CFBundleIconFile</key>
-    <string>IslandAppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>io.github.scorpioxyb.topislet</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>顶屿</string>
-    <key>CFBundleDisplayName</key>
-    <string>顶屿</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.3</string>
-    <key>CFBundleVersion</key>
-    <string>30</string>
-    <key>LSMinimumSystemVersion</key>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>顶屿</string>
+	<key>CFBundleExecutable</key>
+	<string>MacBookIsland</string>
+	<key>CFBundleIconFile</key>
+	<string>IslandAppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.scorpioxyb.topislet</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>顶屿</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.3</string>
+	<key>CFBundleVersion</key>
+    <string>146</string>
+	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>用于读取即将开始的日程，并在顶屿中提供低打扰提醒。</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>用于读取并控制 Apple Music 播放状态；可在顶屿的音乐设置中关闭该适配。</string>
-    <key>NSRemindersFullAccessUsageDescription</key>
-    <string>用于读取刚到期的提醒事项，并在顶屿中提供低打扰提醒。</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>用于读取并控制 Apple Music 播放状态；可在顶屿的音乐设置中关闭该适配。</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>用于读取即将开始的日程，并在顶屿中提供低打扰提醒。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>用于读取刚到期的提醒事项，并在顶屿中提供低打扰提醒。</string>
 </dict>
 </plist>

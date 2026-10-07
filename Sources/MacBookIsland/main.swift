@@ -207,6 +207,20 @@ if CommandLine.arguments.contains("--display-geometry") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--fullscreen-status") {
+    for (index, screen) in NSScreen.screens.enumerated() {
+        let windowServerFrame = IslandFullScreenSuppressionPolicy.windowServerFrame(
+            for: screen.frame,
+            primaryDisplayHeight: NSScreen.screens.first?.frame.height ?? screen.frame.height
+        )
+        print("displayIndex=\(index)")
+        print("appKitFrame=\(NSStringFromRect(screen.frame))")
+        print("windowServerFrame=\(NSStringFromRect(windowServerFrame))")
+        print("hasCoveringWindow=\(IslandFullScreenWindowDetector.hasCoveringWindow(on: screen))")
+    }
+    exit(0)
+}
+
 func printQishuiSnapshot(_ snapshot: QishuiDirectSnapshot) {
     print("qishuiRunning=\(snapshot.isRunning)")
     print("pid=\(snapshot.processIdentifier.map(String.init) ?? "nil")")
@@ -306,6 +320,134 @@ if let adapterWatchIndex = CommandLine.arguments.firstIndex(of: "--adapter-watch
     RunLoop.current.run(until: Date().addingTimeInterval(max(seconds, 1)))
     source.stop()
     exit(0)
+}
+
+if let gateIndex = CommandLine.arguments.firstIndex(of: "--qishui-transition-gate") {
+    let requestedCount = CommandLine.arguments.indices.contains(gateIndex + 1)
+        ? (Int(CommandLine.arguments[gateIndex + 1]) ?? 5)
+        : 5
+    let sampleCount = min(max(requestedCount, 1), 50)
+
+    Task { @MainActor in
+        let coordinator = MusicAdapterCoordinator()
+        coordinator.setAppleMusicEnabled(false)
+        var latestState = coordinator.initialState
+        coordinator.startRealtimeObservation { state, _ in
+            latestState = state
+        }
+
+        let initialDeadline = Date().addingTimeInterval(8)
+        while Date() < initialDeadline {
+            let isReady = latestState.hasCurrentTrack
+                && latestState.track.sourceBundleIdentifier == "com.soda.music"
+                && latestState.duration != nil
+                && (latestState.track.hasArtwork || latestState.track.artworkData != nil)
+                && latestState.canNextTrack
+            if isReady { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        guard latestState.hasCurrentTrack,
+              latestState.track.sourceBundleIdentifier == "com.soda.music",
+              latestState.canNextTrack else {
+            print("gate=failed")
+            print("reason=qishui_state_or_control_unavailable")
+            print("has_track=\(latestState.hasCurrentTrack ? 1 : 0)")
+            print("source_matches=\(latestState.track.sourceBundleIdentifier == "com.soda.music" ? 1 : 0)")
+            print("has_duration=\(latestState.duration == nil ? 0 : 1)")
+            print("has_artwork=\((latestState.track.hasArtwork || latestState.track.artworkData != nil) ? 1 : 0)")
+            print("can_next=\(latestState.canNextTrack ? 1 : 0)")
+            coordinator.stopRealtimeObservation()
+            exit(2)
+        }
+
+        var latencies: [Int] = []
+        var rejectedCount = 0
+        var incompleteCount = 0
+        for sample in 1...sampleCount {
+            let baselineTitle = latestState.track.title
+            let baselineArtist = latestState.track.artist
+            let issuedAt = Date()
+            let outcome = await coordinator.performControl(
+                .nextTrack,
+                displayedSourceBundleIdentifier: "com.soda.music"
+            )
+            let controlMilliseconds = max(
+                Int(Date().timeIntervalSince(issuedAt) * 1_000),
+                0
+            )
+            guard outcome.didSendCommand else {
+                rejectedCount += 1
+                print("sample=\(sample) accepted=0 control_ms=\(controlMilliseconds)")
+                continue
+            }
+
+            let convergenceDeadline = Date().addingTimeInterval(3)
+            var didConverge = false
+            while Date() < convergenceDeadline {
+                let didChangeTrack = latestState.track.title != baselineTitle
+                    || latestState.track.artist != baselineArtist
+                let hasArtwork = latestState.track.hasArtwork
+                    || latestState.track.artworkData != nil
+                if latestState.hasCurrentTrack,
+                   latestState.track.sourceBundleIdentifier == "com.soda.music",
+                   didChangeTrack,
+                   !latestState.track.artist.isEmpty,
+                   latestState.duration != nil,
+                   hasArtwork {
+                    didConverge = true
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+
+            let latencyMilliseconds = max(
+                Int(Date().timeIntervalSince(issuedAt) * 1_000),
+                0
+            )
+            let hasArtwork = latestState.track.hasArtwork
+                || latestState.track.artworkData != nil
+            if didConverge {
+                latencies.append(latencyMilliseconds)
+            } else {
+                incompleteCount += 1
+            }
+            print(
+                "sample=\(sample) accepted=1 converged=\(didConverge ? 1 : 0) "
+                    + "control_ms=\(controlMilliseconds) latency_ms=\(latencyMilliseconds) "
+                    + "has_artist=\(latestState.track.artist.isEmpty ? 0 : 1) "
+                    + "has_artwork=\(hasArtwork ? 1 : 0) "
+                    + "has_duration=\(latestState.duration == nil ? 0 : 1)"
+            )
+            fflush(stdout)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        let sorted = latencies.sorted()
+        func percentile(_ fraction: Double) -> Int? {
+            guard !sorted.isEmpty else { return nil }
+            let index = min(
+                max(Int(ceil(Double(sorted.count) * fraction)) - 1, 0),
+                sorted.count - 1
+            )
+            return sorted[index]
+        }
+        print("gate=complete")
+        print("samples=\(sampleCount)")
+        print("converged=\(latencies.count)")
+        print("rejected=\(rejectedCount)")
+        print("incomplete=\(incompleteCount)")
+        print("p50_ms=\(percentile(0.50).map(String.init) ?? "nil")")
+        print("p95_ms=\(percentile(0.95).map(String.init) ?? "nil")")
+        print("max_ms=\(sorted.last.map(String.init) ?? "nil")")
+        coordinator.stopRealtimeObservation()
+        let passed = rejectedCount == 0
+            && incompleteCount == 0
+            && latencies.count == sampleCount
+            && (percentile(0.95) ?? .max) <= 500
+        exit(passed ? 0 : 2)
+    }
+    RunLoop.main.run()
 }
 
 if let semanticControlIndex = CommandLine.arguments.firstIndex(of: "--qishui-semantic-control") {
@@ -512,6 +654,106 @@ if CommandLine.arguments.contains("--qishui-status") {
     exit(adapterSnapshot.currentTrack != nil || snapshot.isRunning ? 0 : 2)
 }
 
+if CommandLine.arguments.contains("--qishui-lyric-status") {
+    let mediaSnapshot = MediaRemoteAdapterStreamSource().refreshOnce()
+    guard let track = mediaSnapshot.currentTrack,
+          let processIdentifier = track.sourceProcessIdentifier else {
+        print("QISHUI_LYRIC_STATUS unavailable=1")
+        exit(2)
+    }
+    let identity = QishuiLyricIdentity(
+        processIdentifier: processIdentifier,
+        title: track.title,
+        artist: track.artist
+    )
+    let reader = QishuiLyricReader()
+    print("QISHUI_LYRIC_STATUS title=\(track.title) artist=\(track.artist) pid=\(processIdentifier)")
+    for index in 1...6 {
+        let snapshot = reader.read(identity: identity)
+        print("READ[\(index)] desktop=\(snapshot.isDesktopSnapshot) lines=\(snapshot.lines)")
+        if index < 6 { usleep(300_000) }
+    }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--qishui-timed-lyrics-status") {
+    let snapshot = MediaRemoteAdapterStreamSource().refreshOnce()
+    let probeArguments = CommandLine.arguments
+    let probeIndex = probeArguments.firstIndex(of: "--qishui-timed-lyrics-status")!
+    let override = probeArguments.indices.contains(probeIndex + 3)
+        ? (title: probeArguments[probeIndex + 1],
+           artist: probeArguments[probeIndex + 2],
+           duration: Double(probeArguments[probeIndex + 3]))
+        : nil
+    guard let track = snapshot.currentTrack,
+          let duration = override?.duration ?? track.duration else {
+        print("TIMED_LYRICS_STATUS unavailable=1")
+        exit(2)
+    }
+    let title = override?.title ?? track.title
+    let artist = override?.artist ?? track.artist
+    Task {
+        print("TIMED_LYRICS_TRACK title=\(title) artist=\(artist) duration=\(duration)")
+        let lines = await QishuiTimedLyricSource().fetch(
+            title: title, artist: artist, duration: duration
+        )
+        var activeWords = 0
+        var activeRange = "nil"
+        if override == nil, let pid = track.sourceProcessIdentifier, !lines.isEmpty {
+            let reader = QishuiLyricReader()
+            let identity = QishuiLyricIdentity(processIdentifier: pid, title: title, artist: artist)
+            _ = reader.read(identity: identity)
+            let active = reader.read(identity: identity)
+            if let current = active.lines.first {
+                let matched = QishuiTimedLyricParser.words(for: current, at: track.elapsedTime, in: lines)
+                activeWords = matched.count
+                if let first = matched.first, let last = matched.last {
+                    activeRange = String(format: "%.2f...%.2f", first.start, last.end)
+                }
+            }
+        }
+        if activeWords == 0,
+           let elapsed = track.elapsedTime,
+           let active = QishuiTimedLyricParser.activeLine(
+               at: elapsed, in: lines, trackDuration: duration
+           ),
+           let first = active.current.words.first,
+           let last = active.current.words.last {
+            activeWords = active.current.words.count
+            activeRange = String(format: "%.2f...%.2f", first.start, last.end)
+        }
+        print("TIMED_LYRICS_STATUS lines=\(lines.count) words=\(lines.reduce(0) { $0 + $1.words.count }) activeWords=\(activeWords) activeRange=\(activeRange) elapsed=\(track.elapsedTime.map { String(format: "%.2f", $0) } ?? "nil")")
+        exit(lines.isEmpty ? 2 : 0)
+    }
+    dispatchMain()
+}
+
+if CommandLine.arguments.contains("--adapter-lyrics-status") {
+    Task { @MainActor in
+        let coordinator = MusicAdapterCoordinator()
+        coordinator.setAppleMusicEnabled(false)
+        coordinator.setQishuiTimedLyricsEnabled(true)
+        var latest = coordinator.initialState
+        var latestStatus: MusicSourceStatus?
+        coordinator.startRealtimeObservation { state, status in
+            latest = state
+            latestStatus = status
+        }
+        for _ in 0..<16 {
+            let result = coordinator.tick(latest)
+            latest = result.music
+            latestStatus = result.sourceStatus
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let state = latest
+        print("ADAPTER_LYRICS_STATUS title=\(state.track.title) artist=\(state.track.artist) source=\(state.track.sourceBundleIdentifier ?? "nil") lyrics=\(state.track.lyrics) index=\(state.lyricIndex) canSeek=\(state.canSeek) elapsed=\(state.elapsedTime.map(String.init(describing:)) ?? "nil") availability=\(latestStatus?.availability.rawValue ?? "nil") detail=\(latestStatus?.detail ?? "nil")")
+        coordinator.stopRealtimeObservation()
+        exit(state.track.lyrics.isEmpty ? 2 : 0)
+    }
+    RunLoop.current.run(until: Date().addingTimeInterval(5))
+    exit(2)
+}
+
 enum IslandMode: String {
     case collapsed
     case compact
@@ -541,12 +783,15 @@ enum IslandWindowLayout {
         for size: NSSize,
         in screenFrame: NSRect,
         yOffset: CGFloat,
-        anchorX: CGFloat? = nil
+        anchorX: CGFloat? = nil,
+        alignTopToWindowServer: Bool = false
     ) -> NSRect {
         let resolvedAnchorX = anchorX ?? screenFrame.midX
+        let proposedTop = screenFrame.maxY - yOffset
+        let top = alignTopToWindowServer ? proposedTop.rounded(.up) : proposedTop
         return NSRect(
             x: resolvedAnchorX - size.width / 2,
-            y: screenFrame.maxY - size.height - yOffset,
+            y: top - size.height,
             width: size.width,
             height: size.height
         )
@@ -647,7 +892,7 @@ struct IslandInteractionRegions: Equatable {
 
 enum IslandMotion {
     static func duration(for mode: IslandMode) -> TimeInterval {
-        mode == .expanded ? 0.28 : 0.20
+        mode == .expanded ? 0.24 : 0.18
     }
 
     static func frameDuration(
@@ -657,11 +902,8 @@ enum IslandMotion {
         reduceMotion ? 0 : duration(for: mode)
     }
 
-    static func timingFunction(for mode: IslandMode) -> CAMediaTimingFunction {
-        if mode == .expanded {
-            return CAMediaTimingFunction(controlPoints: 0.20, 0.85, 0.25, 1.0)
-        }
-        return CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
+    static func timingControlPoints(for mode: IslandMode) -> (Double, Double, Double, Double) {
+        mode == .expanded ? (0.20, 0.85, 0.25, 1.0) : (0.40, 0.0, 0.20, 1.0)
     }
 
     static func geometryAnimation(
@@ -669,31 +911,45 @@ enum IslandMotion {
         reduceMotion: Bool
     ) -> Animation? {
         guard !reduceMotion else { return nil }
-        if mode == .expanded {
-            return .timingCurve(0.20, 0.85, 0.25, 1.0, duration: duration(for: mode))
-        }
-        return .timingCurve(0.40, 0.0, 0.20, 1.0, duration: duration(for: mode))
+        let points = timingControlPoints(for: mode)
+        return .timingCurve(points.0, points.1, points.2, points.3, duration: duration(for: mode))
     }
 
     static func featureContentAnimation(reduceMotion: Bool) -> Animation {
-        .easeInOut(duration: reduceMotion ? 0.05 : 0.14)
+        .easeInOut(duration: reduceMotion ? 0.04 : 0.10)
     }
 }
 
 enum ExpandedMusicLayout {
-    static let contentWidth: CGFloat = 408
-    static let artworkSize: CGFloat = 92
-    static let artworkToDetailsSpacing: CGFloat = 12
-    static let detailsWidth: CGFloat = 304
-    static let timelineWidth: CGFloat = 220
+    // The lyric mode gives the reading surface the larger share of the
+    // expanded island. Controls stay in a stable left rail so the lyric
+    // viewport can grow without reflowing the playback buttons.
+    static let controlContentWidth: CGFloat = 204
+    static let controlOnlyContentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + detailsWidth
+    static let controlSurfacePadding: CGFloat = 0
+    // The lyric state is intentionally wider than the control-only state.
+    // This keeps the cover/controls rail stable and gives the lyric viewport
+    // enough room to scroll long lines without shrinking the type.
+    static let contentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + lyricColumnWidth
+    static let artworkSize: CGFloat = 76
+    static let artworkToDetailsSpacing: CGFloat = 10
+    static let detailsWidth: CGFloat = 248
+    static let lyricColumnWidth: CGFloat = 446
+    static let controlToLyricSpacing: CGFloat = 12
+    static let timelineWidth: CGFloat = 164
     static let timelineToTimeSpacing: CGFloat = 10
     static let timeWidth: CGFloat = 74
+    static let lyricTimelineWidth: CGFloat = 306
     static let controlRailWidth: CGFloat = timelineWidth
     static let modeButtonsWidth: CGFloat = 56
     static let titleToModeButtonsSpacing: CGFloat = 12
     static let titleWidth: CGFloat = detailsWidth
         - modeButtonsWidth
         - titleToModeButtonsSpacing
+
+    static var controlColumnWidth: CGFloat {
+        controlContentWidth + controlSurfacePadding * 2
+    }
 }
 
 enum IslandDisplayRefreshPolicy {
@@ -704,12 +960,15 @@ enum IslandDisplayRefreshPolicy {
 }
 
 enum IslandFeature: String, Hashable {
+    case activityCenter
     case music
     case timer
     case notification
 
     var iconName: String {
         switch self {
+        case .activityCenter:
+            return "square.grid.2x2.fill"
         case .music:
             return "music.note"
         case .timer:
@@ -721,13 +980,15 @@ enum IslandFeature: String, Hashable {
 
 }
 
-enum IslandHoverExpansionPolicy {
+enum IslandExpansionPolicy {
     static func allowsExpansion(
         activeFeature: IslandFeature,
         hasCurrentMusicTrack: Bool,
         hasPendingNotification: Bool
     ) -> Bool {
         switch activeFeature {
+        case .activityCenter:
+            return false
         case .music:
             return hasCurrentMusicTrack
         case .timer:
@@ -735,6 +996,62 @@ enum IslandHoverExpansionPolicy {
         case .notification:
             return hasPendingNotification
         }
+    }
+}
+
+struct IslandPresentationDestination: Equatable {
+    let feature: IslandFeature
+    let mode: IslandMode
+}
+
+enum CollapsedIslandTapPolicy {
+    static func destination(
+        activeFeature: IslandFeature,
+        hasCurrentMusicTrack: Bool,
+        musicControlsAvailable: Bool = true,
+        hasPendingNotification: Bool
+    ) -> IslandPresentationDestination {
+        let canPresentMusic = hasCurrentMusicTrack && musicControlsAvailable
+        switch activeFeature {
+        case .activityCenter:
+            return canPresentMusic
+                ? IslandPresentationDestination(feature: .music, mode: .compact)
+                : IslandPresentationDestination(feature: .activityCenter, mode: .expanded)
+        case .music:
+            return canPresentMusic
+                ? IslandPresentationDestination(feature: .music, mode: .compact)
+                : IslandPresentationDestination(feature: .activityCenter, mode: .expanded)
+        case .timer:
+            return IslandPresentationDestination(feature: .timer, mode: .compact)
+        case .notification:
+            return hasPendingNotification
+                ? IslandPresentationDestination(feature: .notification, mode: .compact)
+                : IslandPresentationDestination(feature: .activityCenter, mode: .expanded)
+        }
+    }
+}
+
+enum MusicActivityPresentationPolicy {
+    static func controlsAvailable(
+        canPlayPause: Bool,
+        canPreviousTrack: Bool,
+        canNextTrack: Bool
+    ) -> Bool {
+        canPlayPause || canPreviousTrack || canNextTrack
+    }
+}
+
+enum MusicActivityTakeoverPolicy {
+    static func shouldTakeOver(
+        activeFeature: IslandFeature,
+        becameAvailable: Bool,
+        timerIsRunning: Bool,
+        hasPendingNotification: Bool
+    ) -> Bool {
+        activeFeature == .activityCenter
+            && becameAvailable
+            && !timerIsRunning
+            && !hasPendingNotification
     }
 }
 
@@ -775,6 +1092,8 @@ struct MusicTrack: Equatable {
     let artworkData: Data?
     let artworkURL: URL?
     let sourceBundleIdentifier: String?
+    var lyricsAreDesktopSnapshot: Bool = false
+    var timedWords: [QishuiTimedWord] = []
 }
 
 struct MusicState: Equatable {
@@ -790,7 +1109,11 @@ struct MusicState: Equatable {
     var canPreviousTrack: Bool = true
     var canNextTrack: Bool = true
     var controlUnavailableReason: String? = nil
+    var controlRecoveryAction: MusicControlRecoveryAction? = nil
     var hasCurrentTrack: Bool
+    // Some direct adapters can provide a track before they can prove play/pause.
+    // Keep that distinction so the UI never presents a guessed one-way action.
+    var playbackStateKnown: Bool = true
 }
 
 enum MusicUpdatePolicy {
@@ -842,6 +1165,31 @@ struct TimerState: Equatable {
     var progress: Double {
         guard duration > 0 else { return 0 }
         return Double(duration - remaining) / Double(duration)
+    }
+}
+
+enum FocusTimerPreset: Int, CaseIterable, Identifiable {
+    case fiveMinutes = 5
+    case fifteenMinutes = 15
+    case twentyFiveMinutes = 25
+    case fortyFiveMinutes = 45
+
+    var id: Int { rawValue }
+    var title: String { "\(rawValue) 分钟" }
+    var compactTitle: String { "\(rawValue) 分" }
+    var durationSeconds: Int { rawValue * 60 }
+}
+
+enum IslandActivityReturnPolicy {
+    static func featureAfterNotification(
+        returnFeature: IslandFeature?,
+        timerIsRunning: Bool,
+        hasCurrentMusicTrack: Bool
+    ) -> IslandFeature {
+        if returnFeature == .timer, timerIsRunning {
+            return .timer
+        }
+        return hasCurrentMusicTrack ? .music : .activityCenter
     }
 }
 
@@ -946,20 +1294,60 @@ func artworkAccentComponents(from data: Data) -> ArtworkAccentComponents? {
     var greenTotal = 0.0
     var blueTotal = 0.0
     var sampleCount = 0
+    var hueCounts = [Int](repeating: 0, count: 12)
+    var hueRed = [Double](repeating: 0, count: 12)
+    var hueGreen = [Double](repeating: 0, count: 12)
+    var hueBlue = [Double](repeating: 0, count: 12)
+    var chromaticCount = 0
     for offset in stride(from: 0, to: pixels.count, by: 4) {
         let alpha = Double(pixels[offset + 3])
         guard alpha > 20 else { continue }
         let unpremultiply = 255 / alpha
-        redTotal += min(Double(pixels[offset]) * unpremultiply, 255)
-        greenTotal += min(Double(pixels[offset + 1]) * unpremultiply, 255)
-        blueTotal += min(Double(pixels[offset + 2]) * unpremultiply, 255)
+        let red = min(Double(pixels[offset]) * unpremultiply, 255) / 255
+        let green = min(Double(pixels[offset + 1]) * unpremultiply, 255) / 255
+        let blue = min(Double(pixels[offset + 2]) * unpremultiply, 255) / 255
+        redTotal += red
+        greenTotal += green
+        blueTotal += blue
         sampleCount += 1
+        let maximum = max(red, green, blue)
+        let minimum = min(red, green, blue)
+        let delta = maximum - minimum
+        guard maximum > 0.18, delta / maximum > 0.22 else { continue }
+        let hue: Double
+        if maximum == red {
+            hue = ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
+        } else if maximum == green {
+            hue = ((blue - red) / delta) + 2
+        } else {
+            hue = ((red - green) / delta) + 4
+        }
+        let unitHue = (hue / 6 + 1).truncatingRemainder(dividingBy: 1)
+        let bin = min(Int(unitHue * 12), 11)
+        hueCounts[bin] += 1
+        hueRed[bin] += red
+        hueGreen[bin] += green
+        hueBlue[bin] += blue
+        chromaticCount += 1
     }
     guard sampleCount > 0 else { return nil }
+    if let peak = hueCounts.indices.max(by: { hueCounts[$0] < hueCounts[$1] }),
+       chromaticCount >= sampleCount / 8,
+       hueCounts[peak] >= max(chromaticCount / 4, sampleCount / 12) {
+        let neighbors = [(peak + 11) % 12, peak, (peak + 1) % 12]
+        let count = neighbors.reduce(0) { $0 + hueCounts[$1] }
+        if count > 0 {
+            return normalizedArtworkAccent(
+                red: neighbors.reduce(0) { $0 + hueRed[$1] } / Double(count),
+                green: neighbors.reduce(0) { $0 + hueGreen[$1] } / Double(count),
+                blue: neighbors.reduce(0) { $0 + hueBlue[$1] } / Double(count)
+            )
+        }
+    }
     return normalizedArtworkAccent(
-        red: redTotal / Double(sampleCount) / 255,
-        green: greenTotal / Double(sampleCount) / 255,
-        blue: blueTotal / Double(sampleCount) / 255
+        red: redTotal / Double(sampleCount),
+        green: greenTotal / Double(sampleCount),
+        blue: blueTotal / Double(sampleCount)
     )
 }
 
@@ -988,11 +1376,11 @@ private func normalizedArtworkAccent(
     hue /= 6
     if hue < 0 { hue += 1 }
 
-    var saturation = min(max(delta / maximum, 0.45), 0.82)
+    var saturation = min(max(delta / maximum, 0.25), 0.70)
     if (0.06...0.13).contains(hue) || (0.22...0.45).contains(hue) {
         saturation = min(saturation, 0.40)
     }
-    let brightness = min(max(maximum, 0.72), 0.96)
+    let brightness = min(max(maximum, 0.63), 0.90)
     return artworkAccentWithBlackBackgroundContrast(
         rgbComponents(hue: hue, saturation: saturation, brightness: brightness)
     )
@@ -1065,8 +1453,12 @@ private func rgbComponents(
 
 @MainActor
 final class IslandModel: ObservableObject {
+    let isPreviewPresentation: Bool
+    // Interaction ownership is independent of mode changes: pressing a control
+    // in a hover-expanded panel must also cancel the pending hover return.
+    let presentationInteraction = PassthroughSubject<Void, Never>()
     @Published var mode: IslandMode = .collapsed
-    @Published var activeFeature: IslandFeature = .music
+    @Published var activeFeature: IslandFeature = .activityCenter
     @Published var notchWidth: CGFloat = 185
     @Published var topBandHeight: CGFloat = 33
     @Published var hasCameraHousing = true
@@ -1078,6 +1470,9 @@ final class IslandModel: ObservableObject {
     @Published var pendingTrackControl: MusicControlCommand?
     @Published private(set) var trackControlFeedbackGeneration: UInt64 = 0
     @Published private(set) var playPauseFeedbackGeneration: UInt64 = 0
+    @Published private(set) var isRecoveringMusicControl = false
+    @Published private(set) var musicControlRecoveryNeedsUserAction = false
+    @Published private(set) var latestMusicControlRecoverySummary = "未触发"
     @Published var musicSourceStatus = MusicSourceStatus(
         sourceName: "汽水音乐",
         availability: .preview,
@@ -1098,6 +1493,7 @@ final class IslandModel: ObservableObject {
     @Published private(set) var appleMusicAvailableControls = "无"
     @Published private(set) var appleMusicResponseLatencyMilliseconds: Int?
     @Published var timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
+    var musicTimelineSampledAt = Date()
     @Published var notification = IslandNotification(
         title: "",
         body: "",
@@ -1121,6 +1517,8 @@ final class IslandModel: ObservableObject {
     private let eventKitSource = EventKitActivitySource()
     private var ticker: Timer?
     private var musicRefreshBurstTask: Task<Void, Never>?
+    private var musicControlRecoveryTask: Task<Void, Never>?
+    private var musicControlRecoveryAwaitingVerification = false
     private var musicAccentTask: Task<Void, Never>?
     private var musicAccentIdentity = ""
     private var musicAccentGeneration = 0
@@ -1130,6 +1528,7 @@ final class IslandModel: ObservableObject {
     private var pendingTrackControlChainCount = 0
     private var layoutCancellable: AnyCancellable?
     private var appleMusicSettingsCancellable: AnyCancellable?
+    private var musicLyricsSettingsCancellable: AnyCancellable?
     private var eventKitSettingsCancellable: AnyCancellable?
     private var appleMusicObservedProcessIdentifier: pid_t?
     private var appleMusicSettingsRequestGeneration: UInt64 = 0
@@ -1156,15 +1555,38 @@ final class IslandModel: ObservableObject {
     private let directControlSuppressionWindow: TimeInterval = 0.06
     private let musicProgressPublishInterval: TimeInterval = 0.45
 
-    var collapsedWingWidth: CGFloat { 30 }
-    var compactWingWidth: CGFloat { 96 }
+    // Keep the music glyph and activity waveform clear of the camera housing
+    // while returning a little more menu-bar space to the system on both sides.
+    var collapsedWingWidth: CGFloat { 22 }
+    var compactWingWidth: CGFloat {
+        MusicCompactLayout.standardWingWidth
+    }
+    var compactLeadingWingWidth: CGFloat {
+        MusicCompactLayout.standardWingWidth
+    }
+    var compactTrailingWingWidth: CGFloat {
+        MusicCompactLayout.standardWingWidth
+    }
     var expandedHeaderWingWidth: CGFloat { 34 }
+
+    private var hasCurrentDisplayableLyric: Bool {
+        guard activeFeature == .music else { return false }
+        return MusicLyricPresentation.state(
+            lines: music.track.lyrics,
+            index: music.lyricIndex,
+            pairMixedLanguageLines: !music.track.lyricsAreDesktopSnapshot
+        ).isAvailable
+    }
+
+    var isMusicLyricsEnabled: Bool {
+        CommandLine.arguments.contains("--preview-lyrics") || appSettings.showMusicLyrics
+    }
     var hasPendingNotification: Bool {
         activeIslandEvent != nil || !pendingIslandEvents.isEmpty
     }
 
-    var canExpandOnHover: Bool {
-        IslandHoverExpansionPolicy.allowsExpansion(
+    var canExpandIsland: Bool {
+        IslandExpansionPolicy.allowsExpansion(
             activeFeature: activeFeature,
             hasCurrentMusicTrack: music.hasCurrentTrack,
             hasPendingNotification: hasPendingNotification
@@ -1178,25 +1600,56 @@ final class IslandModel: ObservableObject {
         )
     }
 
+    var shouldPresentMusicControlRecovery: Bool {
+        MusicControlRecoveryPolicy.shouldPresentRecovery(
+            isRecovering: isRecoveringMusicControl,
+            hasRecoveryAction: music.controlRecoveryAction != nil
+        )
+    }
+
+    var musicControlsAvailable: Bool {
+        MusicActivityPresentationPolicy.controlsAvailable(
+            canPlayPause: music.canPlayPause,
+            canPreviousTrack: music.canPreviousTrack,
+            canNextTrack: music.canNextTrack
+        )
+    }
+
     var collapsedWidth: CGFloat {
         notchWidth + collapsedWingWidth * 2
     }
 
     var compactWidth: CGFloat {
-        notchWidth + compactWingWidth * 2
+        MusicCompactLayout.compactWidth(
+            notchWidth: notchWidth,
+            hasCurrentLyric: false
+        )
     }
 
     var expandedWidth: CGFloat {
         switch activeFeature {
+        case .activityCenter:
+            return max(notchWidth + 140, 420)
         case .music:
-            return max(notchWidth + 160, 460)
+            let lyricWidth = isMusicLyricsEnabled && hasCurrentDisplayableLyric
+                ? ExpandedMusicLayout.contentWidth + 32
+                : ExpandedMusicLayout.controlOnlyContentWidth + 32
+            return max(notchWidth + 160, lyricWidth)
         case .timer, .notification:
             return max(notchWidth + 140, 420)
         }
     }
 
     var expandedHeight: CGFloat {
-        topBandHeight + expandedPanelTopGap + expandedBodyHeight
+        // Music expansion is a single surface. The old control-only branch
+        // reserved a separate notch header above the player body, which made
+        // the app render as two stacked black islands. Keep the header for
+        // non-music expanded features, but let every expanded music state
+        // own the full window with one capsule.
+        if activeFeature == .music {
+            return expandedBodyHeight
+        }
+        return topBandHeight + expandedPanelTopGap + expandedBodyHeight
     }
 
     var expandedHeaderWidth: CGFloat {
@@ -1210,12 +1663,14 @@ final class IslandModel: ObservableObject {
         case .compact:
             return compactWidth
         case .expanded:
-            return expandedHeaderWidth
+            return activeFeature == .music ? expandedWidth : expandedHeaderWidth
         }
     }
 
     var statusWaveIsActive: Bool {
         switch activeFeature {
+        case .activityCenter:
+            return false
         case .music:
             return music.isPlaying
         case .timer:
@@ -1230,38 +1685,112 @@ final class IslandModel: ObservableObject {
     }
 
     var expandedPanelTopGap: CGFloat {
-        8
+        (activeFeature == .music || isLyricExpandedPresentation) ? 0 : 8
+    }
+
+    /// Expanded music uses one horizontal capsule for both the control-only
+    /// and lyric presentations. This is independent of lyric availability:
+    /// a track without lyrics must not reintroduce the detached notch header.
+    var usesUnifiedMusicExpandedSurface: Bool {
+        mode == .expanded && activeFeature == .music
+    }
+
+    var isLyricExpandedPresentation: Bool {
+        mode == .expanded && activeFeature == .music
+            && isMusicLyricsEnabled
+            && hasCurrentDisplayableLyric
     }
 
     var expandedBodyHeight: CGFloat {
-        let baseHeight: CGFloat
         switch activeFeature {
+        case .activityCenter:
+            return max(112, (shouldPresentMusicControlRecovery ? 210 : 168)
+                + CGFloat(layout.expandedHeightAdjustment))
         case .music:
-            baseHeight = music.track.lyrics.isEmpty ? 148 : 178
+            // Keep the height policy shared with the lyric-width/state
+            // transaction. When lyrics arrive after expansion, the AppKit
+            // observer uses this same value to grow the window before the
+            // shelf is painted, avoiding a clipped bottom edge.
+            return topBandHeight + MusicExpandedLayout.bodyHeight(
+                lines: isMusicLyricsEnabled ? music.track.lyrics : [],
+                heightAdjustment: CGFloat(layout.expandedHeightAdjustment)
+            )
         case .timer:
-            baseHeight = 146
+            return max(112, 146 + CGFloat(layout.expandedHeightAdjustment))
         case .notification:
-            baseHeight = 156
+            return max(112, 156 + CGFloat(layout.expandedHeightAdjustment))
         }
-        return max(112, baseHeight + CGFloat(layout.expandedHeightAdjustment))
     }
 
     init() {
-        isVisible = appSettings.showIslandOnLaunch
+        let arguments = CommandLine.arguments
+        isPreviewPresentation = arguments.contains("--preview-mode")
+            || arguments.contains("--preview-feature")
+            || arguments.contains("--preview-lyrics")
+            || arguments.contains("--preview-no-lyrics")
+        isVisible = isPreviewPresentation || appSettings.showIslandOnLaunch
         musicAdapter.setAppleMusicEnabled(appSettings.appleMusicEnabled)
+        musicAdapter.setQishuiTimedLyricsEnabled(appSettings.showMusicLyrics)
         music = musicAdapter.initialState
+        activeFeature = music.hasCurrentTrack ? .music : .activityCenter
         pendingTrackControl = nil
-        refreshMusicIntegrationStatus()
-        if let previewModeIndex = CommandLine.arguments.firstIndex(of: "--preview-mode"),
-           CommandLine.arguments.indices.contains(previewModeIndex + 1),
-           let previewMode = IslandMode(rawValue: CommandLine.arguments[previewModeIndex + 1]) {
+        if arguments.contains("--preview-lyrics") || arguments.contains("--preview-no-lyrics") {
+            // Explicit visual QA fixture. It is only admitted when the
+            // caller opts into preview mode and never enters the live adapter.
+            let previewArtwork: Data? = {
+                guard let index = arguments.firstIndex(of: "--preview-artwork"),
+                      arguments.indices.contains(index + 1) else { return nil }
+                return try? Data(contentsOf: URL(fileURLWithPath: arguments[index + 1]))
+            }()
+            let previewLyrics = arguments.contains("--preview-short-lyrics")
+                ? ["Can you see it", "你是否能够看清", "Every weekend in the rave"]
+                : ["Pull me through the night, I am still awake",
+                   "把我带过漫长的夜，我还没有睡去",
+                   "Every little heartbeat finds a way to break",
+                   "每一次心跳都在寻找出口"]
+            music = MusicState(
+                track: MusicTrack(
+                    title: arguments.contains("--preview-short-lyrics") ? "Can you see it" : "Pull Me Through The Night",
+                    artist: "Matisse / Sadko, James French",
+                    palette: [Color(red: 0.18, green: 0.30, blue: 0.36), Color(red: 0.05, green: 0.10, blue: 0.13)],
+                    lyrics: arguments.contains("--preview-no-lyrics") ? [] : previewLyrics,
+                    hasArtwork: previewArtwork != nil,
+                    artworkData: previewArtwork,
+                    artworkURL: nil,
+                    sourceBundleIdentifier: "preview.topislet",
+                    lyricsAreDesktopSnapshot: false
+                ),
+                isPlaying: true,
+                progress: 0.42,
+                lyricIndex: 0,
+                elapsedTime: 96,
+                duration: 228,
+                canSeek: true,
+                canPlayPause: true,
+                canPreviousTrack: true,
+                canNextTrack: true,
+                hasCurrentTrack: true,
+                playbackStateKnown: true
+            )
+            activeFeature = .music
+        }
+        if let previewModeIndex = arguments.firstIndex(of: "--preview-mode"),
+           arguments.indices.contains(previewModeIndex + 1),
+           let previewMode = IslandMode(rawValue: arguments[previewModeIndex + 1]) {
             mode = previewMode
         }
-        if let previewFeatureIndex = CommandLine.arguments.firstIndex(of: "--preview-feature"),
-           CommandLine.arguments.indices.contains(previewFeatureIndex + 1),
-           let previewFeature = IslandFeature(rawValue: CommandLine.arguments[previewFeatureIndex + 1]) {
+        if let previewFeatureIndex = arguments.firstIndex(of: "--preview-feature"),
+           arguments.indices.contains(previewFeatureIndex + 1),
+           let previewFeature = IslandFeature(rawValue: arguments[previewFeatureIndex + 1]) {
             activeFeature = previewFeature
         }
+        layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        startTicker()
+        guard !isPreviewPresentation else { return }
+
+        refreshMusicIntegrationStatus()
         musicSourceStatus = musicAdapter.refreshSourceStatus(allowSynchronousRefresh: true)
         musicAdapter.startRealtimeObservation { [weak self] music, status in
             self?.applyMusicUpdate(music, status: status)
@@ -1304,10 +1833,20 @@ final class IslandModel: ObservableObject {
                     await self?.refreshAppleMusicSnapshot()
                 }
             }
-        layoutCancellable = layout.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
-        startTicker()
+
+        musicLyricsSettingsCancellable = appSettings.$showMusicLyrics
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                self.musicAdapter.setQishuiTimedLyricsEnabled(enabled)
+                guard self.activeFeature == .music else { return }
+                if enabled, self.music.hasCurrentTrack {
+                    self.requestIslandMode(.expanded, bypassCooldown: true, userInitiated: false)
+                } else if !enabled, self.mode == .expanded {
+                    self.requestIslandMode(.compact, bypassCooldown: true, userInitiated: false)
+                }
+            }
     }
 
     func toggleVisibility() {
@@ -1336,11 +1875,29 @@ final class IslandModel: ObservableObject {
         requestIslandMode(mode == .expanded ? .compact : .expanded)
     }
 
+    func handleCollapsedIslandTap() {
+        let destination = CollapsedIslandTapPolicy.destination(
+            activeFeature: activeFeature,
+            hasCurrentMusicTrack: music.hasCurrentTrack,
+            musicControlsAvailable: musicControlsAvailable,
+            hasPendingNotification: hasPendingNotification
+        )
+        showFeature(destination.feature, mode: destination.mode)
+    }
+
+    func collapseExpandedPresentation() {
+        requestIslandMode(
+            activeFeature == .activityCenter ? .collapsed : .compact,
+            bypassCooldown: true
+        )
+    }
+
     func requestIslandMode(
         _ targetMode: IslandMode,
         bypassCooldown: Bool = false,
         userInitiated: Bool = true
     ) {
+        if userInitiated { notePresentationInteraction() }
         let now = Date()
         if !bypassCooldown {
             guard now.timeIntervalSince(lastDirectControlAt) > directControlSuppressionWindow else { return }
@@ -1363,7 +1920,16 @@ final class IslandModel: ObservableObject {
     }
 
     private func noteDirectControlInteraction() {
+        notePresentationInteraction()
         lastDirectControlAt = Date()
+    }
+
+    func notePresentationInteraction() {
+        if activeFeature == .music, mode == .expanded {
+            isUserExpandedMusicPresentation = true
+            autoCompactOnNextMusicTrack = false
+        }
+        presentationInteraction.send()
     }
 
     private func beginTrackControlFeedback(
@@ -1430,6 +1996,9 @@ final class IslandModel: ObservableObject {
             guard music.track.sourceBundleIdentifier
                 == displayedSourceBundleIdentifier else { return }
             musicSourceStatus = outcome.status
+            if !outcome.didSendCommand, music.controlRecoveryAction != nil {
+                musicControlRecoveryNeedsUserAction = true
+            }
             if outcome.didSendCommand {
                 applyMusicUpdate(musicAdapter.currentState(), status: outcome.status, forceMusic: true)
                 startMusicControlRefreshBurst(previousSignature: previousSignature, requireTrackChange: false)
@@ -1437,6 +2006,13 @@ final class IslandModel: ObservableObject {
                 applyMusicUpdate(musicAdapter.playPause(music), status: outcome.status, forceMusic: true)
             }
         }
+    }
+
+    func recoverCurrentMusicControl() {
+        guard music.controlRecoveryAction == .reopenQishuiWindow,
+              MusicControlRecoveryPolicy.shouldOpenApplication(for: .userInitiated) else { return }
+        latestMusicControlRecoverySummary = "用户触发连接：\(music.controlUnavailableReason ?? "原因未知")"
+        reopenQishuiWindow()
     }
 
     func nextTrack() {
@@ -1468,6 +2044,9 @@ final class IslandModel: ObservableObject {
                 return
             }
             musicSourceStatus = outcome.status
+            if !outcome.didSendCommand, music.controlRecoveryAction != nil {
+                musicControlRecoveryNeedsUserAction = true
+            }
             if outcome.didSendCommand {
                 if displayedSourceBundleIdentifier
                     == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
@@ -1516,6 +2095,9 @@ final class IslandModel: ObservableObject {
                 return
             }
             musicSourceStatus = outcome.status
+            if !outcome.didSendCommand, music.controlRecoveryAction != nil {
+                musicControlRecoveryNeedsUserAction = true
+            }
             if outcome.didSendCommand {
                 if displayedSourceBundleIdentifier
                     == MusicAdapterRegistry.qishui.descriptor.bundleIdentifier {
@@ -1888,6 +2470,10 @@ final class IslandModel: ObservableObject {
     func stop() {
         ticker?.invalidate()
         ticker = nil
+        musicControlRecoveryTask?.cancel()
+        musicControlRecoveryTask = nil
+        isRecoveringMusicControl = false
+        musicControlRecoveryAwaitingVerification = false
         cancelPendingMusicSeek(reason: .stateReset)
         musicRefreshBurstTask?.cancel()
         musicRefreshBurstTask = nil
@@ -1903,12 +2489,17 @@ final class IslandModel: ObservableObject {
         eventKitSource.stop()
     }
 
-    func startTimer() {
+    func startTimer(minutes: Int) {
         noteDirectControlInteraction()
-        if timerState.remaining <= 0 {
-            timerState = TimerState(duration: 25 * 60, remaining: 25 * 60, isRunning: false)
+        if activeFeature == .notification {
+            clearNotificationPresentation()
         }
-        timerState.isRunning = true
+        let preset = FocusTimerPreset(rawValue: minutes) ?? .twentyFiveMinutes
+        timerState = TimerState(
+            duration: preset.durationSeconds,
+            remaining: preset.durationSeconds,
+            isRunning: true
+        )
         lastTimerUpdateAt = Date()
         activeFeature = .timer
         if mode == .collapsed {
@@ -2051,7 +2642,14 @@ final class IslandModel: ObservableObject {
     }
 
     private func startTicker() {
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // Lyric AX snapshots are admitted every 180ms. Publishing on the same
+        // cadence avoids making a fresh active line wait for a second 500ms
+        // tick; the adapter's source and playback refreshes retain their own
+        // longer throttles.
+        ticker = Timer.scheduledTimer(
+            withTimeInterval: MusicPresentationTimingPolicy.mediaPublicationInterval,
+            repeats: true
+        ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.tick()
             }
@@ -2059,20 +2657,23 @@ final class IslandModel: ObservableObject {
     }
 
     private func tick() {
-        let trusted = AXIsProcessTrusted()
-        if trusted != accessibilityTrusted {
-            accessibilityTrusted = trusted
-        }
-        let mediaUpdate = musicAdapter.tick(music)
-        if isMusicScrubbing {
-            if let status = mediaUpdate.sourceStatus,
-               shouldPublishMusicStatus(status) {
-                musicSourceStatus = status
+        if !isPreviewPresentation {
+            let trusted = AXIsProcessTrusted()
+            if trusted != accessibilityTrusted {
+                accessibilityTrusted = trusted
             }
-        } else {
-            applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
+            let mediaUpdate = musicAdapter.tick(music)
+            if isMusicScrubbing {
+                if let status = mediaUpdate.sourceStatus,
+                   shouldPublishMusicStatus(status) {
+                    musicSourceStatus = status
+                }
+            } else {
+                applyMusicUpdate(mediaUpdate.music, status: mediaUpdate.sourceStatus)
+            }
+            updateMusicControlRecovery()
+            presentNextEventIfPossible()
         }
-        presentNextEventIfPossible()
 
         guard timerState.isRunning else {
             lastTimerUpdateAt = nil
@@ -2096,6 +2697,114 @@ final class IslandModel: ObservableObject {
                 interruptsExpanded: true,
                 autoDismiss: false
             )
+        }
+    }
+
+    private func updateMusicControlRecovery() {
+        // A missing UI action is not proof that Qishui's controls recovered.
+        switch MusicControlRecoveryPolicy.refreshDisposition(
+            isRecovering: isRecoveringMusicControl,
+            awaitingVerification: musicControlRecoveryAwaitingVerification,
+            qishuiAvailability: musicAdapter.qishuiControlAvailability,
+            hasRecoveryAction: music.controlRecoveryAction != nil
+        ) {
+        case .keepWaiting, .unchanged:
+            return
+        case .verified:
+            latestMusicControlRecoverySummary = "控件已恢复"
+        case .clearInactiveFeedback:
+            break
+        }
+        isRecoveringMusicControl = false
+        musicControlRecoveryAwaitingVerification = false
+        musicControlRecoveryNeedsUserAction = false
+        musicControlRecoveryTask?.cancel()
+        musicControlRecoveryTask = nil
+    }
+
+    private func reopenQishuiWindow() {
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: QishuiProcessLocator.bundleIdentifier
+        ) else {
+            musicControlRecoveryNeedsUserAction = true
+            return
+        }
+
+        musicControlRecoveryTask?.cancel()
+        isRecoveringMusicControl = true
+        musicControlRecoveryAwaitingVerification = false
+        musicControlRecoveryNeedsUserAction = false
+        musicAdapter.resetQishuiControlVerificationForRecovery()
+        let runningApplication = QishuiProcessLocator.application()
+
+        // Qishui is Electron.  A normal Dock/open request cannot turn on its
+        // renderer accessibility tree for an already-running process, so the
+        // user-initiated recovery action performs a scoped relaunch with the
+        // supported Chromium accessibility switch.  This is deliberately not
+        // part of background polling: playback is interrupted only when the
+        // user explicitly asks to connect the three top controls.
+        musicControlRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let didLaunch = await QishuiWindowRecovery
+                .relaunchWithRendererAccessibility(
+                    applicationURL: applicationURL,
+                    runningApplication: runningApplication
+                )
+            guard !Task.isCancelled else { return }
+            guard didLaunch else {
+                self.isRecoveringMusicControl = false
+                self.musicControlRecoveryNeedsUserAction = true
+                self.latestMusicControlRecoverySummary = "汽水未能以可控模式重新启动，请手动打开汽水后再试"
+                return
+            }
+            self.musicAdapter.resetQishuiControlVerificationForRecovery()
+            self.musicControlRecoveryAwaitingVerification = true
+            _ = QishuiWindowRecovery.revealMainWindow(
+                for: QishuiProcessLocator.application()
+            )
+            self.scheduleQishuiControlAvailabilityRefreshAfterRecovery()
+        }
+    }
+
+    private func scheduleQishuiControlAvailabilityRefreshAfterRecovery() {
+        musicControlRecoveryTask = Task { @MainActor [weak self] in
+            // AX content can appear after the app has finished activating.  A
+            // single delayed probe was too early for Qishui, so keep the
+            // recovery window short but tolerant of several activation passes.
+            let checkpoints: [UInt64] = [
+                350_000_000,
+                400_000_000,
+                500_000_000,
+                650_000_000,
+                900_000_000,
+                1_200_000_000
+            ]
+            for delay in checkpoints {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled, let self,
+                      self.isRecoveringMusicControl else {
+                    return
+                }
+
+                _ = QishuiWindowRecovery.revealMainWindow(
+                    for: QishuiProcessLocator.application()
+                )
+                self.musicAdapter.invalidateQishuiCache()
+                await self.musicAdapter.verifyQishuiControlsAfterRecovery()
+                guard !Task.isCancelled, self.isRecoveringMusicControl else { return }
+                let update = self.musicAdapter.refreshPlaybackPositionNow()
+                self.applyMusicUpdate(update.music, status: update.status, forceMusic: true)
+                self.updateMusicControlRecovery()
+
+                if !self.isRecoveringMusicControl { return }
+            }
+
+            guard !Task.isCancelled, let self,
+                  self.isRecoveringMusicControl else { return }
+            self.isRecoveringMusicControl = false
+            self.musicControlRecoveryAwaitingVerification = false
+            self.musicControlRecoveryNeedsUserAction = true
+            self.latestMusicControlRecoverySummary = "汽水仍未提供可用控件，请确认汽水窗口已打开后再试"
         }
     }
 
@@ -2211,13 +2920,18 @@ final class IslandModel: ObservableObject {
         notificationReturnMode = nil
         notificationPresentedMode = nil
 
-        if returnFeature == .timer, timerState.isRunning {
-            activeFeature = .timer
-        } else {
-            activeFeature = .music
-        }
-        if latestMode == presentedMode, let returnMode {
-            mode = returnMode
+        let resolvedFeature = IslandActivityReturnPolicy.featureAfterNotification(
+            returnFeature: returnFeature,
+            timerIsRunning: timerState.isRunning,
+            hasCurrentMusicTrack: music.hasCurrentTrack
+        )
+        activeFeature = resolvedFeature
+        if latestMode == presentedMode {
+            if resolvedFeature == .music, returnFeature != .music {
+                mode = .compact
+            } else if let returnMode {
+                mode = returnMode
+            }
         }
         updateNotificationDisplay()
         let shouldForceResume = shouldResumeInterruptedNormalEvent
@@ -2340,6 +3054,12 @@ final class IslandModel: ObservableObject {
         let reconciledMusic = reconcilePendingSeek(newMusic)
         let becameAvailable = !music.hasCurrentTrack
             && reconciledMusic.hasCurrentTrack
+        let shouldTakeOverWithMusic = MusicActivityTakeoverPolicy.shouldTakeOver(
+            activeFeature: activeFeature,
+            becameAvailable: becameAvailable,
+            timerIsRunning: timerState.isRunning,
+            hasPendingNotification: hasPendingNotification
+        )
         let shouldPromoteToCompact = MusicPresentationTransitionPolicy
             .shouldPromoteToCompact(
                 activeFeature: activeFeature,
@@ -2361,8 +3081,10 @@ final class IslandModel: ObservableObject {
             timelinePreservingUpdate.canPreviousTrack = reconciledMusic.canPreviousTrack
             timelinePreservingUpdate.canNextTrack = reconciledMusic.canNextTrack
             timelinePreservingUpdate.controlUnavailableReason = reconciledMusic.controlUnavailableReason
+            timelinePreservingUpdate.controlRecoveryAction = reconciledMusic.controlRecoveryAction
             timelinePreservingUpdate.hasCurrentTrack = reconciledMusic.hasCurrentTrack
             if timelinePreservingUpdate != music {
+                musicTimelineSampledAt = Date()
                 music = timelinePreservingUpdate
                 musicAdapter.noteMusicUIPublished(timelinePreservingUpdate)
             }
@@ -2374,6 +3096,11 @@ final class IslandModel: ObservableObject {
         }
 
         if forceMusic || shouldPublishMusicUpdate(reconciledMusic) {
+            // A lyric snapshot can arrive on its own after MediaRemote has
+            // already published the track. Promote that snapshot to the same
+            // music presentation transaction so the width listener cannot see
+            // the old 377pt layout with new lyric text.
+            musicTimelineSampledAt = Date()
             music = reconciledMusic
             musicAdapter.noteMusicUIPublished(reconciledMusic)
             if !reconciledMusic.hasCurrentTrack {
@@ -2382,7 +3109,20 @@ final class IslandModel: ObservableObject {
             if becameAvailable {
                 autoCompactOnNextMusicTrack = false
             }
-            if shouldPromoteToCompact {
+            if shouldTakeOverWithMusic {
+                activeFeature = .music
+                isUserExpandedMusicPresentation = false
+                mode = .compact
+            } else if isMusicLyricsEnabled,
+                      activeFeature == .music,
+                      appSettings.autoExpandMusicLyrics,
+                      MusicLyricPresentation.hasDisplayableLines(reconciledMusic.track.lyrics) {
+                // Only promote after a complete lyric snapshot arrives. A
+                // title-only transition must remain in the normal control
+                // card; the next lyric publication will re-run this branch.
+                isUserExpandedMusicPresentation = true
+                mode = .expanded
+            } else if shouldPromoteToCompact {
                 isUserExpandedMusicPresentation = false
                 mode = .compact
             }
@@ -2405,12 +3145,15 @@ final class IslandModel: ObservableObject {
     private func resetMusicPresentationAfterSourceExit() {
         resetPendingMusicControlPresentation(seekCancellationReason: .sourceExited)
         if activeFeature == .music,
-           !hasPendingNotification,
-           MusicPresentationTransitionPolicy
-            .shouldResetToDefaultAfterAllSourcesExit(currentMode: mode) {
+           !hasPendingNotification {
+            let shouldCollapse = MusicPresentationTransitionPolicy
+                .shouldResetToDefaultAfterAllSourcesExit(currentMode: mode)
             autoCompactOnNextMusicTrack = true
             isUserExpandedMusicPresentation = false
-            mode = .collapsed
+            activeFeature = .activityCenter
+            if shouldCollapse {
+                mode = .collapsed
+            }
         }
     }
 
@@ -2608,6 +3351,7 @@ final class IslandModel: ObservableObject {
             || newMusic.canPreviousTrack != music.canPreviousTrack
             || newMusic.canNextTrack != music.canNextTrack
             || newMusic.controlUnavailableReason != music.controlUnavailableReason
+            || newMusic.controlRecoveryAction != music.controlRecoveryAction
             || newMusic.hasCurrentTrack != music.hasCurrentTrack {
             lastMusicProgressPublishAt = Date()
             return true
@@ -2631,6 +3375,7 @@ final class IslandModel: ObservableObject {
         lhs.title != rhs.title
             || lhs.artist != rhs.artist
             || lhs.lyrics != rhs.lyrics
+            || lhs.timedWords != rhs.timedWords
             || lhs.hasArtwork != rhs.hasArtwork
             || lhs.artworkData != rhs.artworkData
             || lhs.artworkURL != rhs.artworkURL
@@ -2673,12 +3418,26 @@ final class IslandModel: ObservableObject {
 }
 
 final class IslandPanel: NSPanel {
+    var onLeftMouseDown: ((NSEvent) -> Void)?
+    var frameAnimationTarget: CGRect?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    // animator() is an Objective-C forwarding proxy, not an IslandPanel.
+    // Swift direct dispatch would access our stored properties on that proxy.
+    @objc dynamic override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        guard let target = frameAnimationTarget else {
+            super.setFrame(frameRect, display: flag)
+            return
+        }
+        let anchored = IslandAnimationFrame.anchored(frameRect, to: target)
+        super.setFrame(anchored, display: flag)
+    }
+
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !isKeyWindow {
-            makeKey()
+        if event.type == .leftMouseDown {
+            onLeftMouseDown?(event)
+            if !isKeyWindow { makeKey() }
         }
         super.sendEvent(event)
     }
@@ -2719,8 +3478,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverExpectedModeChange: IslandMode?
     private var hoverPointerCoalescer = LatestEventCoalescer<CGPoint>()
     private var hoverDeliveryWorkItem: DispatchWorkItem?
-    private var isPanelFrameAnimating = false
-    private var isCorrectingAnimatedPanelOrigin = false
+    private var panelFrameAnimationTarget: CGRect?
+    private var panelFrameAnimationID: Int?
+    private var fullScreenSuppressionTimer: Timer?
+    private var fullScreenWorkspaceObservers: [NSObjectProtocol] = []
+    private var isSuppressedByFullScreen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -2738,6 +3500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeAccessibilityDisplayOptions()
         observeOutsideClicks()
         observeIslandHover()
+        observeFullScreenChanges()
         updatePanelVisibility()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.presentOpenFeedback(shouldShowSettings: false)
@@ -2749,6 +3512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        guard !model.isPreviewPresentation else { return }
         model.refreshMusicIntegrationStatus()
         Task {
             await model.refreshEventKitNow()
@@ -2761,6 +3525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopPanelFrameAnimation()
         model.stop()
         DistributedNotificationCenter.default().removeObserver(
             self,
@@ -2787,6 +3552,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         screenRefreshTask?.cancel()
         screenRefreshTask = nil
+        fullScreenSuppressionTimer?.invalidate()
+        fullScreenSuppressionTimer = nil
+        for observer in fullScreenWorkspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        fullScreenWorkspaceObservers.removeAll()
         if let accessibilityDisplayObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(accessibilityDisplayObserver)
         }
@@ -2817,15 +3588,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = panelSize(for: model.mode)
         let panel = makeIslandPanel(size: size, level: .statusBar)
 
-        let root = IslandRootView(model: model)
+        let root = IslandRootView(
+            model: model,
+            onOpenSettings: { [weak self] in self?.showSettings() },
+            onQuit: { [weak self] in self?.quit() }
+        )
         let host = IslandHostingView(rootView: root)
         configureIslandHostingView(host, size: size)
         panel.contentView = host
         panel.delegate = self
+        panel.onLeftMouseDown = { [weak self, weak panel] event in
+            guard let self, let panel,
+                  model.mode == .expanded,
+                  model.isVisible,
+                  interactionRegions(for: panel.frame, mode: model.mode).contains(
+                    panel.convertPoint(toScreen: event.locationInWindow), tolerance: 0
+                  ) else { return }
+            model.notePresentationInteraction()
+        }
 
         self.panel = panel
+        refreshFullScreenSuppression()
         repositionPanel(animated: false)
-        panel.orderFrontRegardless()
     }
 
     private func makeIslandPanel(size: NSSize, level: NSWindow.Level) -> IslandPanel {
@@ -2844,7 +3628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
         panel.level = level
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.collectionBehavior = IslandPanelCollectionPolicy.behavior
         panel.isExcludedFromWindowsMenu = true
         return panel
     }
@@ -2864,19 +3648,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func createStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let image = NSImage(systemSymbolName: "capsule.fill", accessibilityDescription: "顶屿") {
-            image.isTemplate = true
-            item.button?.image = image
-            item.button?.imagePosition = .imageOnly
-        } else {
-            item.button?.title = "屿"
-        }
+        item.button?.image = BrandIdentity.menuBarImage()
+        item.button?.imagePosition = .imageOnly
         item.button?.toolTip = "顶屿"
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "显示 / 隐藏顶屿", action: #selector(toggleVisibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "显示汽水音乐", action: #selector(showMusic), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "启动 25 分钟计时", action: #selector(showTimer), keyEquivalent: ""))
+        let timerItem = NSMenuItem(title: "开始专注计时", action: nil, keyEquivalent: "")
+        let timerMenu = NSMenu(title: "开始专注计时")
+        for preset in FocusTimerPreset.allCases {
+            let presetItem = NSMenuItem(
+                title: preset.title,
+                action: #selector(startTimerPreset(_:)),
+                keyEquivalent: ""
+            )
+            presetItem.tag = preset.rawValue
+            timerMenu.addItem(presetItem)
+        }
+        timerItem.submenu = timerMenu
+        menu.addItem(timerItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "汽水适配状态", action: #selector(showMusicSourceStatus), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "辅助功能自检", action: #selector(showAccessibilityStatus), keyEquivalent: "a"))
@@ -2890,6 +3681,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeModel() {
+        model.presentationInteraction
+            .sink { [weak self] in self?.cancelHoverPresentation() }
+            .store(in: &cancellables)
         model.$mode
             .sink { [weak self] mode in
                 guard let self else { return }
@@ -2906,10 +3700,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in
-                guard let self, model.mode == .expanded else { return }
-                repositionPanel(animated: true)
+                guard let self, model.mode == .expanded || model.mode == .compact else { return }
+                repositionPanel(animated: true, targetMode: model.mode)
             }
             .store(in: &cancellables)
+
+        Publishers.CombineLatest(
+            model.$music.map { $0.controlRecoveryAction != nil }.removeDuplicates(),
+            model.$isRecoveringMusicControl.removeDuplicates()
+        )
+        .map { hasAction, isRecovering in
+            MusicControlRecoveryPolicy.shouldPresentRecovery(
+                isRecovering: isRecovering, hasRecoveryAction: hasAction
+            )
+        }
+        .removeDuplicates()
+        .dropFirst()
+        .sink { [weak self] _ in
+            // Published values arrive before their storage changes. Resize
+            // from the committed model so the recovery row is not clipped.
+            DispatchQueue.main.async {
+                guard let self, self.model.mode == .expanded,
+                      self.model.activeFeature == .activityCenter else { return }
+                self.repositionPanel(animated: true)
+            }
+        }
+        .store(in: &cancellables)
 
         Publishers.CombineLatest3(
             model.$activeFeature.removeDuplicates(),
@@ -2921,7 +3737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .removeDuplicates()
         )
         .map { feature, hasCurrentTrack, hasPendingNotification in
-            IslandHoverExpansionPolicy.allowsExpansion(
+            IslandExpansionPolicy.allowsExpansion(
                 activeFeature: feature,
                 hasCurrentMusicTrack: hasCurrentTrack,
                 hasPendingNotification: hasPendingNotification
@@ -2930,9 +3746,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .removeDuplicates()
         .dropFirst()
         .sink { [weak self] _ in
-            self?.updateIslandHover(at: NSEvent.mouseLocation)
+            // Availability and feature changes are state updates, not pointer
+            // movement. Re-reading NSEvent.mouseLocation here used to make a
+            // lyric arrival or track switch expand the island even when the
+            // user had not moved the mouse. Leave hover transitions to the
+            // actual mouseMoved monitors below.
+            self?.invalidateHoverSampleAfterStateChange()
         }
         .store(in: &cancellables)
+
+        model.$music
+            .map { music in
+                MusicLyricPresentation.state(
+                    lines: music.track.lyrics,
+                    index: music.lyricIndex,
+                    pairMixedLanguageLines: !music.track.lyricsAreDesktopSnapshot
+                )
+            }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                // @Published emits from willSet. Defer until the committed
+                // model value is visible so compactWidth/expandedHeight and
+                // their SwiftUI content cannot observe different lyric states
+                // during the same tick.
+                DispatchQueue.main.async {
+                    guard let self,
+                          (self.model.mode == .compact || self.model.mode == .expanded),
+                          self.model.activeFeature == .music else { return }
+                    // Lyric availability changes both the compact width and the
+                    // expanded body height. Apply the committed geometry after
+                    // SwiftUI observes the same state, otherwise an arriving
+                    // lyric shelf can be rendered below the old no-lyrics frame.
+                    let mode = self.model.mode
+                    self.repositionPanel(animated: false, targetMode: mode)
+                }
+            }
+            .store(in: &cancellables)
 
         model.layout.objectWillChange
             .sink { [weak self] _ in
@@ -2956,6 +3805,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func observeFullScreenChanges() {
+        refreshFullScreenSuppression()
+        fullScreenSuppressionTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.15,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFullScreenSuppression()
+            }
+        }
+        let applicationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFullScreenSuppression()
+            }
+        }
+        let activeSpaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFullScreenSuppression()
+            }
+        }
+        fullScreenWorkspaceObservers = [applicationObserver, activeSpaceObserver]
+    }
+
+    @discardableResult
+    private func synchronizeFullScreenSuppression() -> Bool {
+        if model.isPreviewPresentation {
+            let changed = isSuppressedByFullScreen
+            isSuppressedByFullScreen = false
+            return changed
+        }
+        guard let screen = targetScreen() else { return false }
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let hasCoveringWindow = IslandFullScreenWindowDetector.hasCoveringWindow(
+            on: screen,
+            excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+        )
+        let shouldSuppress = IslandFullScreenSuppressionPolicy.shouldSuppress(
+            frontmostIsTopIslet: frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+            hasCoveringWindow: hasCoveringWindow
+        )
+        let changed = shouldSuppress != isSuppressedByFullScreen
+        isSuppressedByFullScreen = shouldSuppress
+        return changed
+    }
+
+    private func refreshFullScreenSuppression() {
+        if synchronizeFullScreenSuppression() { updatePanelVisibility() }
+    }
+
     private func handleScreenParametersChange() {
         screenRefreshTask?.cancel()
         stableDisplayIdentityCache.removeAll()
@@ -2975,7 +3881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshDisplayTopology() {
         _ = panelAnimationGate.beginAnimation()
-        isPanelFrameAnimating = false
+        stopPanelFrameAnimation()
         updateScreenMetrics()
         repositionPanel(animated: false)
         updateIslandHover(at: NSEvent.mouseLocation)
@@ -3070,7 +3976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateIslandHover(at point: CGPoint) {
-        let isInside = model.canExpandOnHover && isInsideIslandHoverZone(point)
+        let isInside = model.canExpandIsland && isInsideIslandHoverZone(point)
         guard isInside != isPointerInsideHoverZone else { return }
         isPointerInsideHoverZone = isInside
         hoverGeneration += 1
@@ -3088,7 +3994,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let self,
                       hoverGeneration == generation,
                       isPointerInsideHoverZone,
-                      model.canExpandOnHover,
+                      model.canExpandIsland,
                       model.mode != .expanded else { return }
                 didExpandFromHover = true
                 hoverReturnMode = returnMode
@@ -3127,6 +4033,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func invalidateHoverSampleAfterStateChange() {
+        hoverGeneration += 1
+        hoverEnterTask?.cancel()
+        hoverEnterTask = nil
+        hoverExitTask?.cancel()
+        hoverExitTask = nil
+        // Force the next real mouseMoved event to establish a fresh boundary
+        // crossing. Do not synthesize a crossing from a stale mouse location.
+        isPointerInsideHoverZone = false
+    }
+
     private func isInsideIslandHoverZone(_ point: CGPoint) -> Bool {
         guard model.isVisible, let panel, panel.isVisible else { return false }
         if model.mode == .compact,
@@ -3151,9 +4068,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         hoverExpectedModeChange = nil
+        cancelHoverPresentation()
+    }
+
+    private func cancelHoverPresentation() {
         guard didExpandFromHover || hoverEnterTask != nil || hoverExitTask != nil else {
             return
         }
+        hoverExpectedModeChange = nil
         hoverGeneration += 1
         hoverEnterTask?.cancel()
         hoverEnterTask = nil
@@ -3182,7 +4104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let regions = interactionRegions(for: panel.frame, mode: model.mode)
         guard !regions.contains(clickPoint, tolerance: 2) else { return }
-        model.requestIslandMode(.compact, bypassCooldown: true)
+        model.collapseExpandedPresentation()
     }
 
     private func updateScreenMetrics() {
@@ -3309,7 +4231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func panelSize(for mode: IslandMode) -> NSSize {
-        IslandWindowLayout.size(
+        let size = IslandWindowLayout.size(
             for: mode,
             collapsedWidth: model.collapsedWidth,
             compactWidth: model.compactWidth,
@@ -3317,6 +4239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expandedHeight: model.expandedHeight,
             topBandHeight: model.topBandHeight
         )
+        return NSSize(width: size.width.rounded(), height: size.height.rounded())
     }
 
     private func interactionRegions(
@@ -3330,7 +4253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .compact:
             headerWidth = model.compactWidth
         case .expanded:
-            headerWidth = model.expandedHeaderWidth
+            headerWidth = model.usesUnifiedMusicExpandedSurface
+                ? model.expandedWidth
+                : model.expandedHeaderWidth
         }
         return IslandInteractionRegions.make(
             panelFrame: panelFrame,
@@ -3357,9 +4282,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for: mode,
             reduceMotion: model.reduceMotionEnabled
         )
-        guard animated, animationDuration > 0 else {
+        stopPanelFrameAnimation()
+        // A media/layout change can arrive before the periodic fullscreen
+        // check. Recheck before any presentation, including animation start.
+        synchronizeFullScreenSuppression()
+        guard animated, animationDuration > 0,
+              model.isVisible, !isSuppressedByFullScreen else {
             _ = panelAnimationGate.beginAnimation()
-            isPanelFrameAnimating = false
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
             updatePanelVisibility()
@@ -3367,67 +4296,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let animationID = panelAnimationGate.beginAnimation()
-        isPanelFrameAnimating = true
+        guard panel.frame != frame else { return }
 
-        if model.isVisible {
+        if model.isVisible, !isSuppressedByFullScreen {
             panel.orderFrontRegardless()
         }
 
+        panelFrameAnimationTarget = frame
+        panelFrameAnimationID = animationID
+        panel.frameAnimationTarget = frame
+        let points = IslandMotion.timingControlPoints(for: mode)
+        IslandWindowFrameAnimation.install(on: panel, duration: animationDuration, controlPoints: points)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = animationDuration
-            context.timingFunction = IslandMotion.timingFunction(for: mode)
+            context.timingFunction = CAMediaTimingFunction(
+                controlPoints: Float(points.0), Float(points.1), Float(points.2), Float(points.3)
+            )
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
-                self.finishAnimatedReposition(
-                    animationID: animationID,
-                    targetMode: mode,
-                    frame: frame,
-                    size: size
-                )
+                guard let self,
+                      self.panelFrameAnimationID == animationID,
+                      self.panelAnimationGate.claimCompletion(
+                        animationID: animationID, targetMode: mode, currentMode: self.model.mode
+                      ) else { return }
+                // AppKit has submitted the endpoint. Do not snap or retime it.
+                self.panel?.frameAnimationTarget = nil
+                if let panel = self.panel { IslandWindowFrameAnimation.remove(from: panel) }
+                self.panelFrameAnimationTarget = nil
+                self.panelFrameAnimationID = nil
             }
         }
+    }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
-            guard let self else { return }
-            finishAnimatedReposition(
-                animationID: animationID,
-                targetMode: mode,
-                frame: frame,
-                size: size
-            )
+    private func stopPanelFrameAnimation() {
+        // Freeze an interrupted animator at its currently observed frame.
+        // This replaces its pending frame action before the next generation.
+        if panelFrameAnimationTarget != nil, let panel {
+            let current = panel.frame
+            panel.frameAnimationTarget = nil
+            IslandWindowFrameAnimation.remove(from: panel)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                panel.animator().setFrame(current, display: false)
+            }
         }
-    }
-
-    private func finishAnimatedReposition(
-        animationID: Int,
-        targetMode: IslandMode,
-        frame: NSRect,
-        size: NSSize
-    ) {
-        guard panelAnimationGate.claimCompletion(
-            animationID: animationID,
-            targetMode: targetMode,
-            currentMode: model.mode
-        ) else { return }
-        isPanelFrameAnimating = false
-        panel?.setFrame(frame, display: true)
-        panel?.contentView?.frame = NSRect(origin: .zero, size: size)
-    }
-
-    private func correctAnimatedPanelOriginIfNeeded() {
-        guard isPanelFrameAnimating,
-              !isCorrectingAnimatedPanelOrigin,
-              let panel,
-              let screen = targetScreen() else { return }
-        let correctedFrame = panelFrame(for: panel.frame.size, on: screen)
-        guard abs(panel.frame.minX - correctedFrame.minX) > 0.01
-                || abs(panel.frame.minY - correctedFrame.minY) > 0.01 else { return }
-        isCorrectingAnimatedPanelOrigin = true
-        panel.setFrameOrigin(correctedFrame.origin)
-        isCorrectingAnimatedPanelOrigin = false
+        panelFrameAnimationTarget = nil
+        panelFrameAnimationID = nil
     }
 
     private func panelFrame(for size: NSSize, on screen: NSScreen) -> NSRect {
@@ -3442,15 +4358,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for: size,
             in: screen.frame,
             yOffset: CGFloat(model.layout.islandYOffset),
-            anchorX: geometry.islandAnchorX
+            anchorX: geometry.islandAnchorX,
+            alignTopToWindowServer: true
         )
     }
 
     private func updatePanelVisibility() {
         guard let panel else { return }
-        if model.isVisible {
+        // Never reveal using a stale timer snapshot after a covering window
+        // appeared. This read changes neither focus nor the source player.
+        if model.isVisible { synchronizeFullScreenSuppression() }
+        if model.isVisible, !isSuppressedByFullScreen {
             panel.orderFrontRegardless()
         } else {
+            // Invalidate the old owner before submitting hidden geometry.
+            if let target = panelFrameAnimationTarget {
+                _ = panelAnimationGate.beginAnimation()
+                stopPanelFrameAnimation()
+                panel.setFrame(target, display: false)
+                panel.contentView?.frame = NSRect(origin: .zero, size: target.size)
+            }
             panel.orderOut(nil)
         }
     }
@@ -3464,9 +4391,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.showFeature(.music)
     }
 
-    @objc private func showTimer() {
+    @objc private func startTimerPreset(_ sender: NSMenuItem) {
         model.isVisible = true
-        model.startTimer()
+        model.startTimer(minutes: sender.tag)
     }
 
     @objc private func forceRefreshNowPlaying() {
@@ -3515,12 +4442,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentOpenFeedback(shouldShowSettings: Bool) {
         model.isVisible = true
-        if !CommandLine.arguments.contains("--preview-feature") {
-            model.activeFeature = .music
-        }
         if model.mode == .collapsed,
+           (model.music.hasCurrentTrack || shouldShowSettings),
+           !CommandLine.arguments.contains("--preview-feature"),
            !CommandLine.arguments.contains("--preview-mode") {
-            model.requestIslandMode(.compact, bypassCooldown: true)
+            model.handleCollapsedIslandTap()
         }
         repositionPanel(animated: true)
         if shouldShowSettings {
@@ -3587,11 +4513,6 @@ private final class AppTerminationSignalBridge {
 }
 
 extension AppDelegate: NSWindowDelegate {
-    func windowDidResize(_ notification: Notification) {
-        guard notification.object as? NSWindow === panel else { return }
-        correctAnimatedPanelOriginIfNeeded()
-    }
-
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === settingsWindow {
@@ -3619,9 +4540,9 @@ struct IslandSettingsView: View {
                     Label("音乐", systemImage: "music.note")
                 }
 
-            EventKitSettingsPane(model: model, settings: model.appSettings)
+            ActivitySettingsPane(model: model, settings: model.appSettings)
                 .tabItem {
-                    Label("日程", systemImage: "calendar.badge.clock")
+                    Label("活动", systemImage: "clock")
                 }
 
             LayoutCalibrationView(model: model, settings: model.layout)
@@ -3809,14 +4730,14 @@ private struct GeneralSettingsPane: View {
             Section {
                 LabeledContent("默认主活动", value: "前台音乐应用优先")
 
-                Text("计时器和提醒只在事件发生时临时出现，不再作为顶屿里的固定入口。")
+                Text("没有音乐时，点击空岛可打开快捷面板；音乐、运行中的计时器和提醒事件仍按优先级自动接管。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
 
                 HStack {
                     Button("折叠") {
                         model.isVisible = true
-                        model.requestIslandMode(.compact, bypassCooldown: true)
+                        model.collapseExpandedPresentation()
                     }
 
                     Button("展开预览") {
@@ -3930,6 +4851,7 @@ private struct MusicSettingsPane: View {
             "canPreviousTrack=\(model.music.canPreviousTrack)",
             "canNextTrack=\(model.music.canNextTrack)",
             "controlUnavailableReason=\(model.music.controlUnavailableReason ?? "nil")",
+            "controlRecovery=\(model.latestMusicControlRecoverySummary)",
             "pending=\(model.music.isPlaybackPending)",
             "artworkBytes=\(model.music.track.artworkData?.count ?? 0)",
             "artworkURL=\(model.music.track.artworkURL?.absoluteString ?? "nil")",
@@ -3961,6 +4883,16 @@ private struct MusicSettingsPane: View {
                         Label("打开辅助功能设置", systemImage: "gear")
                     }
                 }
+                Toggle("显示歌词", isOn: $settings.showMusicLyrics)
+                Text("开启后，歌词查询会发送当前歌名和歌手，不上传账号或播放历史；关闭后清空本次运行的歌词时间轴缓存。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("歌词更新时自动展开", isOn: $settings.autoExpandMusicLyrics)
+                Text("开启后，歌词快照到达时会自动进入左侧播放控制、右侧歌词阅读区；关闭后保持当前音乐态，仍可通过悬浮或点击手动展开。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("网易云音乐 Alpha 支持") {
@@ -4259,9 +5191,10 @@ private func musicStatusAgeText(_ date: Date) -> String {
     return date.formatted(date: .omitted, time: .standard)
 }
 
-private struct EventKitSettingsPane: View {
+private struct ActivitySettingsPane: View {
     @ObservedObject var model: IslandModel
     @ObservedObject var settings: AppSettings
+    @State private var selectedTimerPreset = FocusTimerPreset.twentyFiveMinutes
     @State private var isRequestingCalendar = false
     @State private var isRequestingReminders = false
     @State private var isRefreshing = false
@@ -4273,6 +5206,46 @@ private struct EventKitSettingsPane: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("专注时长", selection: $selectedTimerPreset) {
+                    ForEach(FocusTimerPreset.allCases) { preset in
+                        Text(preset.compactTitle).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                HStack {
+                    Button {
+                        model.isVisible = true
+                        model.startTimer(minutes: selectedTimerPreset.rawValue)
+                    } label: {
+                        Label("开始专注", systemImage: "play.fill")
+                    }
+
+                    if model.activeFeature == .timer {
+                        Button {
+                            model.isVisible = true
+                            model.showFeature(.timer)
+                        } label: {
+                            Label("显示计时器", systemImage: "capsule")
+                        }
+                    }
+
+                    Spacer()
+
+                    if model.timerState.isRunning {
+                        Text(timeText(model.timerState.remaining))
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("专注计时")
+            } footer: {
+                Text("计时开始后自动接管顶屿；日程提醒短暂出现后，会返回正在进行的计时。")
+            }
+
             Section {
                 LabeledContent("权限", value: model.eventKitStatus.calendarAccess.displayName)
 
@@ -4370,9 +5343,10 @@ private struct AboutSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 14) {
-                Image(systemName: "capsule.fill")
-                    .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(.primary)
+                Image(nsImage: BrandIdentity.applicationImage())
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: 54, height: 54)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -4387,7 +5361,7 @@ private struct AboutSettingsPane: View {
 
             Divider()
 
-            Text("当前版本以汽水音乐为默认主活动；计时器和提醒只在事件发生时临时接管。发布前仍需要处理签名、公证和系统更新兼容性。")
+            Text("当前版本以适配音乐为优先主活动；空岛可打开快捷面板，启动专注计时并管理日历与提醒事项。发布前仍需要处理签名、公证和系统更新兼容性。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -4403,52 +5377,65 @@ private struct AboutSettingsPane: View {
 
 struct IslandRootView: View {
     @ObservedObject var model: IslandModel
+    let onOpenSettings: () -> Void
+    let onQuit: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .top) {
-                ExpandedIslandBodyPanel(model: model)
-                    .offset(y: model.topBandHeight + model.expandedPanelTopGap)
-
-                IslandShell(
-                    width: model.currentHeaderWidth,
-                    height: model.topBandHeight,
-                    cornerRadius: model.topBandHeight / 2,
-                    fillOpacity: 1,
-                    strokeOpacity: 0,
-                    attachesToTop: true
-                ) {
-                    Color.clear
+                // The body is a separate AppKit-height surface. Keeping an
+                // invisible copy mounted while compact/collapsed lets its
+                // mask and stale lyric subtree participate in the same frame
+                // transaction, which can leave a black band below the header.
+                // Mount it only for the mode that owns that surface.
+                if model.mode == .expanded {
+                    ExpandedIslandBodyPanel(model: model)
+                        .offset(y: model.usesUnifiedMusicExpandedSurface || model.isLyricExpandedPresentation
+                            ? 0
+                            : model.topBandHeight + model.expandedPanelTopGap)
                 }
 
-                ZStack {
-                    CollapsedIsland(model: model)
-                        .opacity(model.mode == .collapsed ? 1 : 0)
-                        .allowsHitTesting(model.mode == .collapsed)
-                        .accessibilityHidden(model.mode != .collapsed)
+                if !model.isLyricExpandedPresentation && !model.usesUnifiedMusicExpandedSurface {
+                    IslandShell(
+                        width: model.currentHeaderWidth,
+                        height: model.topBandHeight,
+                        cornerRadius: model.topBandHeight / 2,
+                        fillOpacity: 1,
+                        strokeOpacity: 0,
+                        attachesToTop: true
+                    ) {
+                        Color.clear
+                    }
+                }
 
-                    CompactIsland(model: model)
-                        .opacity(model.mode == .compact ? 1 : 0)
-                        .allowsHitTesting(model.mode == .compact)
-                        .accessibilityHidden(model.mode != .compact)
-
-                    ExpandedIsland(model: model)
-                        .opacity(model.mode == .expanded ? 1 : 0)
-                        .allowsHitTesting(model.mode == .expanded)
-                        .accessibilityHidden(model.mode != .expanded)
+                // Keep exactly one header tree alive for the current mode.
+                // Stacking all three trees with opacity lets AppKit resize the
+                // window before SwiftUI removes the old compact tree, which
+                // leaves a two-line lyric/black-edge residue during collapse.
+                Group {
+                    switch model.mode {
+                    case .collapsed:
+                        CollapsedIsland(model: model)
+                    case .compact:
+                        CompactIsland(model: model)
+                    case .expanded:
+                        if model.isLyricExpandedPresentation || model.usesUnifiedMusicExpandedSurface {
+                            Color.clear
+                        } else {
+                            ExpandedIsland(model: model)
+                        }
+                    }
                 }
                 .frame(width: model.currentHeaderWidth, height: model.topBandHeight)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
-            .animation(
-                IslandMotion.geometryAnimation(
-                    for: model.mode,
-                    reduceMotion: model.reduceMotionEnabled
-                ),
-                value: model.mode
-            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .contextMenu {
+            Button("设置…", action: onOpenSettings)
+            Divider()
+            Button("退出顶屿", action: onQuit)
+        }
         .animation(
             IslandMotion.featureContentAnimation(
                 reduceMotion: model.reduceMotionEnabled
@@ -4548,7 +5535,7 @@ struct CollapsedIsland: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            model.requestIslandMode(.compact)
+            model.handleCollapsedIslandTap()
         }
     }
 }
@@ -4568,6 +5555,8 @@ struct CompactIsland: View {
             ZStack {
                 Group {
                     switch model.activeFeature {
+                    case .activityCenter:
+                        Color.clear
                     case .music:
                         CompactMusic(model: model)
                     case .timer:
@@ -4633,21 +5622,37 @@ struct ExpandedIslandBodyPanel: View {
                 width: model.expandedWidth,
                 height: model.expandedBodyHeight,
                 cornerRadius: 24,
-                fillOpacity: 1,
-                strokeOpacity: 0,
-                shadowOpacity: 0
+                // Both music states share the same translucent glass capsule.
+                // The previous opaque shell plus inner material card was the
+                // second visible box in the supplied screenshot.
+                fillOpacity: model.activeFeature == .music ? 0 : 1,
+                strokeOpacity: model.activeFeature == .music ? 0.12 : 0,
+                shadowOpacity: model.activeFeature == .music ? 0.18 : 0
             ) {
-                Color.clear
+                ZStack {
+                    if model.activeFeature == .music {
+                        MusicGlassBackground()
+                        Color.black.opacity(0.30)
+                    }
+                }
             }
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
+            .opacity(model.mode == .expanded ? 1 : 0)
 
             ZStack(alignment: .topTrailing) {
                 switch model.activeFeature {
-                case .music:
-                    ExpandedMusic(model: model)
+                case .activityCenter:
+                    ExpandedActivityCenter(model: model)
                         .padding(.horizontal, 16)
                         .padding(.top, 10)
                         .padding(.bottom, 12)
+
+                case .music:
+                    ExpandedMusic(model: model)
+                        .padding(.horizontal, 16)
+                        // Camera housing occupies the menu-bar band. Both
+                        // columns start below it, inside the same capsule.
+                        .padding(.top, model.topBandHeight)
 
                 case .timer, .notification:
                     VStack(spacing: 8) {
@@ -4690,7 +5695,7 @@ struct ExpandedIslandBodyPanel: View {
 
                 if model.activeFeature == .music {
                     WindowModeButtons(model: model)
-                        .padding(.top, 10)
+                        .padding(.top, 4)
                         .padding(.trailing, 16)
                 }
             }
@@ -4712,7 +5717,7 @@ struct WindowModeButtons: View {
     var body: some View {
         HStack(spacing: 8) {
             Button {
-                model.requestIslandMode(.compact, bypassCooldown: true)
+                model.collapseExpandedPresentation()
             } label: {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 12, weight: .bold))
@@ -4738,6 +5743,445 @@ struct WindowModeButtons: View {
     }
 }
 
+struct ExpandedActivityCenter: View {
+    @ObservedObject var model: IslandModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Label("专注计时", systemImage: "timer")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+                Spacer(minLength: 12)
+                Button {
+                    model.requestIslandMode(.collapsed, bypassCooldown: true)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.white.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
+                .help("收起快捷面板")
+                .accessibilityLabel("收起快捷面板")
+            }
+            .frame(height: 28)
+
+            HStack(spacing: 12) {
+                ForEach(FocusTimerPreset.allCases) { preset in
+                    Button {
+                        model.startTimer(minutes: preset.rawValue)
+                    } label: {
+                        Text("\(preset.rawValue) 分")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.86))
+                            .frame(width: 52, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.white.opacity(0.09))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("开始 \(preset.title)专注计时")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+
+            if model.shouldPresentMusicControlRecovery {
+                Divider().overlay(Color.white.opacity(0.08))
+
+                HStack(spacing: 10) {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.isRecoveringMusicControl ? "正在连接播放控制" : "音乐控制暂不可用")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.86))
+                        Text(model.isRecoveringMusicControl
+                            ? "正在重新打开汽水音乐"
+                            : (model.musicControlRecoveryNeedsUserAction
+                                ? "连接未完成，可再次尝试"
+                                : "不会自动打开汽水音乐"))
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.48))
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        model.recoverCurrentMusicControl()
+                    } label: {
+                        HStack(spacing: 5) {
+                            if model.isRecoveringMusicControl {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            Text(model.isRecoveringMusicControl ? "连接中" : "重启并连接")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .frame(height: 28)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isRecoveringMusicControl)
+                    .help(model.isRecoveringMusicControl ? "正在连接汽水音乐播放控制" : "点击会重启一次汽水音乐并连接播放控制；不会自动打开汽水音乐")
+                    .accessibilityLabel(model.isRecoveringMusicControl ? "正在连接汽水音乐播放控制" : "重启并连接汽水音乐播放控制")
+                }
+                .frame(height: 38)
+            }
+
+            Divider().overlay(Color.white.opacity(0.08))
+
+            ActivityPermissionRow(
+                model: model,
+                title: "日历",
+                icon: "calendar",
+                entityType: .event
+            )
+
+            Divider().overlay(Color.white.opacity(0.08))
+
+            ActivityPermissionRow(
+                model: model,
+                title: "提醒事项",
+                icon: "checklist",
+                entityType: .reminder
+            )
+        }
+    }
+}
+
+private struct ActivityPermissionRow: View {
+    @ObservedObject var model: IslandModel
+    let title: String
+    let icon: String
+    let entityType: EKEntityType
+    @State private var isRequesting = false
+
+    private var access: EventKitAccessState {
+        entityType == .event
+            ? model.eventKitStatus.calendarAccess
+            : model.eventKitStatus.remindersAccess
+    }
+
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: {
+                entityType == .event
+                    ? model.appSettings.calendarEventsEnabled
+                    : model.appSettings.remindersEnabled
+            },
+            set: { enabled in
+                if entityType == .event {
+                    model.appSettings.calendarEventsEnabled = enabled
+                } else {
+                    model.appSettings.remindersEnabled = enabled
+                }
+            }
+        )
+    }
+
+    private var statusText: String {
+        guard access.canRead else { return access.displayName }
+        return isEnabled.wrappedValue ? "已开启" : "已关闭"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(width: 18)
+
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.86))
+
+            Spacer(minLength: 10)
+
+            Text(statusText)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
+
+            if access.canRead {
+                Toggle("", isOn: isEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .help(isEnabled.wrappedValue ? "关闭\(title)活动" : "开启\(title)活动")
+            } else {
+                Button {
+                    if access == .notDetermined {
+                        isRequesting = true
+                        Task {
+                            if entityType == .event {
+                                await model.requestCalendarAccess()
+                            } else {
+                                await model.requestRemindersAccess()
+                            }
+                            isRequesting = false
+                        }
+                    } else {
+                        model.openEventKitPrivacySettings(for: entityType)
+                    }
+                } label: {
+                    Image(systemName: access == .notDetermined ? "arrow.right.circle.fill" : "gearshape.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .disabled(isRequesting)
+                .help(access == .notDetermined ? "请求\(title)访问" : "打开\(title)隐私设置")
+            }
+        }
+        .frame(height: 38)
+    }
+}
+
+private struct MarqueeTextWidthKey: PreferenceKey {
+    static let defaultValue = MarqueeTextMeasurement(text: "", width: 0)
+
+    static func reduce(value: inout MarqueeTextMeasurement, nextValue: () -> MarqueeTextMeasurement) {
+        value = nextValue()
+    }
+}
+
+private final class MarqueeClock: ObservableObject {
+    @Published private(set) var start = Date()
+
+    func restart() {
+        start = Date()
+    }
+}
+
+private struct MarqueeLine: View {
+    let text: String
+    let font: Font
+    let color: Color
+    let offset: CGFloat
+    let lineHeight: CGFloat
+
+    var body: some View {
+        Text(text)
+        .font(font)
+            .foregroundStyle(color)
+            .lineLimit(1)
+            // Preserve intrinsic width for horizontal scrolling while letting
+            // the taller line box center the full glyph run inside the safe
+            // band. A font-sized vertical frame clips ascenders and descenders.
+            .fixedSize(horizontal: true, vertical: true)
+            .offset(x: -offset)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: lineHeight,
+                maxHeight: lineHeight,
+                alignment: .leading
+            )
+    }
+}
+
+private struct MarqueeText: View {
+    let text: String
+    let font: Font
+    let color: Color
+    let lineHeight: CGFloat
+    var clock: MarqueeClock? = nil
+    @State private var measurement: MarqueeTextMeasurement?
+    @State private var animationStart = Date()
+
+    var body: some View {
+        GeometryReader { proxy in
+            let baseDate = clock?.start ?? animationStart
+            let overflow = MarqueeTextLayoutPolicy.overflow(
+                for: text,
+                measurement: measurement,
+                viewportWidth: proxy.size.width
+            )
+            TimelineView(
+                .animation(minimumInterval: 1.0 / 30.0, paused: overflow <= 0 || text.isEmpty)
+            ) { (context: TimelineViewDefaultContext) in
+                let offset = MusicMarqueeTimeline.offset(
+                    elapsed: context.date.timeIntervalSince(baseDate),
+                    overflow: overflow,
+                    speed: MusicMarqueeTimeline.speed(for: overflow)
+                )
+                MarqueeLine(
+                    text: text,
+                    font: font,
+                    color: color,
+                    offset: offset,
+                    lineHeight: lineHeight
+                )
+            }
+            // Constrain TimelineView to the measured column: its fixed-size
+            // text must not expand the clipping viewport past the capsule.
+            .frame(width: proxy.size.width, height: lineHeight, alignment: .leading)
+            .clipped()
+            .mask {
+                // Fade only the trailing edge. Fading the leading 6% made the
+                // first glyph look clipped at the resting position, which is
+                // especially obvious for short bilingual lyric pairs.
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.96),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            .background(
+                Text(text)
+                    .font(font)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .background(
+                        GeometryReader { measured in
+                            Color.clear.preference(
+                                key: MarqueeTextWidthKey.self,
+                                value: MarqueeTextMeasurement(text: text, width: measured.size.width)
+                            )
+                        }
+                    )
+                    .hidden()
+            )
+        }
+        .frame(height: lineHeight)
+        .onPreferenceChange(MarqueeTextWidthKey.self) { nextMeasurement in
+            if measurement != nextMeasurement {
+                measurement = nextMeasurement
+                if clock == nil {
+                    animationStart = Date()
+                }
+            }
+        }
+        .onChange(of: text) { _, _ in
+            measurement = nil
+            if clock == nil {
+                animationStart = Date()
+            }
+        }
+        .onAppear {
+            if clock == nil {
+                animationStart = Date()
+            }
+        }
+    }
+
+}
+
+private struct KaraokeLyricWidthKey: PreferenceKey {
+    static let defaultValue: MarqueeTextMeasurement? = nil
+
+    static func reduce(value: inout MarqueeTextMeasurement?, nextValue: () -> MarqueeTextMeasurement?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// Renders a verified active lyric as a normal karaoke line: characters that
+/// have been reached use the strong color, while the remaining characters stay
+/// visible but quiet. Qishui currently exposes active rows, not LRC/word
+/// timestamps, so the reveal is deliberately an honest visual estimate and
+/// resets whenever the source advances to another active row.
+private struct KaraokeLyricText: View {
+    let text: String
+    let font: Font
+    let highlightedColor: Color
+    let unhighlightedColor: Color
+    let lineHeight: CGFloat
+    let clock: MarqueeClock
+    let isPlaying: Bool
+    let words: [QishuiTimedWord]
+    let elapsedTime: TimeInterval
+    let sampledAt: Date
+    @State private var measurement: MarqueeTextMeasurement?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let baseDate = clock.start
+            let overflow = MarqueeTextLayoutPolicy.overflow(
+                for: text,
+                measurement: measurement,
+                viewportWidth: proxy.size.width
+            )
+            let glyphs: [(String, TimeInterval)] = words.flatMap { word in
+                let characters = Array(word.text)
+                return characters.enumerated().map { index, character in
+                    let fraction = Double(index) / Double(max(characters.count, 1))
+                    return (String(character), word.start + (word.end - word.start) * fraction)
+                }
+            }
+            TimelineView(
+                .animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying || text.isEmpty)
+            ) { (context: TimelineViewDefaultContext) in
+                let elapsed = max(context.date.timeIntervalSince(baseDate), 0)
+                let position = elapsedTime + (isPlaying ? max(context.date.timeIntervalSince(sampledAt), 0) : 0)
+                let offset = MusicMarqueeTimeline.offset(
+                    elapsed: elapsed,
+                    overflow: overflow,
+                    speed: MusicMarqueeTimeline.speed(for: overflow)
+                )
+                let reached = glyphs.firstIndex { $0.1 > position } ?? glyphs.count
+                let sung = glyphs[..<reached].map(\.0).joined()
+                let upcoming = glyphs[reached...].map(\.0).joined()
+                (Text(sung).foregroundColor(highlightedColor)
+                    + Text(upcoming).foregroundColor(unhighlightedColor))
+                .font(font)
+                .fixedSize(horizontal: true, vertical: true)
+                .offset(x: -offset)
+                .frame(maxWidth: .infinity, minHeight: lineHeight, maxHeight: lineHeight, alignment: .leading)
+            }
+            .frame(width: proxy.size.width, height: lineHeight, alignment: .leading)
+            .clipped()
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.96),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            .background(
+                Text(text)
+                    .font(font)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .background(
+                        GeometryReader { measured in
+                            Color.clear.preference(
+                                key: KaraokeLyricWidthKey.self,
+                                value: MarqueeTextMeasurement(text: text, width: measured.size.width)
+                            )
+                        }
+                    )
+                    .hidden()
+            )
+        }
+        .frame(height: lineHeight)
+        .onPreferenceChange(KaraokeLyricWidthKey.self) { nextMeasurement in
+            if measurement != nextMeasurement {
+                measurement = nextMeasurement
+            }
+        }
+    }
+}
+
 struct CompactMusic: View {
     @ObservedObject var model: IslandModel
 
@@ -4750,15 +6194,17 @@ struct CompactMusic: View {
                     Text(model.music.track.title)
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.72)
                         .foregroundStyle(.white)
                     Text(model.music.track.artist)
-                        .font(.system(size: 10, weight: .regular))
+                        .font(.system(size: 10, weight: .medium))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.72)
                         .foregroundStyle(.white.opacity(0.58))
                 }
             }
             .padding(.leading, 10)
-            .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .leading)
+            .frame(width: model.compactLeadingWingWidth, height: model.topBandHeight, alignment: .leading)
 
             Color.clear
                 .frame(width: model.notchWidth, height: model.topBandHeight)
@@ -4777,9 +6223,11 @@ struct CompactMusic: View {
                 .frame(width: 10, height: 10)
             }
             .padding(.trailing, 10)
-            .frame(width: model.compactWingWidth, height: model.topBandHeight, alignment: .trailing)
+            .frame(width: model.compactTrailingWingWidth, height: model.topBandHeight, alignment: .trailing)
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(model.music.track.title)，\(model.music.track.artist)")
         .onTapGesture {
             model.requestIslandMode(.expanded)
         }
@@ -4906,127 +6354,318 @@ struct CompactNotification: View {
 struct ExpandedMusic: View {
     @ObservedObject var model: IslandModel
 
-    var displayLyrics: [String] {
-        cleanIslandLyricLines(model.music.track.lyrics)
+    private var lyricPairs: (current: LyricPair, next: LyricPair) {
+        MusicLyricPresentation.sourceCurrentAndNextPairs(
+            lines: model.music.track.lyrics,
+            index: model.music.lyricIndex,
+            pairMixedLanguageLines: !model.music.track.lyricsAreDesktopSnapshot
+        )
     }
 
-    var currentLyric: String {
-        let lyrics = displayLyrics
-        guard lyrics.indices.contains(model.music.lyricIndex) else { return "" }
-        return lyrics[model.music.lyricIndex]
+    private var hasLyrics: Bool {
+        MusicLyricPresentation.hasDisplayableLines(model.music.track.lyrics)
     }
 
-    var nextLyric: String {
-        let lyrics = displayLyrics
-        guard lyrics.count > 1 else { return "" }
-        return lyrics[(model.music.lyricIndex + 1) % lyrics.count]
+    var body: some View {
+        if model.isMusicLyricsEnabled && hasLyrics {
+            LyricExpandedMusic(model: model, lyricPairs: lyricPairs)
+        } else {
+            ControlOnlyExpandedMusic(model: model)
+        }
     }
+}
+
+private struct MusicGlassBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.appearance = NSAppearance(named: .darkAqua)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+private struct MusicTransportControls: View {
+    @ObservedObject var model: IslandModel
+
+    var body: some View {
+        VStack(spacing: 13) {
+                if model.shouldPresentMusicControlRecovery {
+                    Button {
+                        model.recoverCurrentMusicControl()
+                    } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "arrow.clockwise")
+                            Text(model.isRecoveringMusicControl ? "连接中" : "恢复控制")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 104, height: 48)
+                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isRecoveringMusicControl)
+                    .help("重启并连接汽水音乐播放控制")
+                } else {
+                    HStack(spacing: 6) {
+                        ControlButton(icon: "backward.fill", size: 29) {
+                            model.previousTrack()
+                        }
+                        .disabled(!model.music.canPreviousTrack && !model.canRecoverCurrentMusicControlPermission)
+                        .help("上一首")
+                        .accessibilityLabel("上一首")
+                        .accessibilityIdentifier("topislet.music.previous")
+
+                        ControlButton(
+                            icon: model.music.playbackStateKnown
+                                ? (model.music.isPlaying ? "pause.fill" : "play.fill")
+                                : "questionmark",
+                            prominent: true
+                        ) {
+                            model.playPause()
+                        }
+                        .disabled(!model.music.canPlayPause && !model.canRecoverCurrentMusicControlPermission)
+                        .help(model.music.playbackStateKnown
+                            ? (model.music.isPlaying ? "暂停" : "播放")
+                            : "正在确认播放状态，点击切换播放")
+                        .accessibilityLabel(model.music.playbackStateKnown
+                            ? (model.music.isPlaying ? "暂停" : "播放") : "切换播放")
+                        .accessibilityIdentifier("topislet.music.playPause")
+
+                        ControlButton(icon: "forward.fill", size: 29) {
+                            model.nextTrack()
+                        }
+                        .disabled(!model.music.canNextTrack && !model.canRecoverCurrentMusicControlPermission)
+                        .help("下一首")
+                        .accessibilityLabel("下一首")
+                        .accessibilityIdentifier("topislet.music.next")
+                    }
+                }
+
+                if !model.music.playbackStateKnown {
+                    Text("状态同步中")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+        }
+    }
+}
+
+private struct LyricMusicLeftRail: View {
+    @ObservedObject var model: IslandModel
 
     var body: some View {
         HStack(alignment: .center, spacing: ExpandedMusicLayout.artworkToDetailsSpacing) {
             AlbumArt(track: model.music.track, size: ExpandedMusicLayout.artworkSize)
-
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.music.track.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
-                        .foregroundStyle(.white)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.96))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
                     Text(model.music.track.artist)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.58))
+                        .truncationMode(.tail)
                 }
-                .frame(width: ExpandedMusicLayout.titleWidth, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
 
+                MusicTransportControls(model: model)
+                    .frame(width: 110, alignment: .leading)
+            }
+            .frame(width: 118, alignment: .leading)
+        }
+        .frame(width: ExpandedMusicLayout.controlContentWidth, alignment: .leading)
+    }
+}
+
+private struct ControlOnlyExpandedMusic: View {
+    @ObservedObject var model: IslandModel
+
+    var body: some View {
+        HStack(spacing: ExpandedMusicLayout.controlToLyricSpacing) {
+            LyricMusicLeftRail(model: model)
+                // This card is shorter than the lyric card. Keep the title's
+                // second line clear of the top band when metadata wraps.
+                .offset(y: -model.topBandHeight / 4)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(model.isMusicLyricsEnabled
+                    ? (MusicLyricPresentation.isConfirmedInstrumental(model.music.track.lyrics)
+                        ? "纯音乐，请欣赏" : "歌词暂未读取到")
+                    : "歌词显示已关闭")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
                 MusicProgressRow(model: model)
-
-                if !displayLyrics.isEmpty {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(currentLyric)
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                            .foregroundStyle(.white.opacity(0.9))
-                        Text(nextLyric)
-                            .font(.system(size: 11, weight: .regular))
-                            .lineLimit(1)
-                            .foregroundStyle(.white.opacity(0.38))
-                    }
-                    .frame(height: 30, alignment: .topLeading)
-                }
-
-                HStack(spacing: 12) {
-                    ControlButton(
-                        icon: "backward.fill"
-                    ) {
-                        model.previousTrack()
-                    }
-                    .disabled(
-                        !model.music.canPreviousTrack
-                            && !model.canRecoverCurrentMusicControlPermission
-                    )
-                    .help(
-                        model.music.canPreviousTrack
-                            ? "上一首"
-                            : model.canRecoverCurrentMusicControlPermission
-                                ? "授权后控制上一首"
-                                : model.music.controlUnavailableReason ?? "上一首当前不可用"
-                    )
-
-                    ControlButton(
-                        icon: model.music.isPlaying ? "pause.fill" : "play.fill",
-                        prominent: true
-                    ) {
-                        model.playPause()
-                    }
-                    .disabled(
-                        !model.music.canPlayPause
-                            && !model.canRecoverCurrentMusicControlPermission
-                    )
-                    .help(
-                        model.music.canPlayPause
-                            ? (model.music.isPlaying ? "暂停" : "播放")
-                            : model.canRecoverCurrentMusicControlPermission
-                                ? "授权后控制播放与暂停"
-                                : model.music.controlUnavailableReason ?? "播放控制当前不可用"
-                    )
-
-                    ControlButton(
-                        icon: "forward.fill"
-                    ) {
-                        model.nextTrack()
-                    }
-                    .disabled(
-                        !model.music.canNextTrack
-                            && !model.canRecoverCurrentMusicControlPermission
-                    )
-                    .help(
-                        model.music.canNextTrack
-                            ? "下一首"
-                            : model.canRecoverCurrentMusicControlPermission
-                                ? "授权后控制下一首"
-                                : model.music.controlUnavailableReason ?? "下一首当前不可用"
-                    )
-                }
-                .frame(width: ExpandedMusicLayout.controlRailWidth, alignment: .center)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(width: ExpandedMusicLayout.detailsWidth, alignment: .leading)
         }
-        .frame(width: ExpandedMusicLayout.contentWidth, alignment: .center)
+        .frame(width: ExpandedMusicLayout.controlOnlyContentWidth,
+               height: MusicExpandedLayout.noLyricsBodyHeight)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(width: 1, height: 82)
+                .offset(x: ExpandedMusicLayout.controlContentWidth + ExpandedMusicLayout.controlToLyricSpacing / 2)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct LyricExpandedMusic: View {
+    @ObservedObject var model: IslandModel
+    let lyricPairs: (current: LyricPair, next: LyricPair)
+
+    var body: some View {
+        HStack(spacing: ExpandedMusicLayout.controlToLyricSpacing) {
+            LyricMusicLeftRail(model: model)
+                .offset(y: -model.topBandHeight / 2)
+            VStack(alignment: .leading, spacing: 8) {
+                LyricsShelf(
+                    current: lyricPairs.current,
+                    next: lyricPairs.next,
+                    isDesktopSnapshot: model.music.track.lyricsAreDesktopSnapshot,
+                    accent: model.musicAccentColor,
+                    isPlaying: model.music.isPlaying,
+                    timedWords: model.music.track.timedWords,
+                    elapsedTime: model.music.elapsedTime,
+                    sampledAt: model.musicTimelineSampledAt
+                )
+                .offset(y: 14)
+                MusicProgressRow(
+                    model: model,
+                    timelineWidth: ExpandedMusicLayout.lyricTimelineWidth,
+                    prominent: true
+                )
+                .offset(y: -6)
+            }
+            .frame(width: ExpandedMusicLayout.lyricColumnWidth, alignment: .leading)
+        }
+        .frame(width: ExpandedMusicLayout.contentWidth,
+               height: MusicExpandedLayout.lyricsBodyHeight)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(width: 1, height: 110)
+                .offset(x: ExpandedMusicLayout.controlContentWidth + ExpandedMusicLayout.controlToLyricSpacing / 2)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct LyricsShelf: View {
+    let current: LyricPair
+    let next: LyricPair
+    let isDesktopSnapshot: Bool
+    let accent: Color
+    let isPlaying: Bool
+    let timedWords: [QishuiTimedWord]
+    let elapsedTime: TimeInterval?
+    let sampledAt: Date
+    @StateObject private var lyricClock = MarqueeClock()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            lyricLines
+                .id(current.primary + "\u{1f}" + current.translation + "\u{1f}" + next.primary)
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .offset(y: 14).combined(with: .opacity),
+                    removal: .offset(y: -14).combined(with: .opacity)
+                ))
+        }
+        .frame(width: ExpandedMusicLayout.lyricColumnWidth, height: 100, alignment: .topLeading)
+        .clipped()
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: current)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isDesktopSnapshot
+            ? "桌面歌词：\(current.primary)\(current.translation.isEmpty ? "" : "，\(current.translation)")\(next.primary.isEmpty ? "" : "，下一句：\(next.primary)")"
+            : "当前歌词：\(current.primary)\(current.translation.isEmpty ? "" : "，\(current.translation)")\(next.primary.isEmpty ? "" : "，下一句：\(next.primary)")")
+        .onChange(of: current) { _, _ in
+            lyricClock.restart()
+        }
+    }
+
+    private var lyricLines: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .center, spacing: 9) {
+                Capsule()
+                    .fill(accent.opacity(0.95))
+                    .frame(width: 3, height: 28)
+                if let elapsedTime, !timedWords.isEmpty {
+                    KaraokeLyricText(
+                        text: current.primary,
+                        font: .system(size: 23, weight: .semibold),
+                        highlightedColor: .white.opacity(0.98),
+                        unhighlightedColor: .white.opacity(0.34),
+                        lineHeight: 29,
+                        clock: lyricClock,
+                        isPlaying: isPlaying,
+                        words: timedWords,
+                        elapsedTime: elapsedTime,
+                        sampledAt: sampledAt
+                    )
+                } else {
+                    MarqueeText(
+                        text: current.primary,
+                        font: .system(size: 23, weight: .semibold),
+                        color: .white.opacity(0.98),
+                        lineHeight: 29,
+                        clock: lyricClock
+                    )
+                }
+            }
+
+            if !current.translation.isEmpty {
+                MarqueeText(
+                    text: current.translation,
+                    font: .system(size: 14, weight: .regular),
+                    color: .white.opacity(0.62),
+                    lineHeight: 19,
+                    clock: lyricClock
+                )
+                .padding(.leading, 12)
+            }
+
+            if !next.primary.isEmpty && next.primary != current.primary {
+                MarqueeText(
+                    text: next.primary,
+                    font: .system(size: 16, weight: .medium),
+                    color: .white.opacity(0.38),
+                    lineHeight: 21,
+                    clock: lyricClock
+                )
+                .padding(.leading, 12)
+            }
+
+        }
+        .frame(width: ExpandedMusicLayout.lyricColumnWidth, alignment: .leading)
     }
 }
 
 private struct MusicProgressRow: View {
     @ObservedObject var model: IslandModel
+    let timelineWidth: CGFloat
+    let prominent: Bool
     @State private var scrubPreviewProgress: Double?
+
+    init(model: IslandModel, timelineWidth: CGFloat = ExpandedMusicLayout.timelineWidth, prominent: Bool = false) {
+        _model = ObservedObject(wrappedValue: model)
+        self.timelineWidth = timelineWidth
+        self.prominent = prominent
+    }
 
     var body: some View {
         HStack(spacing: ExpandedMusicLayout.timelineToTimeSpacing) {
             ProgressPill(
                 progress: model.music.progress,
-                width: ExpandedMusicLayout.timelineWidth,
+                width: timelineWidth,
                 accentColor: model.musicAccentColor,
+                prominent: prominent,
                 onPreviewChanged: { progress in
                     model.setMusicScrubbing(progress != nil)
                     guard let progress else {
@@ -5041,7 +6680,10 @@ private struct MusicProgressRow: View {
                     }
                     scrubPreviewProgress = progress
                 },
-                onSeek: model.music.canSeek ? { progress, interaction in
+                onSeek: (model.music.canSeek
+                    || (model.music.track.sourceBundleIdentifier == "com.soda.music"
+                        && model.music.hasCurrentTrack
+                        && (model.music.duration ?? 0) > 0)) ? { progress, interaction in
                     await model.seekMusic(to: progress, interaction: interaction)
                 } : nil
             )
@@ -5055,6 +6697,14 @@ private struct MusicProgressRow: View {
                 .allowsTightening(true)
                 .foregroundStyle(.white.opacity(0.52))
                 .frame(width: ExpandedMusicLayout.timeWidth, alignment: .leading)
+        }
+        .padding(.horizontal, prominent ? 11 : 0)
+        .frame(height: prominent ? 30 : nil)
+        .background {
+            if prominent {
+                RoundedRectangle(cornerRadius: 15)
+                    .fill(.white.opacity(0.065))
+            }
         }
         .onDisappear {
             model.setMusicScrubbing(false)
@@ -5154,28 +6804,7 @@ struct ExpandedNotification: View {
 }
 
 func cleanIslandLyricLines(_ lines: [String]) -> [String] {
-    let diagnosticTokens = [
-        "MediaRemote",
-        "Adapter",
-        "来源：",
-        "播放态：",
-        "已发送",
-        "已请求",
-        "实时同步",
-        "同步来源",
-        "辅助功能",
-        "控制中心",
-        "手动诊断",
-        "适配器",
-        "PID "
-    ]
-
-    return lines
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { line in
-            guard !line.isEmpty else { return false }
-            return !diagnosticTokens.contains { line.localizedCaseInsensitiveContains($0) }
-        }
+    MusicLyricPresentation.clean(lines)
 }
 
 struct AlbumArt: View {
@@ -5397,6 +7026,7 @@ struct ProgressPill: View {
     let progress: Double
     let width: CGFloat
     var accentColor: Color = .white
+    var prominent = false
     var onPreviewChanged: ((Double?) -> Void)? = nil
     var onSeek: ((Double, MusicSeekInteraction) async -> Bool)? = nil
 
@@ -5420,13 +7050,13 @@ struct ProgressPill: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.13))
-                    .frame(height: 4)
+                    .fill(Color.white.opacity(prominent ? 0.19 : 0.13))
+                    .frame(height: prominent ? 6 : 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 Capsule()
                     .fill(accentColor.opacity(isDragging ? 1 : 0.92))
-                    .frame(width: progressWidth, height: 4)
+                    .frame(width: progressWidth, height: prominent ? 6 : 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 if onSeek != nil {
@@ -5452,7 +7082,37 @@ struct ProgressPill: View {
             .onHover { hovering in
                 isHovering = hovering
             }
-            .gesture(
+            .overlay {
+                if onSeek != nil {
+                    Slider(
+                        value: Binding(
+                            get: { displayedProgress },
+                            set: { value in
+                                dragProgress = min(max(value, 0), 1)
+                                isDragging = true
+                                onPreviewChanged?(dragProgress)
+                            }
+                        ),
+                        in: 0...1,
+                        onEditingChanged: { editing in
+                            if editing {
+                                isPointerDown = true
+                                seekGeneration += 1
+                            } else {
+                                let target = dragProgress ?? displayedProgress
+                                isPointerDown = false
+                                isDragging = false
+                                submitSeek(to: target, interaction: .drag)
+                            }
+                        }
+                    )
+                    .labelsHidden()
+                    .accessibilityLabel("播放进度")
+                    .opacity(0.02)
+                    .frame(width: availableWidth, height: 24)
+                }
+            }
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard onSeek != nil else { return }
@@ -5460,39 +7120,19 @@ struct ProgressPill: View {
                             isPointerDown = true
                             seekGeneration += 1
                         }
-                        let hasMoved = abs(value.translation.width) >= 3
-                            || abs(value.translation.height) >= 3
-                        guard hasMoved else { return }
-                        if !isDragging {
-                            isDragging = true
-                        }
-                        let targetProgress = min(
-                            max(value.location.x / availableWidth, 0),
-                            1
-                        )
-                        dragProgress = targetProgress
-                        onPreviewChanged?(targetProgress)
+                        let target = min(max(value.location.x / availableWidth, 0), 1)
+                        dragProgress = target
+                        isDragging = abs(value.translation.width) >= 3
+                        onPreviewChanged?(target)
                     }
                     .onEnded { value in
-                        guard onSeek != nil else {
-                            isPointerDown = false
-                            isDragging = false
-                            dragProgress = nil
-                            onPreviewChanged?(nil)
-                            return
-                        }
-                        let targetProgress = min(
-                            max(value.location.x / availableWidth, 0),
-                            1
-                        )
-                        let interaction: MusicSeekInteraction = isDragging
-                            ? .drag
-                            : .click
-                        dragProgress = targetProgress
-                        onPreviewChanged?(targetProgress)
+                        guard onSeek != nil else { return }
+                        let target = min(max(value.location.x / availableWidth, 0), 1)
+                        let interaction: MusicSeekInteraction = isDragging ? .drag : .click
+                        dragProgress = target
                         isPointerDown = false
                         isDragging = false
-                        submitSeek(to: targetProgress, interaction: interaction)
+                        submitSeek(to: target, interaction: interaction)
                     }
             )
         }

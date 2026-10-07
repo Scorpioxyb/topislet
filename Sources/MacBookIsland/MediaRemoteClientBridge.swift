@@ -111,9 +111,7 @@ final class MediaRemoteClientBridge {
             pipe.fileHandleForReading.readabilityHandler = nil
         }
         process.terminationHandler = nil
-        if process.isRunning {
-            process.terminate()
-        }
+        MediaRemoteAdapterStreamSource.terminateStreamProcess(process)
         self.process = nil
     }
 
@@ -129,9 +127,7 @@ final class MediaRemoteClientBridge {
             }
             process.terminationHandler = nil
             self.process = nil
-            if process.isRunning {
-                process.terminate()
-            }
+            MediaRemoteAdapterStreamSource.terminateStreamProcess(process)
         }
         startProcessIfNeeded()
     }

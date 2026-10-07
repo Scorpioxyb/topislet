@@ -75,6 +75,9 @@ VENDOR_BINARY="$APP/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.fra
 
 test -x "$MAIN_BINARY"
 codesign --verify --deep --strict --verbose=2 "$APP"
+if [[ -n "${REFERENCE_BINARY:-}" ]]; then
+  python3 "$ROOT/Scripts/verify-release-binary.py" "$REFERENCE_BINARY" "$MAIN_BINARY"
+fi
 test "$(xcrun lipo -archs "$MAIN_BINARY")" = "arm64"
 xcrun vtool -show-build "$MAIN_BINARY" | grep -q 'minos 26.0'
 xcrun lipo -archs "$VENDOR_BINARY" | grep -qw arm64

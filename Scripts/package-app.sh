@@ -22,6 +22,27 @@ move_to_trash_if_present() {
   /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
 }
 
+stop_running_app_for_path() {
+  local app_path="$1"
+  local executable_path="$app_path/Contents/MacOS/MacBookIsland"
+  local pids
+  pids="$(ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
+  if [ -z "$pids" ]; then
+    return
+  fi
+
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+  done <<< "$pids"
+
+  for _ in {1..20}; do
+    pids="$(ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
+    [ -z "$pids" ] && return
+    sleep 0.1
+  done
+}
+
 clean_bundle_extended_attributes() {
   local path="$1"
   xattr -cr "$path"
@@ -37,10 +58,11 @@ cleanup() {
 trap cleanup EXIT
 
 swift build --package-path "$ROOT" -c "$BUILD_CONFIGURATION" -debug-info-format none
+BIN_DIR="$(swift build --package-path "$ROOT" -c "$BUILD_CONFIGURATION" -debug-info-format none --show-bin-path)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Packaging/IslandAppIcon.icns" "$APP/Contents/Resources/IslandAppIcon.icns"
-cp "$ROOT/.build/$BUILD_CONFIGURATION/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
+cp "$BIN_DIR/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
 if [ -d "$ROOT/Vendor/MediaRemoteAdapter" ]; then
   ditto --norsrc --noextattr --noqtn --noacl \
     "$ROOT/Vendor/MediaRemoteAdapter" \
@@ -54,6 +76,9 @@ codesign --force --deep --sign - \
   --requirements "=designated => identifier \"$BUNDLE_ID\"" \
   "$APP" >/dev/null
 
+python3 "$ROOT/Scripts/verify-release-binary.py" \
+  "$BIN_DIR/MacBookIsland" "$APP/Contents/MacOS/MacBookIsland"
+
 move_to_trash_if_present "$PACKAGE_APP"
 mkdir -p "$(dirname "$PACKAGE_APP")"
 ditto --norsrc --noextattr --noqtn --noacl "$APP" "$PACKAGE_APP"
@@ -66,10 +91,15 @@ if [ ! -w "$INSTALL_DIR" ]; then
   mkdir -p "$INSTALL_DIR"
 fi
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME"
+stop_running_app_for_path "$INSTALLED_APP"
 move_to_trash_if_present "$INSTALLED_APP"
 ditto --norsrc --noextattr --noqtn --noacl "$APP" "$INSTALLED_APP"
 clean_bundle_extended_attributes "$INSTALLED_APP"
 codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP" >/dev/null
+
+if [[ "${LAUNCH_AFTER_INSTALL:-1}" == "1" ]]; then
+  open -a "$INSTALLED_APP" >/dev/null 2>&1 || true
+fi
 
 echo "Packaged: $PACKAGE_APP"
 echo "Installed: $INSTALLED_APP"

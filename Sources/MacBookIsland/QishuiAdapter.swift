@@ -24,6 +24,59 @@ struct QishuiDirectSnapshot: Equatable {
     let checkedAt: Date
 }
 
+enum QishuiArtworkFallbackPolicy {
+    static func artwork(
+        from snapshot: MediaRemoteNowPlayingSnapshot?,
+        for identity: QishuiLyricIdentity?
+    ) -> Data? {
+        guard let snapshot, snapshot.isVerifiedQishuiSource,
+              let identity, let track = snapshot.currentTrack,
+              track.sourceBundleIdentifier == QishuiProcessLocator.bundleIdentifier,
+              track.sourceProcessIdentifier == identity.processIdentifier,
+              QishuiTrackCoherencePolicy.matches(
+                  mediaTitle: track.title, mediaArtist: track.artist,
+                  directTitle: identity.title, directArtist: identity.artist
+              ) else { return nil }
+        return track.artworkData
+    }
+}
+
+/// MediaRemote and the visible Soda window can briefly describe different
+/// renderer frames. A shared PID is not enough to join those frames.
+enum QishuiTrackCoherencePolicy {
+    static func matches(
+        mediaTitle: String,
+        mediaArtist: String,
+        directTitle: String,
+        directArtist: String
+    ) -> Bool {
+        let lhs = normalize(mediaTitle)
+        let rhs = normalize(directTitle)
+        let lhsArtist = normalizeArtist(mediaArtist)
+        let rhsArtist = normalizeArtist(directArtist)
+        guard !lhs.isEmpty, !rhs.isEmpty, !lhsArtist.isEmpty, !rhsArtist.isEmpty else {
+            return false
+        }
+        return lhs == rhs && lhsArtist == rhsArtist
+    }
+
+    private static func normalize(_ value: String) -> String {
+        value
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func normalizeArtist(_ value: String) -> String {
+        value
+            .split { ",，/、&".contains($0) }
+            .map { normalize(String($0)) }
+            .filter { !$0.isEmpty }
+            .sorted()
+            .joined(separator: ",")
+    }
+}
+
 final class QishuiAdapter {
     private let fileManager = FileManager.default
     private let axReader = QishuiAXReader(imagePrefixes: [])
@@ -39,7 +92,10 @@ final class QishuiAdapter {
         axReader.invalidateCache()
     }
 
-    func snapshot() -> QishuiDirectSnapshot {
+    func snapshot(
+        preferredTitle: String? = nil,
+        preferredArtist: String? = nil
+    ) -> QishuiDirectSnapshot {
         let runningApp = QishuiProcessLocator.application(
             preferredProcessIdentifier: lastProcessIdentifier
         )
@@ -77,7 +133,11 @@ final class QishuiAdapter {
                 scannedNodeCount: 0
             )
         } else {
-            axResult = axReader.read(from: runningApp)
+            axResult = axReader.read(
+                from: runningApp,
+                expectedTitle: preferredTitle,
+                expectedArtist: preferredArtist
+            )
         }
         let currentTrack = axResult.track
 
@@ -225,7 +285,7 @@ final class QishuiAdapter {
             title: title,
             artist: artist,
             artworkURL: artwork,
-            lyrics: lyrics.isEmpty ? ["来自汽水音乐直接适配源"] : Array(lyrics.prefix(4)),
+            lyrics: Array(lyrics.prefix(4)),
             isPlaying: bool(player?["isPlaying"]),
             progress: progress,
             sourceName: sourceName

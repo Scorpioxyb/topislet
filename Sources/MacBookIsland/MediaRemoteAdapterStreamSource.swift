@@ -78,6 +78,13 @@ private struct PendingQishuiTrackTransitionObservation {
     var didObserveAtomicComplete = false
 }
 
+private struct MediaRemoteDeferredMetadataTarget: Equatable, Sendable {
+    let sessionGeneration: UInt64
+    let processIdentifier: pid_t
+    let title: String
+    let contentItemIdentifier: String?
+}
+
 struct MediaRemoteStreamLifecycle {
     private(set) var generation: UInt64 = 0
     private(set) var isStopping = true
@@ -121,8 +128,8 @@ final class MediaRemoteAdapterStreamSource {
     private var deferredTrackPublicationStartedAt: Date?
     private var deferredTrackBaselinePayload: [String: Any]?
     private var deferredTrackReferencePayloads: [[String: Any]] = []
-    private var deferredTrackCandidateIdentity: String?
     private var deferredTimelinePayload: [String: Any]?
+    private var deferredMetadataRefreshAttempt = 0
     private var latestSnapshot: MediaRemoteNowPlayingSnapshot?
     private var latestRawSnapshot: MediaRemoteNowPlayingSnapshot?
     private var lastVerifiedQishuiSnapshot: MediaRemoteNowPlayingSnapshot?
@@ -150,13 +157,22 @@ final class MediaRemoteAdapterStreamSource {
     private var trackTransitionStageHandler: TrackTransitionStageHandler?
     private var pendingTrackTransitionObservation: PendingQishuiTrackTransitionObservation?
     private let runningQishuiProcessIdentifiersProvider: () -> Set<pid_t>
+    private let deferredMetadataDataReader: (@Sendable () -> Data?)?
+    private let deferredInitialRefreshDelayNanoseconds: UInt64
+    private let deferredRetryRefreshDelayNanoseconds: UInt64
 
     init(
         runningQishuiProcessIdentifiersProvider: @escaping () -> Set<pid_t> = {
             Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
-        }
+        },
+        deferredMetadataDataReader: (@Sendable () -> Data?)? = nil,
+        deferredInitialRefreshDelayNanoseconds: UInt64 = 0,
+        deferredRetryRefreshDelayNanoseconds: UInt64 = 35_000_000
     ) {
         self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider
+        self.deferredMetadataDataReader = deferredMetadataDataReader
+        self.deferredInitialRefreshDelayNanoseconds = deferredInitialRefreshDelayNanoseconds
+        self.deferredRetryRefreshDelayNanoseconds = deferredRetryRefreshDelayNanoseconds
     }
 
     func setTrackTransitionStageHandler(_ handler: TrackTransitionStageHandler?) {
@@ -910,7 +926,6 @@ final class MediaRemoteAdapterStreamSource {
             metadataRequestGeneration += 1
             if deferredTrackPublicationStartedAt != nil {
                 appendDeferredTrackReference(previousPayload)
-                deferredTrackCandidateIdentity = nextIdentity
                 deferredTrackPublicationStartedAt = observedAt
             }
         }
@@ -1032,7 +1047,8 @@ final class MediaRemoteAdapterStreamSource {
     func ingestStreamEnvelopeForTesting(
         _ lineData: Data,
         receivedAt: Date,
-        receivedUptime: TimeInterval
+        receivedUptime: TimeInterval,
+        schedulesDeferredRefresh: Bool = false
     ) -> MediaRemoteNowPlayingSnapshot? {
         guard let envelope = decodedStreamEnvelope(lineData) else { return nil }
         if holdTransientEmptyPayloadIfNeeded(envelope.payload, startedAt: receivedAt) {
@@ -1066,7 +1082,11 @@ final class MediaRemoteAdapterStreamSource {
                 timelinePayload: envelope.payload,
                 startedAt: receivedAt
             )
-            deferredTrackPublicationGeneration += 1
+            if schedulesDeferredRefresh {
+                scheduleDeferredTrackPublication(onChange: {})
+            } else {
+                deferredTrackPublicationGeneration += 1
+            }
             return latestSnapshot
         }
 
@@ -1149,7 +1169,6 @@ final class MediaRemoteAdapterStreamSource {
             deferredTrackReferencePayloads = lastPublishedPayload.isEmpty
                 ? []
                 : [lastPublishedPayload]
-            deferredTrackCandidateIdentity = payloadTrackIdentity(mergedPayload)
         }
         deferredTimelinePayload = timelinePayload
     }
@@ -1160,75 +1179,74 @@ final class MediaRemoteAdapterStreamSource {
         deferredTrackPublicationStartedAt = nil
         deferredTrackBaselinePayload = nil
         deferredTrackReferencePayloads.removeAll()
-        deferredTrackCandidateIdentity = nil
         deferredTimelinePayload = nil
+        deferredMetadataRefreshAttempt = 0
         deferredTrackPublicationGeneration += 1
     }
 
     private func scheduleDeferredTrackPublication(
         onChange: @escaping ChangeHandler,
-        delayNanoseconds: UInt64 = 180_000_000
+        delayNanoseconds: UInt64? = nil
     ) {
+        guard deferredTrackPublicationTask == nil else { return }
         deferredTrackPublicationGeneration += 1
+        deferredMetadataRefreshAttempt += 1
         let generation = deferredTrackPublicationGeneration
-        let targetIdentity = deferredTrackCandidateIdentity ?? payloadTrackIdentity(mergedPayload)
-        deferredTrackPublicationTask?.cancel()
+        let refreshDelay = delayNanoseconds ?? deferredInitialRefreshDelayNanoseconds
         deferredTrackPublicationTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            try? await Task.sleep(nanoseconds: refreshDelay)
             guard !Task.isCancelled, let self,
                   generation == self.deferredTrackPublicationGeneration else { return }
 
-            if let paths = self.adapterPaths() {
-                let bundleIdentifier = self.qishuiBundleIdentifier
-                let data = await Task.detached(priority: .userInitiated) {
-                    Self.runGetData(
-                        script: paths.script,
-                        framework: paths.framework,
-                        bundleIdentifier: bundleIdentifier,
-                        includeArtwork: true
-                    )
-                }.value
+            if let target = self.deferredMetadataTarget() {
+                let data = await self.readDeferredMetadataData()
                 guard !Task.isCancelled,
                       generation == self.deferredTrackPublicationGeneration else { return }
                 if let data,
                    let object = try? JSONSerialization.jsonObject(with: data),
                    let rawPayload = object as? [String: Any],
-                   let payload = self.payloadResolvingProcessIdentifier(rawPayload),
-                   pidValue(payload["processIdentifier"]).map({
-                       !self.isRetiredSourceProcessIdentifier($0, at: Date())
-                   }) ?? true,
-                   self.payloadTrackIdentity(payload) == targetIdentity {
-                    self.mergedPayload = payload
-                    self.recordPlaybackEvidenceIfPresent(
+                   self.deferredMetadataTargetIsCurrent(target),
+                   let payload = self.validatedMetadataPayload(
+                       rawPayload,
+                       requestSessionGeneration: target.sessionGeneration,
+                       expectedProcessIdentifier: target.processIdentifier,
+                       receivedAt: Date()
+                   ),
+                   self.deferredMetadataPayload(payload, matches: target) {
+                    let merge = self.mergeObservedStreamPayload(
                         payload,
-                        identityPayload: payload,
-                        receivedAt: Date()
-                    )
-                    let shouldDefer = self.shouldDeferDeferredTrackPublication(payload)
-                    self.observePendingTrackTransition(
-                        payload: payload,
-                        shouldDefer: shouldDefer,
+                        isDiff: false,
                         observedAt: Date()
                     )
-                    if shouldDefer,
-                       Date().timeIntervalSince(
-                        self.deferredTrackPublicationStartedAt ?? Date()
-                       ) < 2.4 {
-                        self.deferredTrackPublicationTask = nil
-                        self.scheduleDeferredTrackPublication(
-                            onChange: onChange,
-                            delayNanoseconds: 140_000_000
+                    if merge != .ignoredProcess {
+                        self.recordPlaybackEvidenceIfPresent(
+                            payload,
+                            identityPayload: self.mergedPayload,
+                            receivedAt: Date()
                         )
+                        let shouldDefer = self.shouldDeferDeferredTrackPublication(
+                            self.mergedPayload
+                        )
+                        self.observePendingTrackTransition(
+                            payload: self.mergedPayload,
+                            shouldDefer: shouldDefer,
+                            observedAt: Date()
+                        )
+                        if !shouldDefer {
+                            self.clearDeferredTrackPublication()
+                            _ = self.publishMergedPayload(
+                                origin: .synchronousRead,
+                                timelinePayload: payload,
+                                onChange: onChange,
+                                allowsMetadataRefresh: false
+                            )
+                            return
+                        }
+                    }
+                    if self.scheduleDeferredMetadataRetryIfAllowed(onChange: onChange) {
                         return
                     }
-                } else if Date().timeIntervalSince(
-                    self.deferredTrackPublicationStartedAt ?? Date()
-                ) < 2.4 {
-                    self.deferredTrackPublicationTask = nil
-                    self.scheduleDeferredTrackPublication(
-                        onChange: onChange,
-                        delayNanoseconds: 140_000_000
-                    )
+                } else if self.scheduleDeferredMetadataRetryIfAllowed(onChange: onChange) {
                     return
                 }
             }
@@ -1250,6 +1268,77 @@ final class MediaRemoteAdapterStreamSource {
                 allowsMetadataRefresh: false
             )
         }
+    }
+
+    private func scheduleDeferredMetadataRetryIfAllowed(
+        onChange: @escaping ChangeHandler
+    ) -> Bool {
+        guard let startedAt = deferredTrackPublicationStartedAt,
+              deferredMetadataRefreshAttempt < 6,
+              Date().timeIntervalSince(startedAt) < 2.4 else {
+            return false
+        }
+        deferredTrackPublicationTask = nil
+        scheduleDeferredTrackPublication(
+            onChange: onChange,
+            delayNanoseconds: deferredRetryRefreshDelayNanoseconds
+        )
+        return true
+    }
+
+    private func deferredMetadataTarget() -> MediaRemoteDeferredMetadataTarget? {
+        guard deferredTrackPublicationStartedAt != nil,
+              let processIdentifier = pidValue(mergedPayload["processIdentifier"]),
+              let title = stringValue(mergedPayload["title"])?.adapterTrimmedNonEmpty else {
+            return nil
+        }
+        return MediaRemoteDeferredMetadataTarget(
+            sessionGeneration: qishuiSessionGeneration,
+            processIdentifier: processIdentifier,
+            title: title,
+            contentItemIdentifier: stringValue(
+                mergedPayload["contentItemIdentifier"]
+            )?.adapterTrimmedNonEmpty
+        )
+    }
+
+    private func deferredMetadataTargetIsCurrent(
+        _ target: MediaRemoteDeferredMetadataTarget
+    ) -> Bool {
+        guard target.sessionGeneration == qishuiSessionGeneration,
+              target.processIdentifier == pidValue(mergedPayload["processIdentifier"]),
+              target.title == stringValue(mergedPayload["title"])?.adapterTrimmedNonEmpty else {
+            return false
+        }
+        return target.contentItemIdentifier == stringValue(
+            mergedPayload["contentItemIdentifier"]
+        )?.adapterTrimmedNonEmpty
+    }
+
+    private func deferredMetadataPayload(
+        _ payload: [String: Any],
+        matches target: MediaRemoteDeferredMetadataTarget
+    ) -> Bool {
+        target.processIdentifier == pidValue(payload["processIdentifier"])
+            && target.title == stringValue(payload["title"])?.adapterTrimmedNonEmpty
+    }
+
+    private func readDeferredMetadataData() async -> Data? {
+        if let deferredMetadataDataReader {
+            return await Task.detached(priority: .userInitiated) {
+                deferredMetadataDataReader()
+            }.value
+        }
+        guard let paths = adapterPaths() else { return nil }
+        let bundleIdentifier = qishuiBundleIdentifier
+        return await Task.detached(priority: .userInitiated) {
+            Self.runGetData(
+                script: paths.script,
+                framework: paths.framework,
+                bundleIdentifier: bundleIdentifier,
+                includeArtwork: true
+            )
+        }.value
     }
 
     private func observePendingTrackTransition(

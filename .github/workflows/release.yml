@@ -28,6 +28,11 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: bash Scripts/verify-release-source.sh
 
+      - name: Install build-only DMG layout tools
+        run: |
+          python3 -m venv .build/dmg-tools
+          .build/dmg-tools/bin/python3 -m pip install -r Scripts/dmg-layout-requirements.txt
+
       - name: Build release candidate
         env:
           VERSION: ${{ inputs.version }}

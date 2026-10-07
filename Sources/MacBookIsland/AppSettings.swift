@@ -7,6 +7,8 @@ final class AppSettings: ObservableObject {
         static let showIslandOnLaunch = "showIslandOnLaunch"
         static let autoCollapseExpandedIsland = "autoCollapseExpandedIsland"
         static let showMusicDiagnostics = "showMusicDiagnostics"
+        static let showMusicLyrics = "showMusicLyrics"
+        static let autoExpandMusicLyrics = "autoExpandMusicLyrics"
         static let appleMusicEnabled = "appleMusicEnabled"
         static let calendarEventsEnabled = "calendarEventsEnabled"
         static let remindersEnabled = "remindersEnabled"
@@ -25,6 +27,14 @@ final class AppSettings: ObservableObject {
 
     @Published var showMusicDiagnostics: Bool {
         didSet { persist(Key.showMusicDiagnostics, showMusicDiagnostics) }
+    }
+
+    @Published var showMusicLyrics: Bool {
+        didSet { persist(Key.showMusicLyrics, showMusicLyrics) }
+    }
+
+    @Published var autoExpandMusicLyrics: Bool {
+        didSet { persist(Key.autoExpandMusicLyrics, autoExpandMusicLyrics) }
     }
 
     @Published var appleMusicEnabled: Bool {
@@ -56,6 +66,16 @@ final class AppSettings: ObservableObject {
             in: defaults,
             fallback: false
         )
+        showMusicLyrics = Self.bool(
+            named: Key.showMusicLyrics,
+            in: defaults,
+            fallback: false
+        )
+        autoExpandMusicLyrics = Self.bool(
+            named: Key.autoExpandMusicLyrics,
+            in: defaults,
+            fallback: false
+        )
         appleMusicEnabled = Self.bool(
             named: Key.appleMusicEnabled,
             in: defaults,
@@ -77,6 +97,8 @@ final class AppSettings: ObservableObject {
         showIslandOnLaunch = true
         autoCollapseExpandedIsland = true
         showMusicDiagnostics = false
+        showMusicLyrics = false
+        autoExpandMusicLyrics = false
         appleMusicEnabled = true
         calendarEventsEnabled = false
         remindersEnabled = false

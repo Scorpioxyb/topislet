@@ -78,7 +78,7 @@ enum MusicAdapterRuntimePresenter {
             return MusicAdapterRuntimePresentation(
                 level: .inactive,
                 title: "未运行",
-                detail: "打开汽水音乐后自动连接"
+                detail: "汽水音乐运行且存在可信状态时自动连接"
             )
         }
         guard accessibilityTrusted else {

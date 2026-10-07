@@ -2,6 +2,27 @@ import AppKit
 import Testing
 @testable import MacBookIsland
 
+@Test("默认半点顶部偏移在渲染前对齐，避免动画取整时交替出现 1pt 缝隙")
+func halfPointOffsetUsesStableWindowServerTop() {
+    let screen = NSRect(x: 0, y: 0, width: 1_710, height: 1_107)
+    for height in stride(from: CGFloat(35), through: 211, by: 0.5) {
+        let frame = IslandWindowLayout.frame(
+            for: NSSize(width: 245 + height, height: height),
+            in: screen,
+            yOffset: -0.5,
+            alignTopToWindowServer: true
+        )
+        #expect(frame.maxY == 1_108)
+        #expect(frame.midX == screen.midX)
+    }
+}
+
+@Test("顶屿不进入其他 App 的全屏空间")
+func islandPanelDoesNotJoinFullScreenSpaces() {
+    #expect(!IslandPanelCollectionPolicy.behavior.contains(.fullScreenAuxiliary))
+    #expect(!IslandPanelCollectionPolicy.behavior.contains(.canJoinAllSpaces))
+}
+
 @Test("岛的三种窗口状态始终保持顶边和水平中心不变")
 func islandWindowFramesStayTopAnchoredAndCentered() {
     let screenFrame = NSRect(x: 0, y: 0, width: 1_920, height: 1_080)
@@ -241,14 +262,30 @@ func interpolatedWindowFramesStayTopAnchoredAndCentered() {
     #expect(frames.map(\.height) == frames.map(\.height).sorted())
 }
 
+@Test("顶部窗口向上半点覆盖系统顶边合成缝隙")
+func topEdgeBleedCoversWindowServerSeam() {
+    let screenFrame = NSRect(x: 0, y: 0, width: 1_710, height: 1_107)
+    let size = NSSize(width: 377, height: 34.5)
+    let frame = IslandWindowLayout.frame(
+        for: size,
+        in: screenFrame,
+        yOffset: -0.5
+    )
+
+    #expect(frame.midX == screenFrame.midX)
+    #expect(frame.maxY == screenFrame.maxY + 0.5)
+    #expect(frame.minY == screenFrame.maxY - size.height + 0.5)
+}
+
 @Test("展开音乐布局保持封面、时间轴和控制轨道对齐")
 func expandedMusicLayoutKeepsPrimaryContentAligned() {
     #expect(
         ExpandedMusicLayout.contentWidth
-            == ExpandedMusicLayout.artworkSize
-                + ExpandedMusicLayout.artworkToDetailsSpacing
-                + ExpandedMusicLayout.detailsWidth
+            == ExpandedMusicLayout.controlColumnWidth
+                + ExpandedMusicLayout.controlToLyricSpacing
+                + ExpandedMusicLayout.lyricColumnWidth
     )
+    #expect(ExpandedMusicLayout.controlOnlyContentWidth < ExpandedMusicLayout.contentWidth)
     #expect(
         ExpandedMusicLayout.detailsWidth
             == ExpandedMusicLayout.timelineWidth
@@ -437,8 +474,8 @@ func reducedMotionDisablesWindowGeometryAnimation() {
 
 @Test("关闭减少动态效果时使用统一形变时间轴")
 func standardMotionUsesUnifiedWindowAnimation() {
-    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: false) == 0.28)
-    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: false) == 0.20)
+    #expect(IslandMotion.frameDuration(for: .expanded, reduceMotion: false) == 0.24)
+    #expect(IslandMotion.frameDuration(for: .compact, reduceMotion: false) == 0.18)
     #expect(IslandMotion.geometryAnimation(for: .expanded, reduceMotion: false) != nil)
 }
 

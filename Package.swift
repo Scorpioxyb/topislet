@@ -32,7 +32,10 @@ let package = Package(
             dependencies: ["MusicUsageDiagnostics"]
         ),
         .executableTarget(name: "QishuiProbe"),
-        .executableTarget(name: "QishuiStateProbe"),
+        .executableTarget(
+            name: "QishuiStateProbe",
+            dependencies: ["MusicUsageDiagnostics"]
+        ),
         .testTarget(
             name: "MacBookIslandTests",
             dependencies: [

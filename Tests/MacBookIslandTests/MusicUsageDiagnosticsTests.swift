@@ -32,6 +32,166 @@ func trackFingerprintIsStableAndDoesNotExposeMetadata() {
 }
 
 @Test
+func lyricFingerprintIsStableAndDoesNotExposeLyricText() {
+    let first = MusicUsageLyricFingerprint.make(
+        source: "qishui",
+        title: "Private Song",
+        artist: "Private Artist",
+        lines: ["secret original", "secret translation"]
+    )
+    let second = MusicUsageLyricFingerprint.make(
+        source: "qishui",
+        title: "Private Song",
+        artist: "Private Artist",
+        lines: ["secret original", "secret translation"]
+    )
+    let changed = MusicUsageLyricFingerprint.make(
+        source: "qishui",
+        title: "Private Song",
+        artist: "Private Artist",
+        lines: ["next original", "next translation"]
+    )
+
+    #expect(first.count == 12)
+    #expect(first == second)
+    #expect(first != changed)
+    #expect(!first.contains("secret"))
+}
+
+@Test
+func dailyAnalyzerSummarizesAnonymousLyricPublicationLatency() {
+    let start = Date(timeIntervalSince1970: 8_000)
+    let records = [
+        TimestampedMusicUsageEvent(
+            timestamp: start,
+            event: MusicUsageEvent(name: "lyric_ui_published", fields: [
+                "source": "qishui",
+                "lyric_age_ms": "351",
+                "lyric": "abc123"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(1),
+            event: MusicUsageEvent(name: "lyric_ui_published", fields: [
+                "source": "qishui",
+                "lyric_age_ms": "504",
+                "lyric": "def456"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(2),
+            event: MusicUsageEvent(name: "lyric_ui_published", fields: [
+                "source": "qishui",
+                "lyric_age_ms": "-1",
+                "lyric": "unknown"
+            ])
+        )
+    ]
+
+    let summary = MusicUsageDailyAnalyzer.analyze(records)
+    #expect(summary.lyricUIPublicationLatency.count == 2)
+    #expect(summary.lyricUIPublicationLatency.p50Milliseconds == 351)
+    #expect(summary.lyricUIPublicationLatency.p95Milliseconds == 504)
+    #expect(summary.lyricUIPublicationLatency.maximumMilliseconds == 504)
+}
+
+@Test
+func qishuiProbeOutputRedactsUserPathsAndIdentifiers() {
+    let home = URL(fileURLWithPath: "/Users/private-user")
+    let root = home.appendingPathComponent(
+        "Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic"
+    )
+
+    #expect(QishuiProbePrivacy.rootDescription(root: root, home: home) ==
+        "~/Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic")
+    #expect(QishuiProbePrivacy.rootDescription(
+        root: URL(fileURLWithPath: "/Users/private-user/Documents/private"),
+        home: home
+    ) == "~/Documents/private")
+    #expect(QishuiProbePrivacy.keyLabel("u_123456789:feed") == "u_<redacted>:feed")
+    #expect(QishuiProbePrivacy.keyLabel("track-6704975600089565186") == "track-<redacted>")
+    #expect(QishuiProbePrivacy.candidateFieldLabel(for: "track_value") == "track")
+    #expect(QishuiProbePrivacy.candidateFieldLabel(for: "currentPlayableKey") == "current_playable")
+
+    let description = QishuiProbePrivacy.fileDescription(
+        url: root.appendingPathComponent("LunaCacheV2/entries.db"),
+        relativeTo: root
+    )
+    #expect(description.contains("bucket=LunaCacheV2"))
+    #expect(description.contains("fileType=db"))
+    #expect(!description.contains("private-user"))
+    #expect(!description.contains("entries.db"))
+}
+
+@Test
+func dailyAnalyzerSummarizesQishuiTransitionStagesWithoutMetadata() {
+    let start = Date(timeIntervalSince1970: 3_500)
+    let records = [
+        TimestampedMusicUsageEvent(
+            timestamp: start,
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "control_result", "transition": "q1",
+                "latency_ms": "0", "deferred": "0", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.1),
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "first_candidate", "transition": "q1",
+                "latency_ms": "100", "deferred": "1", "has_artwork": "0"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.6),
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "atomic_complete", "transition": "q1",
+                "latency_ms": "600", "deferred": "0", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(0.612),
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "ui_published", "transition": "q1",
+                "latency_ms": "612", "deferred": "0", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(1),
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "control_result", "transition": "q2",
+                "latency_ms": "0", "deferred": "0", "has_artwork": "1"
+            ])
+        ),
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(1.1),
+            event: MusicUsageEvent(name: "track_transition_stage", fields: [
+                "source": "qishui", "stage": "first_candidate", "transition": "q2",
+                "latency_ms": "100", "deferred": "1", "has_artwork": "0"
+            ])
+        )
+    ]
+
+    let summary = MusicUsageDailyAnalyzer.analyze(
+        records,
+        generatedAt: start.addingTimeInterval(2)
+    )
+    #expect(summary.schemaVersion == 6)
+    #expect(summary.qishuiTrackTransitions.total == 2)
+    #expect(summary.qishuiTrackTransitions.deferredCount == 2)
+    #expect(summary.qishuiTrackTransitions.firstCandidateCount == 2)
+    #expect(summary.qishuiTrackTransitions.atomicCompleteCount == 1)
+    #expect(summary.qishuiTrackTransitions.uiPublishedCount == 1)
+    #expect(summary.qishuiTrackTransitions.incompleteCount == 1)
+    #expect(summary.qishuiTrackTransitions.atomicCompleteMissingArtworkCount == 0)
+    #expect(summary.qishuiTrackTransitions.firstCandidateLatency.p50Milliseconds == 100)
+    #expect(summary.qishuiTrackTransitions.atomicCompleteLatency.p95Milliseconds == 600)
+    #expect(summary.qishuiTrackTransitions.uiPublishedLatency.p50Milliseconds == 612)
+    #expect(summary.sampleCoverage.status == "partial")
+    #expect(summary.sampleCoverage.missingSampleKinds.contains("qishui_transition"))
+    #expect(summary.anomalies == ["qishui_transition_incomplete=1"])
+}
+
+@Test
 func dailyAnalyzerCorrelatesControlTrackAndArtworkLatency() throws {
     let start = Date(timeIntervalSince1970: 1_000)
     let records = [
@@ -196,7 +356,7 @@ func dailyAnalyzerDoesNotTreatMissingUsageAsPassingCoverage() {
         records,
         generatedAt: start.addingTimeInterval(16 * 60)
     )
-    #expect(summary.schemaVersion == 4)
+    #expect(summary.schemaVersion == 6)
     #expect(summary.sampleCoverage.status == "no_media_activity")
     #expect(summary.sampleCoverage.observationHeartbeatCount == 1)
     #expect(summary.sampleCoverage.mediaPresenceHeartbeatCount == 0)
@@ -323,7 +483,7 @@ func dailyAnalyzerTreatsCancelledSeeksAsTerminalCoverage() {
         records,
         generatedAt: start.addingTimeInterval(1)
     )
-    #expect(summary.schemaVersion == 4)
+    #expect(summary.schemaVersion == 6)
     #expect(summary.seekCancellationCount == 2)
     #expect(summary.seekCancellationReasons == [
         "superseded": 1,

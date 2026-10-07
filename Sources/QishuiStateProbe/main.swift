@@ -1,4 +1,5 @@
 import Foundation
+import MusicUsageDiagnostics
 
 struct FileSnapshot: Equatable {
     let size: UInt64
@@ -20,8 +21,16 @@ let watchSeconds: Int? = {
     guard let index = args.firstIndex(of: "--watch"), args.indices.contains(index + 1) else { return nil }
     return Int(args[index + 1])
 }()
+let interval: TimeInterval = {
+    guard let index = args.firstIndex(of: "--interval-ms"),
+          args.indices.contains(index + 1),
+          let milliseconds = Double(args[index + 1]) else {
+        return 1.0
+    }
+    return max(milliseconds / 1_000, 0.01)
+}()
 
-let config = ProbeConfig(root: defaultRoot, watchSeconds: watchSeconds, interval: 1.0)
+let config = ProbeConfig(root: defaultRoot, watchSeconds: watchSeconds, interval: interval)
 let probe = QishuiStateProbe(config: config)
 
 if let watchSeconds {
@@ -50,7 +59,11 @@ final class QishuiStateProbe {
 
     func printSummary() {
         print("QishuiStateProbe")
-        print("root=\(config.root.path)")
+        let safeRoot = QishuiProbePrivacy.rootDescription(
+            root: config.root,
+            home: home
+        )
+        print("root=\(safeRoot)")
         print("mode=summary")
         print("")
         printLunaStorageSummary()
@@ -60,9 +73,14 @@ final class QishuiStateProbe {
 
     func watch(seconds: Int) {
         print("QishuiStateProbe")
-        print("root=\(config.root.path)")
+        let safeRoot = QishuiProbePrivacy.rootDescription(
+            root: config.root,
+            home: home
+        )
+        print("root=\(safeRoot)")
         print("mode=watch")
         print("seconds=\(seconds)")
+        print("intervalMilliseconds=\(Int(config.interval * 1_000))")
         print("hint=播放/暂停/切歌时观察 changed 文件；本工具只读汽水目录，不打开控制中心。")
         print("")
 
@@ -93,12 +111,12 @@ final class QishuiStateProbe {
         let luna = config.root.appendingPathComponent("LunaStorage")
         print("LUNA_STORAGE")
         guard let files = try? fileManager.contentsOfDirectory(at: luna, includingPropertiesForKeys: nil) else {
-            print("- unavailable=\(luna.path)")
+            print("- bucket=LunaStorage unavailable=1")
             return
         }
 
         for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            print("- file=\(file.lastPathComponent)")
+            print("- \(QishuiProbePrivacy.fileDescription(url: file, relativeTo: config.root))")
             guard let json = decodeLunaJSON(file) else {
                 print("  decode=unavailable")
                 continue
@@ -178,11 +196,10 @@ final class QishuiStateProbe {
             return
         }
 
-        let interesting = interestingStrings(in: url)
+        let interesting = interestingPatternCounts(in: url)
         guard !interesting.isEmpty else { return }
-        print("  interestingStrings=\(interesting.count)")
-        for line in interesting.prefix(20) {
-            print("  \(line)")
+        for key in interesting.keys.sorted() {
+            print("  matchedPattern=\(key) count=\(interesting[key] ?? 0)")
         }
     }
 
@@ -236,9 +253,9 @@ final class QishuiStateProbe {
 
     private func printJSONSummary(_ json: Any, indent: String) {
         if let dictionary = json as? [String: Any] {
-            let keys = dictionary.keys.sorted()
+            let keys = Set(dictionary.keys.map(QishuiProbePrivacy.keyLabel)).sorted()
             print("\(indent)keys=\(keys.prefix(18).joined(separator: ","))\(keys.count > 18 ? ",..." : "")")
-            let candidates = collectCandidateValues(json)
+            let candidates = collectCandidateFields(json)
             for candidate in candidates.prefix(14) {
                 print("\(indent)\(candidate)")
             }
@@ -255,7 +272,7 @@ final class QishuiStateProbe {
         }
     }
 
-    private func collectCandidateValues(_ json: Any) -> [String] {
+    private func collectCandidateFields(_ json: Any) -> [String] {
         let keywords = [
             "current", "playing", "player", "queue", "media", "track",
             "lyric", "cover", "progress", "duration", "playable", "isPlaying"
@@ -270,7 +287,7 @@ final class QishuiStateProbe {
                     let child = dictionary[key] as Any
                     if keywords.contains(where: { key.localizedCaseInsensitiveContains($0) }) {
                         if !(child is [String: Any]) && !(child is [Any]) {
-                            results.append("\(childPath)=\(formatScalar(child))")
+                            results.append("candidateField=\(QishuiProbePrivacy.candidateFieldLabel(for: key)) type=\(scalarType(child))")
                         }
                     }
                     walk(child, path: childPath, depth: depth + 1)
@@ -289,32 +306,53 @@ final class QishuiStateProbe {
     private func summarizeQueueCache(_ dictionary: [String: Any]) -> [String]? {
         var lines: [String] = []
         var trackCount = 0
-        var examples: [String] = []
+        var completeArtistCount = 0
+        var completeAlbumCount = 0
+        var completeDurationCount = 0
+        var completeArtworkReferenceCount = 0
+        var currentPointerCount = 0
 
         for key in dictionary.keys.sorted() {
             guard let queue = dictionary[key] as? [String: Any],
                   let playables = queue["playables"] as? [[String: Any]] else {
                 continue
             }
+            if queue["currentPlayableKey"] != nil {
+                currentPointerCount += 1
+            }
             trackCount += playables.count
-            for playable in playables.prefix(3) {
+            for playable in playables {
                 guard let track = playable["track"] as? [String: Any] else { continue }
-                let name = track["name"] as? String ?? "unknown"
                 let artists = (track["artists"] as? [[String: Any]])?
-                    .compactMap { $0["name"] as? String }
-                    .joined(separator: "/") ?? "unknown"
-                examples.append("trackExample=\(name) - \(artists)")
+                    .compactMap { $0["name"] as? String } ?? []
+                if !artists.isEmpty { completeArtistCount += 1 }
+                if containsNonEmptyValue(in: track, matching: ["album", "album_name"]) {
+                    completeAlbumCount += 1
+                }
+                if containsNumericValue(in: track, matching: ["duration", "duration_ms"]) {
+                    completeDurationCount += 1
+                }
+                if containsNonEmptyValue(
+                    in: track,
+                    matching: ["cover", "cover_url", "url_cover", "image", "uri"]
+                ) {
+                    completeArtworkReferenceCount += 1
+                }
             }
         }
 
         guard trackCount > 0 else { return nil }
         lines.append("queueTrackCount=\(trackCount)")
-        lines.append(contentsOf: examples.prefix(6))
+        lines.append("queueCurrentPointerCount=\(currentPointerCount)")
+        lines.append("tracksWithArtist=\(completeArtistCount)")
+        lines.append("tracksWithAlbum=\(completeAlbumCount)")
+        lines.append("tracksWithDuration=\(completeDurationCount)")
+        lines.append("tracksWithArtworkReference=\(completeArtworkReferenceCount)")
         return lines
     }
 
-    private func interestingStrings(in url: URL) -> [String] {
-        guard let snapshot = snapshot(for: url), snapshot.size <= 25_000_000 else { return [] }
+    private func interestingPatternCounts(in url: URL) -> [String: Int] {
+        guard let snapshot = snapshot(for: url), snapshot.size <= 25_000_000 else { return [:] }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/strings")
@@ -326,7 +364,7 @@ final class QishuiStateProbe {
         do {
             try process.run()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return [] }
+            guard process.terminationStatus == 0 else { return [:] }
             let data = output.fileHandleForReading.readDataToEndOfFile()
             let text = String(data: data, encoding: .utf8) ?? ""
             let patterns = [
@@ -334,14 +372,15 @@ final class QishuiStateProbe {
                 "queue", "player", "playable", "url_cover", "cover_url",
                 "track", "artist", "duration", "progress"
             ]
-            return text
-                .split(separator: "\n")
-                .map(String.init)
-                .filter { line in
-                    patterns.contains { line.localizedCaseInsensitiveContains($0) }
+            var counts: [String: Int] = [:]
+            for line in text.split(separator: "\n") {
+                for pattern in patterns where line.localizedCaseInsensitiveContains(pattern) {
+                    counts[pattern, default: 0] += 1
                 }
+            }
+            return counts
         } catch {
-            return []
+            return [:]
         }
     }
 
@@ -353,17 +392,67 @@ final class QishuiStateProbe {
         (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
     }
 
-    private func formatScalar(_ value: Any) -> String {
-        let text: String
-        if value is NSNull {
-            text = "null"
-        } else {
-            text = String(describing: value)
+    private func containsNonEmptyValue(
+        in value: Any,
+        matching keys: Set<String>,
+        depth: Int = 0
+    ) -> Bool {
+        guard depth <= 6 else { return false }
+        if let dictionary = value as? [String: Any] {
+            for (key, child) in dictionary {
+                if keys.contains(key.lowercased()), !isEmptyScalar(child) {
+                    return true
+                }
+                if containsNonEmptyValue(in: child, matching: keys, depth: depth + 1) {
+                    return true
+                }
+            }
+        } else if let array = value as? [Any] {
+            return array.contains { containsNonEmptyValue(in: $0, matching: keys, depth: depth + 1) }
         }
-        let singleLine = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        return singleLine.count > 160 ? String(singleLine.prefix(160)) + "..." : singleLine
+        return false
+    }
+
+    private func containsNumericValue(
+        in value: Any,
+        matching keys: Set<String>,
+        depth: Int = 0
+    ) -> Bool {
+        guard depth <= 6 else { return false }
+        if let dictionary = value as? [String: Any] {
+            for (key, child) in dictionary {
+                if keys.contains(key.lowercased()), child is NSNumber {
+                    return true
+                }
+                if containsNumericValue(in: child, matching: keys, depth: depth + 1) {
+                    return true
+                }
+            }
+        } else if let array = value as? [Any] {
+            return array.contains { containsNumericValue(in: $0, matching: keys, depth: depth + 1) }
+        }
+        return false
+    }
+
+    private func isEmptyScalar(_ value: Any) -> Bool {
+        if value is NSNull { return true }
+        if let string = value as? String { return string.isEmpty }
+        return false
+    }
+
+    private func scalarType(_ value: Any) -> String {
+        switch value {
+        case is NSNull:
+            return "null"
+        case is Bool:
+            return "bool"
+        case is NSNumber:
+            return "number"
+        case is String:
+            return "string"
+        default:
+            return "other"
+        }
     }
 
     private func isoTimestamp() -> String {
@@ -377,16 +466,16 @@ struct FileChange {
     let after: FileSnapshot?
 
     func summary(relativeTo root: URL) -> String {
-        let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+        let file = QishuiProbePrivacy.fileDescription(url: url, relativeTo: root)
         switch (before, after) {
         case (nil, let after?):
-            return "- created \(relative) size=\(after.size)"
+            return "- created \(file) size=\(after.size)"
         case (let before?, nil):
-            return "- deleted \(relative) oldSize=\(before.size)"
+            return "- deleted \(file) oldSize=\(before.size)"
         case (let before?, let after?):
-            return "- changed \(relative) size=\(before.size)->\(after.size)"
+            return "- changed \(file) size=\(before.size)->\(after.size)"
         default:
-            return "- changed \(relative)"
+            return "- changed \(file)"
         }
     }
 }

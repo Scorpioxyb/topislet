@@ -71,6 +71,23 @@ public enum MusicUsageTrackFingerprint {
     }
 }
 
+/// Anonymous identity for a lyric snapshot. The raw lyric text never enters
+/// diagnostics; this only lets a run correlate a changed active row with its
+/// UI publication timestamp.
+public enum MusicUsageLyricFingerprint {
+    public static func make(
+        source: String,
+        title: String,
+        artist: String,
+        lines: [String]
+    ) -> String {
+        let input = [source, title, artist, lines.joined(separator: "\u{1f}")]
+            .joined(separator: "\u{1e}")
+        let digest = SHA256.hash(data: Data(input.utf8))
+        return digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 public struct TimestampedMusicUsageEvent: Equatable, Sendable {
     public let timestamp: Date
     public let event: MusicUsageEvent
@@ -106,6 +123,20 @@ public struct MusicUsageSampleCoverage: Codable, Equatable, Sendable {
     public let missingSampleKinds: [String]
 }
 
+public struct MusicUsageQishuiTransitionSummary: Codable, Equatable, Sendable {
+    public let total: Int
+    public let deferredCount: Int
+    public let firstCandidateCount: Int
+    public let atomicCompleteCount: Int
+    public let uiPublishedCount: Int
+    public let incompleteCount: Int
+    public let atomicCompleteMissingArtworkCount: Int
+    public let uiPublishedMissingArtworkCount: Int
+    public let firstCandidateLatency: MusicUsageLatencySummary
+    public let atomicCompleteLatency: MusicUsageLatencySummary
+    public let uiPublishedLatency: MusicUsageLatencySummary
+}
+
 public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let generatedAt: Date
@@ -124,12 +155,14 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let sourceProcessTerminationCount: Int
     public let controls: MusicUsageOutcomeSummary
     public let seeks: MusicUsageOutcomeSummary
+    public let qishuiTrackTransitions: MusicUsageQishuiTransitionSummary
     public let controlToTrackLatency: MusicUsageLatencySummary
     public let controlToPlaybackUILatency: MusicUsageLatencySummary
     public let playbackConfirmationLatency: MusicUsageLatencySummary
     public let playbackConfirmationTimeoutCount: Int
     public let metadataToArtworkLatency: MusicUsageLatencySummary
     public let controlToArtworkLatency: MusicUsageLatencySummary
+    public let lyricUIPublicationLatency: MusicUsageLatencySummary
     public let seekConfirmationLatency: MusicUsageLatencySummary
     public let seekConfirmationTimeoutCount: Int
     public let seekCancellationCount: Int
@@ -148,6 +181,41 @@ public enum MusicUsageDailyAnalyzer {
     private struct PendingArtwork {
         let timestamp: Date
         let controlTimestamp: Date?
+    }
+
+    private struct QishuiTransitionObservation {
+        var wasDeferred = false
+        var firstCandidateLatency: Int?
+        var firstCandidateHasArtwork = false
+        var atomicCompleteLatency: Int?
+        var atomicCompleteHasArtwork = false
+        var uiPublishedLatency: Int?
+        var uiPublishedHasArtwork = false
+
+        mutating func apply(stage: String, fields: [String: String]) {
+            wasDeferred = wasDeferred || fields["deferred"] == "1"
+            let latency = integer(fields["latency_ms"])
+            let hasArtwork = fields["has_artwork"] == "1"
+            switch stage {
+            case "first_candidate":
+                if firstCandidateLatency == nil {
+                    firstCandidateLatency = latency
+                    firstCandidateHasArtwork = hasArtwork
+                }
+            case "atomic_complete":
+                if atomicCompleteLatency == nil {
+                    atomicCompleteLatency = latency
+                    atomicCompleteHasArtwork = hasArtwork
+                }
+            case "ui_published":
+                if uiPublishedLatency == nil {
+                    uiPublishedLatency = latency
+                    uiPublishedHasArtwork = hasArtwork
+                }
+            default:
+                break
+            }
+        }
     }
 
     public static func analyze(
@@ -182,6 +250,7 @@ public enum MusicUsageDailyAnalyzer {
         var playbackConfirmationTimeouts = 0
         var metadataToArtworkLatencies: [Int] = []
         var controlToArtworkLatencies: [Int] = []
+        var lyricUIPublicationLatencies: [Int] = []
         var seekConfirmationLatencies: [Int] = []
         var seekConfirmationTimeouts = 0
         var seekCancellations = 0
@@ -194,6 +263,7 @@ public enum MusicUsageDailyAnalyzer {
         var pendingArtworkByTrack: [String: PendingArtwork] = [:]
         var lastUIPublishedTrackBySource: [String: String] = [:]
         var lastSourceChangeAt: Date?
+        var qishuiTransitions: [String: QishuiTransitionObservation] = [:]
 
         for record in records {
             let event = record.event
@@ -313,6 +383,13 @@ public enum MusicUsageDailyAnalyzer {
                 if let latency = integer(event.fields["latency_ms"]) {
                     seekLatencies.append(latency)
                 }
+            case "track_transition_stage":
+                guard event.fields["source"] == "qishui",
+                      let transition = event.fields["transition"],
+                      let stage = event.fields["stage"] else { break }
+                var observation = qishuiTransitions[transition, default: QishuiTransitionObservation()]
+                observation.apply(stage: stage, fields: event.fields)
+                qishuiTransitions[transition] = observation
             case "track_changed":
                 trackChanges += 1
                 guard let source = event.fields["source"],
@@ -389,6 +466,10 @@ public enum MusicUsageDailyAnalyzer {
                         ))
                     }
                 }
+            case "lyric_ui_published":
+                if let latency = integer(event.fields["lyric_age_ms"]), latency >= 0 {
+                    lyricUIPublicationLatencies.append(latency)
+                }
             default:
                 break
             }
@@ -401,6 +482,25 @@ public enum MusicUsageDailyAnalyzer {
             ))
             heartbeatGaps.append(contentsOf: pendingHeartbeatGaps)
         }
+
+        let transitionObservations = Array(qishuiTransitions.values)
+        let qishuiTransitionSummary = MusicUsageQishuiTransitionSummary(
+            total: transitionObservations.count,
+            deferredCount: transitionObservations.filter(\.wasDeferred).count,
+            firstCandidateCount: transitionObservations.compactMap(\.firstCandidateLatency).count,
+            atomicCompleteCount: transitionObservations.compactMap(\.atomicCompleteLatency).count,
+            uiPublishedCount: transitionObservations.compactMap(\.uiPublishedLatency).count,
+            incompleteCount: transitionObservations.filter { $0.uiPublishedLatency == nil }.count,
+            atomicCompleteMissingArtworkCount: transitionObservations.filter {
+                $0.atomicCompleteLatency != nil && !$0.atomicCompleteHasArtwork
+            }.count,
+            uiPublishedMissingArtworkCount: transitionObservations.filter {
+                $0.uiPublishedLatency != nil && !$0.uiPublishedHasArtwork
+            }.count,
+            firstCandidateLatency: latencySummary(transitionObservations.compactMap(\.firstCandidateLatency)),
+            atomicCompleteLatency: latencySummary(transitionObservations.compactMap(\.atomicCompleteLatency)),
+            uiPublishedLatency: latencySummary(transitionObservations.compactMap(\.uiPublishedLatency))
+        )
 
         let unresolvedArtworkCount = pendingArtworkByTrack.values.filter {
             generatedAt.timeIntervalSince($0.timestamp) >= 5
@@ -424,9 +524,18 @@ public enum MusicUsageDailyAnalyzer {
         if seekConfirmationTimeouts > 0 {
             anomalies.append("seek_confirmation_timeout=\(seekConfirmationTimeouts)")
         }
+        if qishuiTransitionSummary.incompleteCount > 0 {
+            anomalies.append("qishui_transition_incomplete=\(qishuiTransitionSummary.incompleteCount)")
+        }
+        if qishuiTransitionSummary.atomicCompleteMissingArtworkCount > 0 {
+            anomalies.append(
+                "qishui_transition_artwork_missing=\(qishuiTransitionSummary.atomicCompleteMissingArtworkCount)"
+            )
+        }
 
         let mediaActivityEventCount = sourceSwitches
             + trackChanges
+            + qishuiTransitionSummary.total
             + controlAccepted
             + controlRejected
             + seekAccepted
@@ -453,6 +562,10 @@ public enum MusicUsageDailyAnalyzer {
             > seekConfirmationLatencies.count + seekConfirmationTimeouts + seekCancellations {
             missingSampleKinds.append("seek_confirmation")
         }
+        if qishuiTransitionSummary.total > 0,
+           qishuiTransitionSummary.incompleteCount > 0 {
+            missingSampleKinds.append("qishui_transition")
+        }
         let coverageStatus: String
         if mediaActivityEventCount == 0 {
             coverageStatus = "no_media_activity"
@@ -463,7 +576,7 @@ public enum MusicUsageDailyAnalyzer {
         }
 
         return MusicUsageDailySummary(
-            schemaVersion: 4,
+            schemaVersion: 6,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -488,12 +601,14 @@ public enum MusicUsageDailyAnalyzer {
                 rejected: seekRejected,
                 latencies: seekLatencies
             ),
+            qishuiTrackTransitions: qishuiTransitionSummary,
             controlToTrackLatency: latencySummary(controlToTrackLatencies),
             controlToPlaybackUILatency: latencySummary(controlToPlaybackUILatencies),
             playbackConfirmationLatency: latencySummary(playbackConfirmationLatencies),
             playbackConfirmationTimeoutCount: playbackConfirmationTimeouts,
             metadataToArtworkLatency: latencySummary(metadataToArtworkLatencies),
             controlToArtworkLatency: latencySummary(controlToArtworkLatencies),
+            lyricUIPublicationLatency: latencySummary(lyricUIPublicationLatencies),
             seekConfirmationLatency: latencySummary(seekConfirmationLatencies),
             seekConfirmationTimeoutCount: seekConfirmationTimeouts,
             seekCancellationCount: seekCancellations,

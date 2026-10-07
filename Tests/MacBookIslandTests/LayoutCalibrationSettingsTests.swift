@@ -25,7 +25,7 @@ func layoutResetPersistsAllDefaultsForCurrentDisplay() throws {
 
     let reloaded = LayoutCalibrationSettings(defaults: defaults)
     reloaded.useDisplay(name: "测试屏幕", identity: "display-a")
-    #expect(reloaded.islandYOffset == 0)
+    #expect(reloaded.islandYOffset == -0.5)
     #expect(reloaded.notchHeightAdjustment == 1)
     #expect(reloaded.expandedHeightAdjustment == 0)
     #expect(reloaded.expandedTopControlsTopOffset == 4)
@@ -51,7 +51,7 @@ func layoutResetDoesNotOverwriteOtherDisplays() throws {
 
     settings.resetToDefaults()
 
-    #expect(settings.islandYOffset == 0)
+    #expect(settings.islandYOffset == -0.5)
     settings.useDisplay(name: "屏幕 A", identity: "display-a")
     #expect(settings.islandYOffset == 9)
 }

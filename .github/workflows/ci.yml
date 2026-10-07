@@ -35,6 +35,11 @@ jobs:
       - name: Release build
         run: swift build -c release
 
+      - name: Install build-only DMG layout tools
+        run: |
+          python3 -m venv .build/dmg-tools
+          .build/dmg-tools/bin/python3 -m pip install -r Scripts/dmg-layout-requirements.txt
+
       - name: Package smoke test
         run: |
           VERSION="$(plutil -extract CFBundleShortVersionString raw Packaging/Info.plist)"

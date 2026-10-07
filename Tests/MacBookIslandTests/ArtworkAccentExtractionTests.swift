@@ -41,6 +41,37 @@ func artworkAccentExtractionRejectsInvalidData() {
     #expect(artworkAccentComponents(from: Data([0, 1, 2])) == nil)
 }
 
+@Test("双色封面优先使用占比更大的颜色而非混合色")
+func artworkAccentExtractionPrefersDominantArtworkHue() throws {
+    let bitmap = try #require(NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: 100,
+        pixelsHigh: 100,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ))
+    let bytes = try #require(bitmap.bitmapData)
+    for row in 0..<100 {
+        for column in 0..<100 {
+            let offset = row * bitmap.bytesPerRow + column * 4
+            let warm = column < 70
+            bytes[offset] = warm ? 213 : 26
+            bytes[offset + 1] = warm ? 82 : 70
+            bytes[offset + 2] = warm ? 42 : 222
+            bytes[offset + 3] = 255
+        }
+    }
+    let data = try #require(bitmap.representation(using: .png, properties: [:]))
+    let accent = try #require(artworkAccentComponents(from: data))
+    #expect(accent.red > accent.blue)
+    #expect(accent.red > accent.green)
+}
+
 @Test("深色封面强调色在黑底上保持清晰")
 func artworkAccentExtractionRaisesDarkColorContrast() throws {
     let data = try solidArtworkData(red: 8, green: 20, blue: 118)

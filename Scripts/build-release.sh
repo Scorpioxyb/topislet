@@ -17,6 +17,7 @@ DISK_IMAGE="$OUTPUT_DIR/$ARCHIVE_BASENAME.dmg"
 CHECKSUM="$DISK_IMAGE.sha256"
 READ_WRITE_IMAGE="$WORK_DIR/$ARCHIVE_BASENAME-rw.dmg"
 MOUNT_POINT=""
+LAYOUT_PYTHON="${LAYOUT_PYTHON:-$ROOT/.build/dmg-tools/bin/python3}"
 
 cleanup() {
   if [[ -n "$MOUNT_POINT" ]]; then
@@ -36,10 +37,22 @@ if [[ ! -f "$ROOT/LICENSE" && "${ALLOW_MISSING_LICENSE:-0}" != "1" ]]; then
   exit 2
 fi
 
+if [[ ! -x "$LAYOUT_PYTHON" ]] || ! "$LAYOUT_PYTHON" -c 'import ds_store, mac_alias' >/dev/null 2>&1; then
+  echo "error: build-only DMG layout dependencies are unavailable" >&2
+  echo "python3 -m venv .build/dmg-tools" >&2
+  echo ".build/dmg-tools/bin/python3 -m pip install -r Scripts/dmg-layout-requirements.txt" >&2
+  exit 2
+fi
+if [[ -e "$DISK_IMAGE" || -e "$CHECKSUM" ]]; then
+  echo "error: candidate already exists; choose a new OUTPUT_DIR or move it to Trash first" >&2
+  exit 2
+fi
+
 mkdir -p "$OUTPUT_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources/Licenses"
 
 swift build --package-path "$ROOT" -c release --arch arm64
-MAIN_BINARY="$ROOT/.build/arm64-apple-macosx/release/$EXECUTABLE_NAME"
+BIN_DIR="$(swift build --package-path "$ROOT" -c release --arch arm64 --show-bin-path)"
+MAIN_BINARY="$BIN_DIR/$EXECUTABLE_NAME"
 if [[ ! -x "$MAIN_BINARY" ]]; then
   echo "error: release binary not found at $MAIN_BINARY" >&2
   exit 1
@@ -68,7 +81,8 @@ xattr -cr "$APP"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   codesign --force --deep --sign - \
     --entitlements "$ROOT/Packaging/TopIslet.entitlements" \
-    --identifier "$BUNDLE_ID" "$APP"
+    --identifier "$BUNDLE_ID" \
+    --requirements "=designated => identifier \"$BUNDLE_ID\"" "$APP"
 else
   codesign --force --deep --options runtime --timestamp \
     --entitlements "$ROOT/Packaging/TopIslet.entitlements" \
@@ -76,6 +90,8 @@ else
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP"
+python3 "$ROOT/Scripts/verify-release-binary.py" \
+  "$MAIN_BINARY" "$APP/Contents/MacOS/$EXECUTABLE_NAME"
 plutil -lint "$APP/Contents/Info.plist"
 file "$APP/Contents/MacOS/$EXECUTABLE_NAME" | grep -q 'arm64'
 vtool -show-build "$APP/Contents/MacOS/$EXECUTABLE_NAME" | grep -q 'minos 26.0'
@@ -97,39 +113,15 @@ hdiutil create \
   -format UDRW \
   "$READ_WRITE_IMAGE"
 
-MOUNT_POINT="$(hdiutil attach "$READ_WRITE_IMAGE" -readwrite -nobrowse -noautoopen | awk -F '\t' 'END {print $NF}')"
+MOUNT_POINT="$WORK_DIR/mounted-volume"
+mkdir -p "$MOUNT_POINT"
+hdiutil attach "$READ_WRITE_IMAGE" -readwrite -nobrowse -noautoopen -mountpoint "$MOUNT_POINT" >/dev/null
 if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
   echo "error: failed to mount read-write disk image" >&2
   exit 1
 fi
 
-osascript <<APPLESCRIPT
-tell application "Finder"
-  set backgroundFile to file ".background:background.png" of disk "$VOLUME_NAME"
-  tell disk "$VOLUME_NAME"
-    open
-    tell container window
-      set current view to icon view
-      set toolbar visible to false
-      set statusbar visible to false
-      set pathbar visible to false
-      set sidebar width to 0
-      set bounds to {200, 120, 860, 520}
-    end tell
-    tell icon view options of container window
-      set arrangement to not arranged
-      set icon size to 128
-      set text size to 12
-      set background picture to backgroundFile
-    end tell
-    set position of item "$APP_DISPLAY_NAME.app" of container window to {170, 190}
-    set position of item "Applications" of container window to {490, 190}
-    update without registering applications
-    delay 1
-    close container window
-  end tell
-end tell
-APPLESCRIPT
+"$LAYOUT_PYTHON" "$ROOT/Scripts/create-dmg-layout.py" "$MOUNT_POINT"
 
 sync
 hdiutil detach "$MOUNT_POINT" >/dev/null
@@ -147,7 +139,9 @@ hdiutil verify "$DISK_IMAGE" >/dev/null
   shasum -a 256 "$(basename "$DISK_IMAGE")" > "$(basename "$CHECKSUM")"
 )
 
-MOUNT_POINT="$(hdiutil attach "$DISK_IMAGE" -readonly -nobrowse -noautoopen | awk -F '\t' 'END {print $NF}')"
+MOUNT_POINT="$WORK_DIR/mounted-verification"
+mkdir -p "$MOUNT_POINT"
+hdiutil attach "$DISK_IMAGE" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT_POINT" >/dev/null
 if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
   echo "error: failed to mount disk image" >&2
   exit 1

@@ -1,4 +1,31 @@
 import Testing
+
+@Test("汽水最小化和非唯一窗口时不得关闭并重建 renderer 辅助功能树")
+func minimizedPlaybackWindowKeepsAccessibilityEnabled() {
+    #expect(QishuiSemanticAXController.allowsAccessibilityTreeRebuild(
+        playbackWindowCount: 1, minimizedWindowCount: 0
+    ))
+    for counts in [(1, 1), (0, 0), (2, 0), (2, 1)] {
+        #expect(!QishuiSemanticAXController.allowsAccessibilityTreeRebuild(
+            playbackWindowCount: counts.0, minimizedWindowCount: counts.1
+        ))
+    }
+}
+
+@Test("最小化属性读取失败不能被当成未最小化并关闭辅助功能树")
+func unknownMinimizedStateDoesNotPermitTreeRebuild() {
+    #expect(!QishuiSemanticAXController.allowsAccessibilityTreeRebuild(
+        playbackWindowCount: 1, minimizedWindowCount: nil
+    ))
+}
+
+@Test func desktopLyricsDoesNotCountAsPlaybackWindow() {
+    #expect(!QishuiSemanticAXController.isPlaybackWindowTitle("桌面歌词"))
+    #expect(!QishuiSemanticAXController.isPlaybackWindowTitle(" 桌面歌词\n"))
+    #expect(QishuiSemanticAXController.isPlaybackWindowTitle("汽水音乐"))
+    #expect(QishuiSemanticAXController.isPlaybackWindowTitle(""))
+    #expect(QishuiSemanticAXController.isPlaybackWindowTitle("其他窗口"))
+}
 @testable import MacBookIsland
 
 @Test("汽水 Chromium 手动辅助功能开启成功后允许扫描")
@@ -172,6 +199,26 @@ func qishuiWindowAvailabilityUsesDefiniteWindowEvidence() {
         reportedWindowCount: 1,
         standardWindowCount: 0
     ) == .controlTreeUnavailable)
+}
+
+@Test("只剩桌面歌词时主窗口已关闭，未知窗口不能当成已关闭")
+func qishuiLyricsOnlyDoesNotKeepPlaybackWindowAvailable() {
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
+        isRunning: true, accessibilityTrusted: true, windowReadSucceeded: true,
+        reportedWindowCount: 1, standardWindowCount: 0, auxiliaryWindowCount: 1
+    ) == .windowClosed)
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
+        isRunning: true, accessibilityTrusted: true, windowReadSucceeded: true,
+        reportedWindowCount: 2, standardWindowCount: 1, auxiliaryWindowCount: 1
+    ) == .available)
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
+        isRunning: true, accessibilityTrusted: true, windowReadSucceeded: true,
+        reportedWindowCount: 2, standardWindowCount: 0, auxiliaryWindowCount: 1
+    ) == .controlTreeUnavailable)
+    #expect(QishuiSemanticAXController.resolveWindowAvailability(
+        isRunning: true, accessibilityTrusted: true, windowReadSucceeded: false,
+        reportedWindowCount: 1, standardWindowCount: 0, auxiliaryWindowCount: 1
+    ) == .unknown)
 }
 
 @Test("只有唯一语义播放控件组允许发送控制")

@@ -2,6 +2,27 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+struct QishuiAXNotificationBatch {
+    static let structuralNotifications: Set<String> = [
+        "AXFocusedWindowChanged", "AXWindowCreated", "AXUIElementDestroyed",
+        "AXWindowMiniaturized", "AXWindowDeminiaturized"
+    ]
+    private var latest: String?
+    private var structural: String?
+
+    mutating func append(_ notification: String) {
+        latest = notification
+        if Self.structuralNotifications.contains(notification) {
+            structural = notification
+        }
+    }
+
+    mutating func drain() -> String? {
+        defer { latest = nil; structural = nil }
+        return structural ?? latest
+    }
+}
+
 @MainActor
 final class QishuiAXChangeMonitor {
     private let axMessageTimeout: Float = 0.2
@@ -15,6 +36,8 @@ final class QishuiAXChangeMonitor {
     private var observedPID: pid_t?
     private var reattachTimer: Timer?
     private var debounceWorkItem: DispatchWorkItem?
+    private var pendingNotifications = QishuiAXNotificationBatch()
+    private var notificationGeneration: UInt64 = 0
     private var onChange: ((String) -> Void)?
 
     private let notifications = [
@@ -24,14 +47,6 @@ final class QishuiAXChangeMonitor {
         "AXSelectedChildrenChanged",
         "AXSelectedRowsChanged",
         "AXLayoutChanged",
-        "AXWindowCreated",
-        "AXUIElementDestroyed",
-        "AXWindowMiniaturized",
-        "AXWindowDeminiaturized"
-    ]
-
-    private let structuralWindowNotifications: Set<String> = [
-        "AXFocusedWindowChanged",
         "AXWindowCreated",
         "AXUIElementDestroyed",
         "AXWindowMiniaturized",
@@ -50,8 +65,10 @@ final class QishuiAXChangeMonitor {
     }
 
     func stop() {
+        notificationGeneration &+= 1
         debounceWorkItem?.cancel()
         debounceWorkItem = nil
+        pendingNotifications = QishuiAXNotificationBatch()
         reattachTimer?.invalidate()
         reattachTimer = nil
         tearDownObserver()
@@ -191,12 +208,17 @@ final class QishuiAXChangeMonitor {
     }
 
     fileprivate func handleAXNotification(_ notification: String) {
-        debounceWorkItem?.cancel()
-        let shouldReattach = structuralWindowNotifications.contains(notification)
+        pendingNotifications.append(notification)
+        // Bound a batch from its first event. Continuous lyric updates must
+        // neither erase a close event nor postpone its delivery indefinitely.
+        guard debounceWorkItem == nil else { return }
+        let generation = notificationGeneration
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
-                if shouldReattach {
+                guard let self, generation == self.notificationGeneration else { return }
+                self.debounceWorkItem = nil
+                guard let notification = self.pendingNotifications.drain() else { return }
+                if QishuiAXNotificationBatch.structuralNotifications.contains(notification) {
                     self.refreshObservedTargets(force: true)
                 }
                 self.onChange?(notification)

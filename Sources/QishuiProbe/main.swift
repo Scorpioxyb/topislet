@@ -18,6 +18,7 @@ struct ProbeConfig {
     var includeMediaRemote = false
     var promptForAccessibility = false
     var includeSettableAttributes = false
+    var includeDOMClasses = false
     var maxStaticMatchesPerCategory = 24
 }
 
@@ -353,6 +354,7 @@ final class AXProbe {
         let identifier = stringAttribute(element, "AXIdentifier")
         let enabled = boolAttribute(element, kAXEnabledAttribute)
         let actions = actionNames(element)
+        let domClasses = stringArrayAttribute(element, "AXDOMClassList")
         let frame = frameDescription(element)
         let attributeNames = includeAttributeNames(element)
         let settableAttributes = config.includeSettableAttributes
@@ -381,6 +383,7 @@ final class AXProbe {
             if !identifier.isEmpty { parts.append("id=\(quote(identifier))") }
             if let enabled { parts.append("enabled=\(enabled)") }
             if !actions.isEmpty { parts.append("actions=\(actions.joined(separator: ","))") }
+            if config.includeDOMClasses, !domClasses.isEmpty { parts.append("classes=\(domClasses.joined(separator: ","))") }
             if !frame.isEmpty { parts.append("frame=\(frame)") }
             if config.includeAttributeNames, !attributeNames.isEmpty {
                 parts.append("attrs=\(attributeNames.joined(separator: ","))")
@@ -604,6 +607,11 @@ final class AXProbe {
         if let attributed = value as? NSAttributedString { return attributed.string }
         if CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() { return "" }
         return String(describing: value)
+    }
+
+    private func stringArrayAttribute(_ element: AXUIElement, _ attribute: String) -> [String] {
+        guard let value = copyAttribute(element, attribute) else { return [] }
+        return (value as? [String]) ?? []
     }
 
     private func boolAttribute(_ element: AXUIElement, _ attribute: String) -> Bool? {
@@ -1275,6 +1283,9 @@ if args.contains("--prompt-accessibility") {
 
 if args.contains("--settable-attributes") {
     config.includeSettableAttributes = true
+}
+if args.contains("--dom-classes") {
+    config.includeDOMClasses = true
 }
 
 if args.contains("--no-system-extras") {

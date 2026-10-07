@@ -25,9 +25,14 @@ final class QishuiAXReader {
 
     func invalidateCache() {
         cachedProfile = nil
+        preferredContentRoot = nil
     }
 
-    func read(from app: NSRunningApplication) -> QishuiAXReadResult {
+    func read(
+        from app: NSRunningApplication,
+        expectedTitle: String? = nil,
+        expectedArtist: String? = nil
+    ) -> QishuiAXReadResult {
         let startedAt = Date()
         guard AXIsProcessTrusted() else {
             return QishuiAXReadResult(
@@ -40,7 +45,11 @@ final class QishuiAXReader {
 
         let root = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(root, axMessageTimeout)
-        let readResult = readTrack(from: root)
+        let readResult = readTrack(
+            from: root,
+            expectedTitle: expectedTitle,
+            expectedArtist: expectedArtist
+        )
         let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         guard readResult.track != nil || !readResult.nodes.isEmpty else {
             return QishuiAXReadResult(
@@ -68,9 +77,16 @@ final class QishuiAXReader {
         )
     }
 
-    private func readTrack(from appElement: AXUIElement) -> (track: QishuiDirectTrack?, nodes: [AXNodeRecord], sourceLabel: String) {
-        if let cachedTrack = readCachedTrack() {
+    private func readTrack(
+        from appElement: AXUIElement,
+        expectedTitle: String?,
+        expectedArtist: String?
+    ) -> (track: QishuiDirectTrack?, nodes: [AXNodeRecord], sourceLabel: String) {
+        if let cachedTrack = readCachedTrack(), matchesExpected(cachedTrack, title: expectedTitle, artist: expectedArtist) {
             return (cachedTrack, [], "缓存的汽水播放节点")
+        }
+        if expectedTitle != nil || expectedArtist != nil {
+            cachedProfile = nil
         }
 
         let roots = contentRoots(from: appElement)
@@ -101,14 +117,22 @@ final class QishuiAXReader {
             if firstNonEmptyNodes.isEmpty, !nodes.isEmpty {
                 firstNonEmptyNodes = nodes
             }
-            if let track = extractTrack(from: nodes) {
+            if let track = extractTrack(
+                from: nodes,
+                expectedTitle: expectedTitle,
+                expectedArtist: expectedArtist
+            ) {
                 preferredContentRoot = attempt.element
                 return (track, nodes, attempt.label)
             }
             combinedNodes.append(contentsOf: nodes)
         }
 
-        if let track = extractTrack(from: combinedNodes) {
+        if let track = extractTrack(
+            from: combinedNodes,
+            expectedTitle: expectedTitle,
+            expectedArtist: expectedArtist
+        ) {
             preferredContentRoot = nil
             return (track, combinedNodes, "组合汽水内容区")
         }
@@ -186,7 +210,11 @@ final class QishuiAXReader {
         return roots
     }
 
-    private func extractTrack(from nodes: [AXNodeRecord]) -> QishuiDirectTrack? {
+    private func extractTrack(
+        from nodes: [AXNodeRecord],
+        expectedTitle: String? = nil,
+        expectedArtist: String? = nil
+    ) -> QishuiDirectTrack? {
         let imageNodes = nodes
             .filter { $0.isImage && $0.frameArea >= 900 && imageDescriptor(from: $0) != nil }
             .sorted { lhs, rhs in
@@ -196,6 +224,14 @@ final class QishuiAXReader {
                 return lhs.frameArea > rhs.frameArea
             }
 
+        struct Candidate {
+            let track: QishuiDirectTrack
+            let profile: CachedTrackProfile
+            let hasTrustedProgress: Bool
+            let order: Int
+        }
+
+        var candidates: [Candidate] = []
         for cover in imageNodes {
             guard let coverFrame = cover.frame else { continue }
             guard let title = titleNearCover(coverFrame, nodes: nodes) else { continue }
@@ -205,29 +241,80 @@ final class QishuiAXReader {
 
             let artworkURL = artworkURL(from: cover)
             let lyrics = lyricsNearCover(coverFrame, nodes: nodes)
-            // AX exposes multiple time labels from the page and playback queue. In practice
-            // these can point at stale/list items, so AX is not a trusted progress source.
-            let progress: Double? = nil
-            cachedProfile = CachedTrackProfile(
+            // Accept progress only when a real duration is exposed and the visible playback
+            // bar's duplicate time labels agree. Queue timestamps are otherwise ignored.
+            let expectedDuration = durationSeconds(from: nodes, coverFrame: coverFrame)
+            let progressNodes = progressCandidateNodes(from: nodes, coverFrame: coverFrame)
+            let progress = trustedProgressRatio(
+                from: progressNodes,
+                coverFrame: coverFrame,
+                expectedDuration: expectedDuration
+            )
+            let candidate = QishuiDirectTrack(
+                title: title.text,
+                artist: artists.map(\.text).joined(separator: " / "),
+                artworkURL: artworkURL,
+                lyrics: Array(lyrics.map(\.text).prefix(4)),
+                isPlaying: nil,
+                progress: progress,
+                sourceName: "汽水窗口 AX"
+            )
+            if let expectedTitle, let expectedArtist {
+                guard QishuiTrackCoherencePolicy.matches(
+                    mediaTitle: expectedTitle,
+                    mediaArtist: expectedArtist,
+                    directTitle: candidate.title,
+                    directArtist: candidate.artist
+                ) else { continue }
+            }
+            let profile = CachedTrackProfile(
                 cachedAt: Date(),
                 cover: cover.element,
                 title: title.node.element,
                 artists: artists.map { $0.node.element },
                 lyrics: lyrics.map { $0.node.element },
-                progressCandidates: []
+                progressCandidates: progressNodes.map(\.element)
             )
-            return QishuiDirectTrack(
-                title: title.text,
-                artist: artists.map(\.text).joined(separator: " / "),
-                artworkURL: artworkURL,
-                lyrics: lyrics.isEmpty ? ["汽水窗口已同步，暂未暴露可见歌词"] : Array(lyrics.map(\.text).prefix(4)),
-                isPlaying: nil,
-                progress: progress,
-                sourceName: "汽水窗口 AX"
-            )
+            if expectedTitle != nil, expectedArtist != nil {
+                cachedProfile = profile
+                return candidate
+            }
+            candidates.append(Candidate(
+                track: candidate,
+                profile: profile,
+                hasTrustedProgress: progress != nil,
+                order: cover.order
+            ))
         }
 
+        // Feed cards can have much larger covers than the actual bottom
+        // player. A trusted, mutually consistent time pair is the strongest
+        // local signal that the candidate belongs to the active player.
+        let selected = candidates.sorted { lhs, rhs in
+            if lhs.hasTrustedProgress != rhs.hasTrustedProgress {
+                return lhs.hasTrustedProgress
+            }
+            return lhs.order < rhs.order
+        }.first
+        if let selected {
+            cachedProfile = selected.profile
+            return selected.track
+        }
         return nil
+    }
+
+    private func matchesExpected(
+        _ track: QishuiDirectTrack,
+        title: String?,
+        artist: String?
+    ) -> Bool {
+        guard let title, let artist else { return true }
+        return QishuiTrackCoherencePolicy.matches(
+            mediaTitle: title,
+            mediaArtist: artist,
+            directTitle: track.title,
+            directArtist: track.artist
+        )
     }
 
     private func readCachedTrack() -> QishuiDirectTrack? {
@@ -259,13 +346,13 @@ final class QishuiAXReader {
         }
         let lyrics = uniqueTexts(cachedProfile.lyrics.map { text(from: $0) })
             .filter(isLikelyLyricText)
-        let progress: Double? = nil
+        let progress = trustedCachedProgressRatio(from: cachedProfile.progressCandidates)
 
         return QishuiDirectTrack(
             title: title,
             artist: artists.joined(separator: " / "),
             artworkURL: cachedArtworkURL,
-            lyrics: lyrics.isEmpty ? ["汽水窗口已同步，暂未暴露可见歌词"] : Array(lyrics.prefix(4)),
+            lyrics: Array(lyrics.prefix(4)),
             isPlaying: nil,
             progress: progress,
             sourceName: "汽水窗口 AX"
@@ -308,7 +395,7 @@ final class QishuiAXReader {
             .compactMap { node -> (node: AXNodeRecord, order: Int, text: String)? in
                 guard let frame = node.frame else { return nil }
                 guard frame.minY >= lowerBound, frame.minY <= upperBound else { return nil }
-                guard frame.minX >= coverFrame.minX - 24, frame.minX <= coverFrame.maxX + 180 else { return nil }
+                guard isInArtistColumn(frame, coverFrame: coverFrame) else { return nil }
                 let text = cleanText(node.description.isEmpty ? node.primaryText : node.description)
                 guard isLikelySongOrArtistText(text), !isKnownNonTitleText(text) else { return nil }
                 return (node, node.order, text)
@@ -323,7 +410,7 @@ final class QishuiAXReader {
             .compactMap { node -> (node: AXNodeRecord, order: Int, text: String)? in
                 guard let frame = node.frame else { return nil }
                 guard frame.minY >= lowerBound, frame.minY <= upperBound else { return nil }
-                guard frame.minX >= coverFrame.minX - 24, frame.minX <= coverFrame.maxX + 180 else { return nil }
+                guard isInArtistColumn(frame, coverFrame: coverFrame) else { return nil }
                 let text = cleanText(node.primaryText)
                 guard isLikelySongOrArtistText(text), !isArtistSeparator(text), !isKnownNonTitleText(text) else { return nil }
                 return (node, node.order, text)
@@ -418,6 +505,38 @@ final class QishuiAXReader {
         )
             .sorted(by: progressCandidateSort)
             .map(\.node)
+    }
+
+    private func trustedProgressRatio(
+        from nodes: [AXNodeRecord],
+        coverFrame: CGRect,
+        expectedDuration: Double?
+    ) -> Double? {
+        guard let expectedDuration, expectedDuration > 0 else { return nil }
+        let candidates = nodes.compactMap { node -> Double? in
+            guard let frame = node.frame,
+                  frame.minY >= coverFrame.maxY + 80 else { return nil }
+            return uniqueTexts([node.value, node.title, node.description])
+                .compactMap { parseProgress($0, expectedDuration: expectedDuration)?.ratio }
+                .first
+        }
+        guard let first = candidates.first,
+              candidates.allSatisfy({ abs($0 - first) <= 0.01 }) else { return nil }
+        return first
+    }
+
+    private func trustedCachedProgressRatio(from elements: [AXUIElement]) -> Double? {
+        let candidates = elements.compactMap { element -> Double? in
+            let texts = uniqueTexts([
+                stringAttribute(element, kAXValueAttribute as String),
+                stringAttribute(element, kAXTitleAttribute as String),
+                stringAttribute(element, kAXDescriptionAttribute as String)
+            ])
+            return texts.compactMap { parseProgress($0)?.ratio }.first
+        }
+        guard let first = candidates.first,
+              candidates.allSatisfy({ abs($0 - first) <= 0.01 }) else { return nil }
+        return first
     }
 
     private func progressCandidateSort(_ lhs: ProgressCandidate, _ rhs: ProgressCandidate) -> Bool {
@@ -566,9 +685,13 @@ final class QishuiAXReader {
         return result
     }
 
-    private func isLikelySongOrArtistText(_ text: String) -> Bool {
+    func isInArtistColumn(_ frame: CGRect, coverFrame: CGRect) -> Bool {
+        frame.minX >= coverFrame.minX - 24 && frame.minX <= coverFrame.maxX
+    }
+
+    func isLikelySongOrArtistText(_ text: String) -> Bool {
         let text = cleanText(text)
-        guard text.count >= 2, text.count <= 80 else { return false }
+        guard text.count >= 1, text.count <= 80 else { return false }
         guard !isArtistSeparator(text) else { return false }
         guard text.range(of: #"^\d+$"#, options: .regularExpression) == nil else { return false }
         guard text.range(of: #"^\d{1,2}:\d{2}"#, options: .regularExpression) == nil else { return false }
