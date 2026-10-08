@@ -1485,9 +1485,12 @@ func completeStreamPayloadSupersedesInFlightDeferredRead() async throws {
         duration: 205,
         artwork: Data([0x42])
     )
+    let firstReadGate = DispatchSemaphore(value: 0)
+    defer { firstReadGate.signal() }
     let reader = DeferredMetadataReaderProbe(
         responses: [try JSONSerialization.data(withJSONObject: complete)],
-        delay: 0.15
+        delay: 0,
+        firstReadGate: firstReadGate
     )
     let source = MediaRemoteAdapterStreamSource(
         runningQishuiProcessIdentifiersProvider: { [123] },
@@ -1507,7 +1510,8 @@ func completeStreamPayloadSupersedesInFlightDeferredRead() async throws {
         receivedUptime: startedUptime + 0.01,
         schedulesDeferredRefresh: true
     )
-    #expect(await waitUntil(timeout: 0.5) { reader.readCount == 1 })
+    try #require(await waitUntil(timeout: 2) { reader.readCount == 1 })
+    let deferredRead = try #require(source.deferredPublicationTaskForTesting())
 
     let streamed = try #require(source.ingestStreamEnvelopeForTesting(
         streamEnvelope(complete),
@@ -1515,7 +1519,8 @@ func completeStreamPayloadSupersedesInFlightDeferredRead() async throws {
         receivedUptime: ProcessInfo.processInfo.systemUptime
     ))
     #expect(streamed.sampleID == first.sampleID + 1)
-    try? await Task.sleep(nanoseconds: 250_000_000)
+    firstReadGate.signal()
+    await deferredRead.value
 
     let current = try #require(source.snapshot())
     let currentTrack = try #require(current.currentTrack)

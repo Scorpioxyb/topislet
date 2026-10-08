@@ -1044,6 +1044,12 @@ final class MediaRemoteAdapterStreamSource {
         return true
     }
 
+    #if DEBUG
+    func deferredPublicationTaskForTesting() -> Task<Void, Never>? {
+        deferredTrackPublicationTask
+    }
+    #endif
+
     func ingestStreamEnvelopeForTesting(
         _ lineData: Data,
         receivedAt: Date,
