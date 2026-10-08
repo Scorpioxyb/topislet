@@ -1573,12 +1573,16 @@ func staleDeferredReadYieldsToLatestCandidate() async throws {
         duration: 200,
         artwork: Data([0x53])
     )
+    // Keep B in flight until C has been ingested, irrespective of CI load.
+    let firstReadGate = DispatchSemaphore(value: 0)
+    defer { firstReadGate.signal() }
     let reader = DeferredMetadataReaderProbe(
         responses: [
             try JSONSerialization.data(withJSONObject: completeB),
             try JSONSerialization.data(withJSONObject: completeC)
         ],
-        delay: 0.08
+        delay: 0,
+        firstReadGate: firstReadGate
     )
     let source = MediaRemoteAdapterStreamSource(
         runningQishuiProcessIdentifiersProvider: { [123] },
@@ -1598,16 +1602,21 @@ func staleDeferredReadYieldsToLatestCandidate() async throws {
         receivedUptime: 800.01,
         schedulesDeferredRefresh: true
     )
-    #expect(await waitUntil(timeout: 0.5) { reader.readCount == 1 })
+    try #require(await waitUntil(timeout: 2) { reader.readCount == 1 })
     _ = source.ingestStreamEnvelopeForTesting(
         try streamEnvelope(transitionalC),
         receivedAt: Date(),
         receivedUptime: 800.03,
         schedulesDeferredRefresh: true
     )
+    firstReadGate.signal()
 
-    #expect(await waitUntil(timeout: 1) {
-        source.snapshot()?.currentTrack?.title == "Song C"
+    try #require(await waitUntil(timeout: 2) {
+        guard let track = source.snapshot()?.currentTrack else { return false }
+        return track.title == "Song C"
+            && track.artist == "Artist C"
+            && track.album == "Album C"
+            && track.artworkData == Data([0x53])
     })
     let published = try #require(source.snapshot()?.currentTrack)
     #expect(published.artist == "Artist C")
@@ -1774,11 +1783,13 @@ private final class DeferredMetadataReaderProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let responses: [Data]
     private let delay: TimeInterval
+    private let firstReadGate: DispatchSemaphore?
     private var count = 0
 
-    init(responses: [Data], delay: TimeInterval) {
+    init(responses: [Data], delay: TimeInterval, firstReadGate: DispatchSemaphore? = nil) {
         self.responses = responses
         self.delay = delay
+        self.firstReadGate = firstReadGate
     }
 
     var readCount: Int {
@@ -1786,11 +1797,15 @@ private final class DeferredMetadataReaderProbe: @unchecked Sendable {
     }
 
     func read() -> Data? {
-        let response = lock.withLock { () -> Data? in
+        let (index, response) = lock.withLock { () -> (Int, Data?) in
             let index = count
             count += 1
-            guard !responses.isEmpty else { return nil }
-            return responses[min(index, responses.count - 1)]
+            guard !responses.isEmpty else { return (index, nil) }
+            return (index, responses[min(index, responses.count - 1)])
+        }
+        if index == 0, let firstReadGate {
+            // Bounded safety valve; the test also releases on early failure.
+            guard firstReadGate.wait(timeout: .now() + 5) == .success else { return nil }
         }
         Thread.sleep(forTimeInterval: delay)
         return response

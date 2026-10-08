@@ -6494,12 +6494,19 @@ private struct ControlOnlyExpandedMusic: View {
                 // second line clear of the top band when metadata wraps.
                 .offset(y: -model.topBandHeight / 4)
             VStack(alignment: .leading, spacing: 12) {
-                Text(model.isMusicLyricsEnabled
-                    ? (MusicLyricPresentation.isConfirmedInstrumental(model.music.track.lyrics)
-                        ? "纯音乐，请欣赏" : "歌词暂未读取到")
-                    : "歌词显示已关闭")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.58))
+                HStack(spacing: 7) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.38))
+                        .accessibilityHidden(true)
+                    Text(MusicLyricPresentation.emptyStateText(
+                        lines: model.music.track.lyrics,
+                        lyricsEnabled: model.isMusicLyricsEnabled
+                    ))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+                .accessibilityElement(children: .combine)
                 MusicProgressRow(model: model)
             }
             .frame(width: ExpandedMusicLayout.detailsWidth, alignment: .leading)

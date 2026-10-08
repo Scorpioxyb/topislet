@@ -1,6 +1,21 @@
 import Testing
 @testable import MacBookIsland
 
+@Test("无歌词视图使用听歌文案，不把空读或关闭当成错误")
+func lyricEmptyStateUsesListeningCopy() {
+    for lines in [[], ["正在加载歌词"], ["汽水窗口已同步，暂未暴露可见歌词"], ["暂无歌词，请欣赏"]] {
+        #expect(MusicLyricPresentation.emptyStateText(lines: lines, lyricsEnabled: true) == "聆听音乐")
+    }
+    #expect(MusicLyricPresentation.emptyStateText(lines: [], lyricsEnabled: false) == "聆听音乐")
+}
+
+@Test("只有明确纯音乐标记才显示纯音乐文案，真实歌词不能被误标")
+func lyricEmptyStateDoesNotInferInstrumentalFromMissingLyrics() {
+    #expect(MusicLyricPresentation.emptyStateText(lines: ["纯音乐，请欣赏"], lyricsEnabled: true) == "纯音乐，请欣赏")
+    #expect(MusicLyricPresentation.emptyStateText(lines: ["纯音乐，请欣赏", "真实歌词"], lyricsEnabled: true) == "聆听音乐")
+    #expect(MusicLyricPresentation.emptyStateText(lines: ["纯音乐，请欣赏"], lyricsEnabled: false) == "聆听音乐")
+}
+
 @Test("歌词末句不会循环展示首句，无效索引清空两行")
 func lyricPresentationDoesNotInventNextLine() {
     let lines = ["第一句", "第二句"]

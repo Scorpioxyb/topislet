@@ -187,6 +187,14 @@ enum MarqueeTextLayoutPolicy {
 
 /// Presentation of supplied lyric lines only. This does not infer timing or loop a song.
 enum MusicLyricPresentation {
+    static func emptyStateText(lines: [String], lyricsEnabled: Bool) -> String {
+        // Missing lyrics are not evidence that a track is instrumental.
+        // Playback stays the main experience; technical status belongs in diagnostics.
+        lyricsEnabled && isConfirmedInstrumental(lines)
+            ? "纯音乐，请欣赏"
+            : "聆听音乐"
+    }
+
     static func sourceCreditLines(_ lines: [String]) -> [String] {
         lines
             .flatMap { $0.components(separatedBy: .newlines) }

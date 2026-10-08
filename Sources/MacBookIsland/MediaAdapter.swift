@@ -99,13 +99,12 @@ enum MusicSeekCancellationReason: String {
 }
 
 enum QishuiSeekPlaybackPolicy {
-    static func shouldRestorePause(
-        wasPlaying: Bool,
+    static func shouldStartPlayback(
         observedIsPlaying: Bool?,
         sameTrack: Bool,
         operationIsCurrent: Bool
     ) -> Bool {
-        !wasPlaying && observedIsPlaying == true && sameTrack && operationIsCurrent
+        observedIsPlaying == false && sameTrack && operationIsCurrent
     }
 }
 
@@ -455,7 +454,7 @@ final class MusicAdapterCoordinator {
     private var timedLyricsEnabled = false
     private var timedLyricTask: Task<Void, Never>?
     private var qishuiSeekGeneration: UInt64 = 0
-    private var qishuiSeekPauseTask: Task<Void, Never>?
+    private var qishuiSeekPlaybackTask: Task<Void, Never>?
 
     func setQishuiTimedLyricsEnabled(_ enabled: Bool) {
         timedLyricsEnabled = enabled
@@ -657,8 +656,8 @@ final class MusicAdapterCoordinator {
         lastUsageHeartbeatAt = nil
         lastUsageLyricFingerprint = nil
         isRealtimeObservationRunning = false
-        qishuiSeekPauseTask?.cancel()
-        qishuiSeekPauseTask = nil
+        qishuiSeekPlaybackTask?.cancel()
+        qishuiSeekPlaybackTask = nil
         qishuiIdentityRefreshInFlight = false
         lastQishuiIdentityRefreshAt = .distantPast
         invalidateQishuiLyrics()
@@ -1703,8 +1702,8 @@ final class MusicAdapterCoordinator {
     ) async -> (music: MusicState, status: MusicSourceStatus) {
         qishuiSeekGeneration &+= 1
         let seekGeneration = qishuiSeekGeneration
-        qishuiSeekPauseTask?.cancel()
-        qishuiSeekPauseTask = nil
+        qishuiSeekPlaybackTask?.cancel()
+        qishuiSeekPlaybackTask = nil
         let binding = DisplayedMusicControlBinding(
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
@@ -1828,7 +1827,6 @@ final class MusicAdapterCoordinator {
 
         let targetProgress = min(max(progress, 0), 1)
         let targetElapsed = duration * targetProgress
-        let wasPlaying = currentQishuiMusicState().isPlaying
         let seekControlGeneration = controlGeneration
         let didSeek = await mediaRemoteAdapterStreamSource.seek(
             to: targetElapsed,
@@ -1865,8 +1863,8 @@ final class MusicAdapterCoordinator {
         optimisticMusic.elapsedTime = targetElapsed
         optimisticMusic.duration = duration
         cachedStatus = status
-        if !wasPlaying, let processIdentifier = track.sourceProcessIdentifier {
-            schedulePausePreservationAfterSeek(
+        if let processIdentifier = track.sourceProcessIdentifier {
+            schedulePlaybackAfterSeek(
                 identity: .init(processIdentifier: processIdentifier, title: track.title, artist: track.artist),
                 seekGeneration: seekGeneration,
                 expectedControlGeneration: seekControlGeneration
@@ -1875,13 +1873,13 @@ final class MusicAdapterCoordinator {
         return (optimisticMusic, status)
     }
 
-    private func schedulePausePreservationAfterSeek(
+    private func schedulePlaybackAfterSeek(
         identity: QishuiLyricIdentity,
         seekGeneration: UInt64,
         expectedControlGeneration: Int
     ) {
         guard seekGeneration == qishuiSeekGeneration else { return }
-        qishuiSeekPauseTask = Task { @MainActor [weak self] in
+        qishuiSeekPlaybackTask = Task { @MainActor [weak self] in
             for _ in 0..<12 {
                 do { try await Task.sleep(for: .milliseconds(250)) }
                 catch { return }
@@ -1904,12 +1902,15 @@ final class MusicAdapterCoordinator {
                         directTitle: track.title, directArtist: track.artist
                     )
                 guard sameTrack else { return }
-                if QishuiSeekPlaybackPolicy.shouldRestorePause(
-                    wasPlaying: false, observedIsPlaying: track.isPlaying,
+                // Seeking expresses play intent. Never toggle a source that
+                // already resumed, or one whose playback state is unknown.
+                if track.isPlaying == true { return }
+                if QishuiSeekPlaybackPolicy.shouldStartPlayback(
+                    observedIsPlaying: track.isPlaying,
                     sameTrack: sameTrack, operationIsCurrent: true
                 ) {
                     let result = await self.pressSemanticControl(.playPause, processIdentifier: identity.processIdentifier)
-                    self.recordUsage("seek_pause_preservation", fields: ["outcome": result.didPress ? "sent" : "unavailable"])
+                    self.recordUsage("seek_start_playback", fields: ["outcome": result.didPress ? "sent" : "unavailable"])
                     self.schedulePlaybackPositionRefresh()
                     return
                 }

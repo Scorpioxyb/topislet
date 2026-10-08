@@ -42,12 +42,12 @@
 
 | 版本范围 | 当前状态 |
 | --- | --- |
-| 公开下载 | [v0.1.1-alpha.4](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.1-alpha.4)，Alpha 开发者预览版 |
-| 源码开发预览 | **0.1.3 build 146**，统一浅银灰底板墨镜 Logo，包含歌词时间轴、切歌缓存与稳定性修正；不是稳定版 |
+| 公开下载 | [v0.1.3-alpha.1](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.1)，Apple Silicon 开发者预览版 |
+| 源码开发预览 | **0.1.3 build 148**，浅银灰墨镜 Logo、歌词时间轴、切歌缓存与进度跳转修复；不是稳定版 |
 | 演示素材 | **build 137** 实机录屏，保留用于展示布局与交互；不代表最新版本已完成全部验收 |
-| 本次 GitHub 更新 | 开发源码、[统一品牌图标](Docs/updates/2026-10-07-build146-brand.md)与[稳定性开发日志](Docs/updates/2026-10-07-build144-lyrics-stability.md)，没有新增 Release |
+| 本次 GitHub 更新 | [build 148 更新与预发布说明](Docs/updates/2026-10-08-build148-alpha1.md)：进度跳转后播放、无歌词文案、确定性异步测试 |
 
-当前源码更新到 build 146；公开下载包仍为 v0.1.1-alpha.4，两者包含的功能不同。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+v0.1.3-alpha.1 对应源码 **0.1.3 build 148**，仅支持 Apple Silicon 与 macOS 26.0 或更高版本。安装包为本地 ad-hoc 签名，尚未完成 Developer ID 签名和 Apple 公证。历史 v0.1.1-alpha.4 仍保留；上方演示素材仍是 build 137。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
@@ -92,7 +92,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/APPLE_SIGNIN
 
 ### GitHub Release
 
-正式 Release 准备完成后，可从 Releases 下载 `.dmg`：
+从 [v0.1.3-alpha.1 预发布页](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.1)下载 `.dmg` 和对应的 `.sha256` 校验文件：
 
 1. 打开 `TopIslet-….dmg`。
 2. 将“顶屿.app”拖到右侧“Applications”快捷入口。
