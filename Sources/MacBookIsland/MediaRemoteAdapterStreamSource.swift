@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import MusicUsageDiagnostics
 
 private final class MediaRemoteProcessOutputBuffer: @unchecked Sendable {
     private let lock = NSLock()
@@ -68,6 +69,7 @@ struct QishuiTrackTransitionStageEvent: Equatable, Sendable {
     let hasAlbum: Bool
     let hasDuration: Bool
     let wasDeferred: Bool
+    let candidateTrackIdentity: QishuiLyricIdentity?
 }
 
 private struct PendingQishuiTrackTransitionObservation {
@@ -143,11 +145,14 @@ final class MediaRemoteAdapterStreamSource {
     private var pendingArtworkRequestLookupKey: String?
     private var lastArtworkRequestLookupKey: String?
     private var lastArtworkRequestAt: Date?
+    private var durationRecoveryRequestedKeys: [String] = []
     private let lastVerifiedQishuiSnapshotTTL: TimeInterval = 5 * 60
     private var sampleID: UInt64 = 0
     private var sampleOrigin: MediaRemoteSampleOrigin = .unknown
     private var lastPlaybackEvidenceAt: Date?
+    private var lastPlaybackEvidenceProcessIdentifier: pid_t?
     private var lastPlaybackEvidenceTrackIdentity: String?
+    private var lastPlaybackEvidenceIsPlaying: Bool?
     private var retiredSourceProcessIdentifiers: [pid_t: Date] = [:]
     private let retiredSourceProcessIdentifierTTL: TimeInterval = 30
     private var qishuiSessionGeneration: UInt64 = 0
@@ -155,21 +160,28 @@ final class MediaRemoteAdapterStreamSource {
     private var restartTask: Task<Void, Never>?
     private var changeHandler: ChangeHandler?
     private var trackTransitionStageHandler: TrackTransitionStageHandler?
+    private var identityObservationHandler: ((MusicUsageEvent) -> Void)?
+    private var lastObservedIdentityFingerprint: String?
+    private var lastCompleteIdentityObservation: (identity: QishuiLyricIdentity, at: Date)?
     private var pendingTrackTransitionObservation: PendingQishuiTrackTransitionObservation?
     private let runningQishuiProcessIdentifiersProvider: () -> Set<pid_t>
+    private let metadataDataReader: (@Sendable () -> Data?)?
     private let deferredMetadataDataReader: (@Sendable () -> Data?)?
     private let deferredInitialRefreshDelayNanoseconds: UInt64
     private let deferredRetryRefreshDelayNanoseconds: UInt64
+    private let deferredPublicationTimeBudget: TimeInterval = 2.4
 
     init(
         runningQishuiProcessIdentifiersProvider: @escaping () -> Set<pid_t> = {
             Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
         },
+        metadataDataReader: (@Sendable () -> Data?)? = nil,
         deferredMetadataDataReader: (@Sendable () -> Data?)? = nil,
         deferredInitialRefreshDelayNanoseconds: UInt64 = 0,
         deferredRetryRefreshDelayNanoseconds: UInt64 = 35_000_000
     ) {
         self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider
+        self.metadataDataReader = metadataDataReader
         self.deferredMetadataDataReader = deferredMetadataDataReader
         self.deferredInitialRefreshDelayNanoseconds = deferredInitialRefreshDelayNanoseconds
         self.deferredRetryRefreshDelayNanoseconds = deferredRetryRefreshDelayNanoseconds
@@ -177,6 +189,11 @@ final class MediaRemoteAdapterStreamSource {
 
     func setTrackTransitionStageHandler(_ handler: TrackTransitionStageHandler?) {
         trackTransitionStageHandler = handler
+    }
+
+    func setIdentityObservationHandler(_ handler: ((MusicUsageEvent) -> Void)?) {
+        identityObservationHandler = handler
+        lastObservedIdentityFingerprint = nil
     }
 
     func beginTrackTransitionObservation(
@@ -311,9 +328,57 @@ final class MediaRemoteAdapterStreamSource {
         return true
     }
 
-    func hasPendingSeekTimeline() -> Bool {
+    // Process playback evidence only resolves the display source choice. It
+    // does not authorize joining lyrics, artwork, positions or seek commands.
+    func hasFreshProcessPlaybackEvidence(
+        at now: Date = Date(),
+        maxAge: TimeInterval,
+        expectedSampleID: UInt64? = nil,
+        expectedProcessIdentifier: pid_t? = nil
+    ) -> Bool {
+        processPlaybackEvidenceStatus(at: now, maxAge: maxAge,
+            expectedSampleID: expectedSampleID,
+            expectedProcessIdentifier: expectedProcessIdentifier) == "fresh"
+    }
+
+    func processPlaybackEvidenceStatus(
+        at now: Date = Date(),
+        maxAge: TimeInterval,
+        expectedSampleID: UInt64? = nil,
+        expectedProcessIdentifier: pid_t? = nil
+    ) -> String {
+        guard maxAge >= 0 else { return "invalid_budget" }
+        guard let lastPlaybackEvidenceAt else { return "missing_receipt" }
+        guard now >= lastPlaybackEvidenceAt else { return "future_receipt" }
+        guard now.timeIntervalSince(lastPlaybackEvidenceAt) <= maxAge else { return "expired" }
+        guard let processIdentifier = lastPlaybackEvidenceProcessIdentifier else { return "missing_pid" }
+        guard runningQishuiProcessIdentifiersProvider().contains(processIdentifier) else { return "retired_pid" }
+        let isDeferred = deferredTrackPublicationStartedAt != nil
+        // The publication wait intentionally keeps a verified baseline on
+        // screen. An unknown AX label cannot displace it while the same PID
+        // still reports the same playback state. This is process evidence;
+        // the stricter track/lyric/seek evidence continues to reject the wait.
+        guard let snapshot = isDeferred ? latestSnapshot : (latestRawSnapshot ?? latestSnapshot) else {
+            return "missing_snapshot"
+        }
+        guard snapshot.isVerifiedQishuiSource else { return "unverified" }
+        guard snapshot.sampleOrigin != .cached else { return "cached" }
+        guard snapshot.currentTrack?.sourceProcessIdentifier == processIdentifier else { return "snapshot_pid" }
+        guard snapshot.currentTrack?.isPlaying != nil else { return "unknown_playback" }
+        if isDeferred {
+            guard let lastPlaybackEvidenceIsPlaying else { return "pending_unknown_playback" }
+            guard snapshot.currentTrack?.isPlaying == lastPlaybackEvidenceIsPlaying else {
+                return "pending_changed_playback"
+            }
+        }
+        if let expectedSampleID, snapshot.sampleID != expectedSampleID { return "sample_changed" }
+        if let expectedProcessIdentifier, processIdentifier != expectedProcessIdentifier { return "expected_pid" }
+        return "fresh"
+    }
+
+    func hasPendingSeekTimeline(at now: Date = Date()) -> Bool {
         guard let anchor = seekTimelineAnchor else { return false }
-        if anchor.didObserveTarget || Date() < anchor.confirmationDeadline {
+        if now < anchor.confirmationDeadline {
             return true
         }
         clearSeekTimelineAnchor()
@@ -340,6 +405,7 @@ final class MediaRemoteAdapterStreamSource {
         lastPublishedPayload.removeAll()
         pendingTrackTransitionObservation = nil
         clearDeferredTrackPublication()
+        lastCompleteIdentityObservation = nil
         latestSnapshot = nil
         latestRawSnapshot = nil
         lastVerifiedQishuiSnapshot = nil
@@ -350,12 +416,15 @@ final class MediaRemoteAdapterStreamSource {
         pendingArtworkRequestLookupKey = nil
         lastArtworkRequestLookupKey = nil
         lastArtworkRequestAt = nil
+        durationRecoveryRequestedKeys.removeAll()
         artworkCache.removeAll()
         artworkCacheOrder.removeAll()
         clearSeekTimelineAnchor()
         sampleOrigin = .unknown
         lastPlaybackEvidenceAt = nil
+        lastPlaybackEvidenceProcessIdentifier = nil
         lastPlaybackEvidenceTrackIdentity = nil
+        lastPlaybackEvidenceIsPlaying = nil
     }
 
     func invalidatePendingSeekRequests() {
@@ -688,6 +757,7 @@ final class MediaRemoteAdapterStreamSource {
         let receivedAt = Date()
         let payload = envelope.payload
         if holdTransientEmptyPayloadIfNeeded(payload) {
+            scheduleDeferredTrackPublication(onChange: onChange)
             return
         }
         let merge = mergeObservedStreamPayload(
@@ -734,6 +804,7 @@ final class MediaRemoteAdapterStreamSource {
         receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
         allowsMetadataRefresh: Bool = true
     ) -> MediaRemoteNowPlayingSnapshot {
+        observePendingTrackTransition(payload: mergedPayload, shouldDefer: false, observedAt: receivedAt)
         advanceSample(origin: origin)
         let rawSnapshot = snapshot(
             from: mergedPayload,
@@ -743,12 +814,21 @@ final class MediaRemoteAdapterStreamSource {
             receivedUptime: receivedUptime
         )
         let effectiveSnapshot = remember(snapshot: rawSnapshot)
-        lastPublishedPayload = mergedPayload
+        // An empty-frame timeout only changes freshness. Keep the committed
+        // identity as the atomic baseline for the next incomplete candidate.
+        if !mergedPayload.isEmpty {
+            lastPublishedPayload = mergedPayload
+        }
         if let track = rawSnapshot.currentTrack {
             let signature = trackSignature(track)
             let didChangeTrack = signature != latestSignature
             latestSignature = signature
-            if allowsMetadataRefresh {
+            // The deferred-read budget still blocks general metadata retries.
+            // A committed, otherwise complete track gets one duration repair
+            // if timeout sanitation removed its suspect inherited duration.
+            let needsDurationOnlyRecovery = track.artist != "汽水音乐"
+                && track.artworkData != nil && !hasValidDuration(track.duration)
+            if allowsMetadataRefresh || needsDurationOnlyRecovery {
                 let didQueueFreshMetadata = requestFreshMetadataIfNeeded(
                     for: track,
                     didChangeTrack: didChangeTrack,
@@ -925,6 +1005,14 @@ final class MediaRemoteAdapterStreamSource {
         if let nextIdentity, nextIdentity != previousIdentity {
             metadataRequestGeneration += 1
             if deferredTrackPublicationStartedAt != nil {
+                if previousPayload.isEmpty {
+                    // A new candidate must not inherit an empty frame's
+                    // passive wait instead of receiving its normal refresh.
+                    deferredTrackPublicationTask?.cancel()
+                    deferredTrackPublicationTask = nil
+                    deferredTrackPublicationGeneration += 1
+                    deferredMetadataRefreshAttempt = 0
+                }
                 appendDeferredTrackReference(previousPayload)
                 deferredTrackPublicationStartedAt = observedAt
             }
@@ -1038,15 +1126,32 @@ final class MediaRemoteAdapterStreamSource {
         metadataRequestGeneration += 1
         mergedPayload.removeAll()
         beginDeferredTrackPublication(timelinePayload: payload, startedAt: startedAt)
-        deferredTrackPublicationTask?.cancel()
-        deferredTrackPublicationTask = nil
-        deferredTrackPublicationGeneration += 1
+        // Keep the existing publication deadline across repeated empty frames.
+        // With no candidate identity the task only waits; it cannot issue a
+        // metadata read, and any in-flight response fails the current-target gate.
         return true
     }
 
     #if DEBUG
+    private(set) var deferredPublicationIsPassiveForTesting = false
+
     func deferredPublicationTaskForTesting() -> Task<Void, Never>? {
         deferredTrackPublicationTask
+    }
+
+    func seedSeekTimelineForTesting(target: TimeInterval, issuedAt: Date) {
+        guard let track = latestRawSnapshot?.currentTrack ?? latestSnapshot?.currentTrack else { return }
+        seekTimelineAnchor = MediaRemoteSeekTimelineAnchor(
+            trackIdentity: trackTimelineIdentity(track),
+            targetElapsedTime: target,
+            elapsedTime: target,
+            issuedAt: issuedAt,
+            updatedAt: issuedAt,
+            isPlaying: track.isPlaying ?? true,
+            confirmationDeadline: issuedAt.addingTimeInterval(5),
+            didObserveTarget: false,
+            coherentSince: nil
+        )
     }
     #endif
 
@@ -1054,10 +1159,14 @@ final class MediaRemoteAdapterStreamSource {
         _ lineData: Data,
         receivedAt: Date,
         receivedUptime: TimeInterval,
-        schedulesDeferredRefresh: Bool = false
+        schedulesDeferredRefresh: Bool = false,
+        schedulesMetadataRefresh: Bool = false
     ) -> MediaRemoteNowPlayingSnapshot? {
         guard let envelope = decodedStreamEnvelope(lineData) else { return nil }
         if holdTransientEmptyPayloadIfNeeded(envelope.payload, startedAt: receivedAt) {
+            if schedulesDeferredRefresh {
+                scheduleDeferredTrackPublication(onChange: {})
+            }
             return latestSnapshot
         }
         let merge = mergeObservedStreamPayload(
@@ -1097,10 +1206,12 @@ final class MediaRemoteAdapterStreamSource {
         }
 
         clearDeferredTrackPublication()
+        var metadataChangeHandler: ChangeHandler?
+        if schedulesMetadataRefresh { metadataChangeHandler = { } }
         return publishMergedPayload(
             origin: .streamEvent,
             timelinePayload: envelope.payload,
-            onChange: nil,
+            onChange: metadataChangeHandler,
             receivedAt: receivedAt,
             receivedUptime: receivedUptime
         )
@@ -1180,6 +1291,9 @@ final class MediaRemoteAdapterStreamSource {
     }
 
     private func clearDeferredTrackPublication() {
+        #if DEBUG
+        deferredPublicationIsPassiveForTesting = false
+        #endif
         deferredTrackPublicationTask?.cancel()
         deferredTrackPublicationTask = nil
         deferredTrackPublicationStartedAt = nil
@@ -1195,6 +1309,9 @@ final class MediaRemoteAdapterStreamSource {
         delayNanoseconds: UInt64? = nil
     ) {
         guard deferredTrackPublicationTask == nil else { return }
+        #if DEBUG
+        deferredPublicationIsPassiveForTesting = false
+        #endif
         deferredTrackPublicationGeneration += 1
         deferredMetadataRefreshAttempt += 1
         let generation = deferredTrackPublicationGeneration
@@ -1257,6 +1374,28 @@ final class MediaRemoteAdapterStreamSource {
                 }
             }
 
+            // Exhausting the read budget is not a publication deadline. Keep
+            // listening to the existing stream without issuing another read;
+            // a complete frame cancels this task and publishes immediately.
+            #if DEBUG
+            self.deferredPublicationIsPassiveForTesting = true
+            #endif
+            while let startedAt = self.deferredTrackPublicationStartedAt {
+                let remaining = self.deferredPublicationTimeBudget - Date().timeIntervalSince(startedAt)
+                if remaining <= 0 { break }
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled,
+                      generation == self.deferredTrackPublicationGeneration else { return }
+                // A new incomplete identity has its own existing deadline.
+            }
+            guard !Task.isCancelled,
+                  generation == self.deferredTrackPublicationGeneration,
+                  self.deferredTrackPublicationStartedAt != nil else { return }
+
             let timelinePayload = self.deferredTimelinePayload
             let references = self.deferredTrackReferencePayloads
             let shouldSanitize = self.shouldDeferDeferredTrackPublication(self.mergedPayload)
@@ -1281,7 +1420,7 @@ final class MediaRemoteAdapterStreamSource {
     ) -> Bool {
         guard let startedAt = deferredTrackPublicationStartedAt,
               deferredMetadataRefreshAttempt < 6,
-              Date().timeIntervalSince(startedAt) < 2.4 else {
+              Date().timeIntervalSince(startedAt) < deferredPublicationTimeBudget else {
             return false
         }
         deferredTrackPublicationTask = nil
@@ -1352,6 +1491,39 @@ final class MediaRemoteAdapterStreamSource {
         shouldDefer: Bool,
         observedAt: Date
     ) {
+        if !shouldDefer,
+           let processIdentifier = pidValue(payload["processIdentifier"]),
+           let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty,
+           let artist = stringValue(payload["artist"])?.adapterTrimmedNonEmpty,
+           let duration = doubleValue(payload["duration"]), duration > 0,
+           payloadArtworkData(payload) != nil {
+            let identity = QishuiLyricIdentity(processIdentifier: processIdentifier, title: title, artist: artist)
+            let unchanged = lastCompleteIdentityObservation.map {
+                $0.identity.processIdentifier == identity.processIdentifier
+                    && QishuiTrackCoherencePolicy.matches(
+                        mediaTitle: $0.identity.title, mediaArtist: $0.identity.artist,
+                        directTitle: identity.title, directArtist: identity.artist
+                    )
+            } ?? false
+            if !unchanged { lastCompleteIdentityObservation = (identity, observedAt) }
+        }
+        if let identityObservationHandler,
+           let title = stringValue(payload["title"])?.adapterTrimmedNonEmpty {
+            let artist = stringValue(payload["artist"])?.adapterTrimmedNonEmpty ?? ""
+            let track = MusicUsageTrackFingerprint.make(source: "qishui", title: title, artist: artist)
+            let fingerprint = "\(track):\(shouldDefer)"
+            if fingerprint != lastObservedIdentityFingerprint {
+                lastObservedIdentityFingerprint = fingerprint
+                identityObservationHandler(MusicUsageEvent(name: "media_identity_candidate", fields: [
+                    "source": "qishui", "track": track,
+                    "deferred": shouldDefer ? "1" : "0",
+                    "has_artist": artist.isEmpty ? "0" : "1",
+                    "has_artwork": payloadArtworkData(payload) != nil ? "1" : "0",
+                    "has_duration": doubleValue(payload["duration"]) != nil ? "1" : "0",
+                    "received_epoch_ms": String(Int(observedAt.timeIntervalSince1970 * 1_000))
+                ]))
+            }
+        }
         guard var observation = pendingTrackTransitionObservation,
               let candidateIdentity = payloadTrackIdentity(payload),
               candidateIdentity != observation.baselineIdentity else { return }
@@ -1367,6 +1539,12 @@ final class MediaRemoteAdapterStreamSource {
             0
         )
         var events: [QishuiTrackTransitionStageEvent] = []
+        let trackIdentity = pidValue(payload["processIdentifier"]).flatMap { processIdentifier in
+            stringValue(payload["title"]).map {
+                QishuiLyricIdentity(processIdentifier: processIdentifier, title: $0,
+                                    artist: stringValue(payload["artist"]) ?? "")
+            }
+        }
         if !observation.didObserveFirstCandidate {
             observation.didObserveFirstCandidate = true
             events.append(QishuiTrackTransitionStageEvent(
@@ -1377,10 +1555,12 @@ final class MediaRemoteAdapterStreamSource {
                 hasArtwork: presence.hasArtwork,
                 hasAlbum: presence.hasAlbum,
                 hasDuration: presence.hasDuration,
-                wasDeferred: shouldDefer
+                wasDeferred: shouldDefer,
+                candidateTrackIdentity: trackIdentity
             ))
         }
-        if !shouldDefer, !observation.didObserveAtomicComplete {
+        if !shouldDefer, !observation.didObserveAtomicComplete,
+           presence.hasArtist, presence.hasArtwork, presence.hasDuration {
             observation.didObserveAtomicComplete = true
             events.append(QishuiTrackTransitionStageEvent(
                 transitionID: observation.transitionID,
@@ -1390,7 +1570,8 @@ final class MediaRemoteAdapterStreamSource {
                 hasArtwork: presence.hasArtwork,
                 hasAlbum: presence.hasAlbum,
                 hasDuration: presence.hasDuration,
-                wasDeferred: false
+                wasDeferred: false,
+                candidateTrackIdentity: trackIdentity
             ))
         }
         pendingTrackTransitionObservation = observation
@@ -1401,7 +1582,8 @@ final class MediaRemoteAdapterStreamSource {
 
     func forceDeferredTrackPublicationForTesting(
         receivedAt: Date,
-        receivedUptime: TimeInterval
+        receivedUptime: TimeInterval,
+        schedulesMetadataRefresh: Bool = false
     ) -> MediaRemoteNowPlayingSnapshot? {
         guard deferredTrackPublicationStartedAt != nil else { return latestSnapshot }
         let timelinePayload = deferredTimelinePayload
@@ -1410,10 +1592,12 @@ final class MediaRemoteAdapterStreamSource {
             previousPayloads: deferredTrackReferencePayloads
         )
         clearDeferredTrackPublication()
+        var metadataChangeHandler: ChangeHandler?
+        if schedulesMetadataRefresh { metadataChangeHandler = { } }
         return publishMergedPayload(
             origin: .synchronousRead,
             timelinePayload: timelinePayload,
-            onChange: nil,
+            onChange: metadataChangeHandler,
             receivedAt: receivedAt,
             receivedUptime: receivedUptime,
             allowsMetadataRefresh: false
@@ -1466,7 +1650,8 @@ final class MediaRemoteAdapterStreamSource {
             checkedAt: now,
             sampleID: cachedSnapshot.sampleID,
             sampleOrigin: .cached,
-            sampleSource: .adapterStream
+            sampleSource: .adapterStream,
+            trackIdentityObservedAt: cachedSnapshot.trackIdentityObservedAt
         )
     }
 
@@ -1570,7 +1755,7 @@ final class MediaRemoteAdapterStreamSource {
             album: album,
             duration: duration
         )
-        let elapsed = resolvedElapsedTime(
+        let playback = resolvedPlaybackTimeline(
             from: payload,
             timelinePayload: timelinePayload,
             trackIdentity: timelineIdentity,
@@ -1579,6 +1764,7 @@ final class MediaRemoteAdapterStreamSource {
             receivedAt: receivedAt,
             receivedUptime: receivedUptime
         )
+        let elapsed = playback.elapsed
         let progress: Double
         if let elapsed, let duration, duration > 0 {
             progress = min(max(elapsed / duration, 0), 1)
@@ -1601,7 +1787,7 @@ final class MediaRemoteAdapterStreamSource {
             artist: artist,
             album: album,
             artworkData: artworkData,
-            isPlaying: isPlaying,
+            isPlaying: playback.isPlaying,
             progress: progress,
             elapsedTime: elapsed,
             duration: duration,
@@ -1618,7 +1804,15 @@ final class MediaRemoteAdapterStreamSource {
             checkedAt: checkedAt,
             sampleID: sampleID,
             sampleOrigin: sampleOrigin,
-            sampleSource: .adapterStream
+            sampleSource: .adapterStream,
+            trackIdentityObservedAt: lastCompleteIdentityObservation.flatMap {
+                guard $0.identity.processIdentifier == pid,
+                      QishuiTrackCoherencePolicy.matches(
+                          mediaTitle: $0.identity.title, mediaArtist: $0.identity.artist,
+                          directTitle: title, directArtist: artist
+                      ) else { return nil }
+                return $0.at
+            }
         )
     }
 
@@ -1641,7 +1835,10 @@ final class MediaRemoteAdapterStreamSource {
             return
         }
         lastPlaybackEvidenceAt = receivedAt
+        lastPlaybackEvidenceProcessIdentifier = pidValue(identityPayload["processIdentifier"])
         lastPlaybackEvidenceTrackIdentity = identity
+        lastPlaybackEvidenceIsPlaying = boolValue(identityPayload["playing"])
+            ?? doubleValue(identityPayload["playbackRate"]).map { $0 > 0.01 }
     }
 
     private func requestFreshMetadataIfNeeded(
@@ -1652,7 +1849,16 @@ final class MediaRemoteAdapterStreamSource {
         guard let track else { return false }
         let needsArtist = track.artist == "汽水音乐"
         let needsArtwork = track.artworkData == nil
-        guard needsArtist || needsArtwork else { return false }
+        let needsDuration = !hasValidDuration(track.duration)
+        let recoveryKey = durationRecoveryKey(for: track)
+        if !needsDuration {
+            durationRecoveryRequestedKeys.removeAll { $0 == recoveryKey }
+        }
+        guard needsArtist || needsArtwork || needsDuration else { return false }
+        if !needsArtist, !needsArtwork,
+           durationRecoveryRequestedKeys.contains(recoveryKey) {
+            return false
+        }
         return requestFreshMetadata(for: track, onChange: onChange, force: didChangeTrack)
     }
 
@@ -1676,7 +1882,9 @@ final class MediaRemoteAdapterStreamSource {
         onChange: ChangeHandler?,
         force: Bool = false
     ) -> Bool {
-        guard let onChange, let paths = adapterPaths() else { return false }
+        guard let onChange else { return false }
+        let paths = adapterPaths()
+        guard metadataDataReader != nil || paths != nil else { return false }
         let lookupKey = trackLookupKey(track)
         if artworkFetchInFlight {
             pendingArtworkRequestLookupKey = lookupKey
@@ -1690,6 +1898,15 @@ final class MediaRemoteAdapterStreamSource {
            now.timeIntervalSince(lastArtworkRequestAt) < 0.35 {
             return false
         }
+        if !hasValidDuration(track.duration) {
+            let recoveryKey = durationRecoveryKey(for: track)
+            if !durationRecoveryRequestedKeys.contains(recoveryKey) {
+                durationRecoveryRequestedKeys.append(recoveryKey)
+                if durationRecoveryRequestedKeys.count > 24 {
+                    durationRecoveryRequestedKeys.removeFirst()
+                }
+            }
+        }
         lastArtworkRequestLookupKey = lookupKey
         lastArtworkRequestAt = now
         artworkFetchInFlight = true
@@ -1698,13 +1915,23 @@ final class MediaRemoteAdapterStreamSource {
         let expectedProcessIdentifier = track.sourceProcessIdentifier
             ?? pidValue(mergedPayload["processIdentifier"])
 
+        let dataReader = metadataDataReader
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let payload = Self.runGet(
-                script: paths.script,
-                framework: paths.framework,
-                bundleIdentifier: self?.qishuiBundleIdentifier ?? "com.soda.music",
-                includeArtwork: true
-            )
+            let payload: [String: Any]?
+            if let dataReader {
+                payload = dataReader().flatMap {
+                    (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+                }
+            } else if let paths {
+                payload = Self.runGet(
+                    script: paths.script,
+                    framework: paths.framework,
+                    bundleIdentifier: "com.soda.music",
+                    includeArtwork: true
+                )
+            } else {
+                payload = nil
+            }
             Task { @MainActor in
                 guard let self else { return }
                 self.artworkFetchInFlight = false
@@ -1798,6 +2025,13 @@ final class MediaRemoteAdapterStreamSource {
         ) else {
             return latestSnapshot
         }
+        let responseSnapshot = metadataSnapshot(from: payload, existingArtwork: nil,
+            receivedAt: receivedAt, receivedUptime: receivedUptime)
+        guard let responseTrack = responseSnapshot.currentTrack,
+              let currentTrack = latestSnapshot?.currentTrack,
+              metadataResponse(responseTrack, matches: currentTrack) else {
+            return latestSnapshot
+        }
         mergeMetadata(from: payload)
         let rawSnapshot = metadataSnapshot(
             from: mergedPayload,
@@ -1814,7 +2048,41 @@ final class MediaRemoteAdapterStreamSource {
         metadataRequestGeneration
     }
 
+    private func hasValidDuration(_ duration: TimeInterval?) -> Bool {
+        duration.map { $0.isFinite && $0 > 0 } ?? false
+    }
+
+    private func durationRecoveryKey(for track: MediaRemoteNowPlayingTrack) -> String {
+        // Keep volatile source item IDs out of the per-song read budget.
+        [String(qishuiSessionGeneration), track.sourceProcessIdentifier.map(String.init) ?? "",
+         track.sourceBundleIdentifier ?? "", track.title, track.artist, track.album ?? ""]
+            .joined(separator: "\u{1f}")
+    }
+
+    private func verifiedDurationMetadata(_ payload: [String: Any]) -> Bool {
+        guard stringValue(payload["title"])?.adapterTrimmedNonEmpty
+                == stringValue(mergedPayload["title"])?.adapterTrimmedNonEmpty,
+              let artist = stringValue(mergedPayload["artist"])?.adapterTrimmedNonEmpty,
+              artist != "汽水音乐",
+              artist == stringValue(payload["artist"])?.adapterTrimmedNonEmpty else {
+            return false
+        }
+        let currentItem = stringValue(mergedPayload["contentItemIdentifier"])?.adapterTrimmedNonEmpty
+        let responseItem = stringValue(payload["contentItemIdentifier"])?.adapterTrimmedNonEmpty
+        if let currentItem, let responseItem { return currentItem == responseItem }
+        guard let album = stringValue(mergedPayload["album"])?.adapterTrimmedNonEmpty else {
+            return false
+        }
+        return album == stringValue(payload["album"])?.adapterTrimmedNonEmpty
+    }
+
     private func mergeMetadata(from payload: [String: Any]) {
+        // Supplemental replies enrich metadata only, never the live timeline.
+        if !hasValidDuration(doubleValue(mergedPayload["duration"])),
+           let duration = doubleValue(payload["duration"]), hasValidDuration(duration),
+           verifiedDurationMetadata(payload) {
+            mergedPayload["duration"] = duration
+        }
         for key in ["artist", "album", "artworkData"] {
             guard let value = payload[key] else { continue }
             if value is NSNull {
@@ -1859,7 +2127,7 @@ final class MediaRemoteAdapterStreamSource {
               let track = latestSnapshot?.currentTrack else {
             return
         }
-        _ = requestFreshMetadata(for: track, onChange: onChange, force: true)
+        _ = requestFreshMetadataIfNeeded(for: track, didChangeTrack: true, onChange: onChange)
     }
 
     nonisolated private static func runGet(
@@ -2010,7 +2278,7 @@ final class MediaRemoteAdapterStreamSource {
         )
     }
 
-    private func resolvedElapsedTime(
+    private func resolvedPlaybackTimeline(
         from payload: [String: Any],
         timelinePayload: [String: Any]?,
         trackIdentity: MediaRemoteTrackTimelineIdentity,
@@ -2018,19 +2286,43 @@ final class MediaRemoteAdapterStreamSource {
         duration: TimeInterval?,
         receivedAt: Date,
         receivedUptime: TimeInterval
-    ) -> TimeInterval? {
+    ) -> (elapsed: TimeInterval?, isPlaying: Bool?) {
         let identity = playbackTimelineIdentity(from: payload, fallback: trackIdentity)
+        func matchingAnchor() -> PlaybackControlTimeline.AuthoritativeAnchor? {
+            guard let anchor = playbackPositionAnchor,
+                  anchor.trackIdentity == identity || playbackPositionTrackIdentity.map({
+                      timelineIdentity($0, matches: trackIdentity)
+                  }) == true else { return nil }
+            return anchor
+        }
+        var freshPausedAnchor: PlaybackControlTimeline.AuthoritativeAnchor?
         if let timelinePayload {
             let sourceTimestamp = stringValue(timelinePayload["timestamp"])
                 .flatMap { ISO8601DateFormatter().date(from: $0) }
+            // A state-only event must freeze or resume the current position;
+            // metadata-only patches must not manufacture a new event anchor.
+            let hasExplicitState = boolValue(timelinePayload["playing"]) != nil
+                || doubleValue(timelinePayload["playbackRate"]) != nil
+            let candidateState = hasExplicitState
+                ? boolValue(timelinePayload["playing"])
+                    ?? doubleValue(timelinePayload["playbackRate"]).map { $0 > 0.01 }
+                : matchingAnchor()?.isPlaying ?? isPlaying
+            let candidateRate = doubleValue(timelinePayload["playbackRate"])
+                ?? (hasExplicitState ? candidateState.map { $0 ? 1.0 : 0.0 }
+                    : matchingAnchor()?.playbackRate ?? doubleValue(payload["playbackRate"]))
+            let stateOnlyElapsed: TimeInterval? = hasExplicitState
+                && doubleValue(timelinePayload["elapsedTime"]) == nil
+                && doubleValue(timelinePayload["elapsedTimeNow"]) == nil
+                ? matchingAnchor().flatMap {
+                    PlaybackControlTimeline.elapsed(from: $0, nowUptime: receivedUptime)
+                } : nil
             if let candidate = PlaybackControlTimeline.authoritativeAnchor(
                 trackIdentity: identity,
                 elapsedTime: doubleValue(timelinePayload["elapsedTime"]),
-                elapsedTimeNow: doubleValue(timelinePayload["elapsedTimeNow"]),
+                elapsedTimeNow: doubleValue(timelinePayload["elapsedTimeNow"]) ?? stateOnlyElapsed,
                 sourceTimestamp: sourceTimestamp,
-                playbackRate: doubleValue(timelinePayload["playbackRate"])
-                    ?? doubleValue(payload["playbackRate"]),
-                isPlaying: isPlaying,
+                playbackRate: candidateRate,
+                isPlaying: candidateState,
                 duration: duration,
                 receivedAt: receivedAt,
                 receivedUptime: receivedUptime
@@ -2040,11 +2332,15 @@ final class MediaRemoteAdapterStreamSource {
                     over: playbackPositionAnchor
                 )
                 playbackPositionAnchor = acceptedAnchor
+                if acceptedAnchor == candidate, !candidate.isPlaying {
+                    freshPausedAnchor = candidate
+                }
                 if acceptedAnchor.trackIdentity == candidate.trackIdentity {
                     playbackPositionTrackIdentity = trackIdentity
                 }
             }
         }
+        let resolvedIsPlaying = matchingAnchor()?.isPlaying ?? isPlaying
         let rawElapsed = playbackPositionAnchor.flatMap { anchor -> TimeInterval? in
             let structuredIdentityMatches = playbackPositionTrackIdentity.map {
                 timelineIdentity($0, matches: trackIdentity)
@@ -2059,19 +2355,33 @@ final class MediaRemoteAdapterStreamSource {
         } ?? doubleValue(payload["elapsedTimeNow"])
             ?? currentElapsedTime(from: payload)
             ?? doubleValue(payload["elapsedTime"])
-        guard var anchor = seekTimelineAnchor else { return rawElapsed }
+        guard var anchor = seekTimelineAnchor else { return (rawElapsed, resolvedIsPlaying) }
         guard timelineIdentity(anchor.trackIdentity, matches: trackIdentity) else {
             clearSeekTimelineAnchor()
-            return rawElapsed
+            return (rawElapsed, resolvedIsPlaying)
         }
 
-        let now = Date()
+        let now = receivedAt
+        guard now < anchor.confirmationDeadline else {
+            clearSeekTimelineAnchor()
+            return (rawElapsed, resolvedIsPlaying)
+        }
+        if let paused = freshPausedAnchor,
+           paused.sourceTimestamp >= anchor.issuedAt,
+           paused.elapsedAtAnchor >= anchor.targetElapsedTime - 1,
+           paused.elapsedAtAnchor <= anchor.targetElapsedTime + max(now.timeIntervalSince(anchor.issuedAt), 0) + 1 {
+            // A matching, accepted post-seek pause owns the exact position.
+            // Do not freeze the old playing projection for another 0.8s or
+            // indefinitely when the source omits its wall-clock timestamp.
+            clearSeekTimelineAnchor()
+            return (rawElapsed, resolvedIsPlaying)
+        }
         if anchor.isPlaying {
             anchor.elapsedTime += max(now.timeIntervalSince(anchor.updatedAt), 0)
         }
         anchor.updatedAt = now
-        if let isPlaying {
-            anchor.isPlaying = isPlaying
+        if let resolvedIsPlaying {
+            anchor.isPlaying = resolvedIsPlaying
         }
         let elapsed = anchor.elapsedTime
         let rawBaseElapsed = doubleValue(payload["elapsedTime"])
@@ -2088,16 +2398,11 @@ final class MediaRemoteAdapterStreamSource {
            abs(rawElapsed - elapsed) <= 1.0 {
             anchor.didObserveTarget = true
         }
-        guard anchor.didObserveTarget || now < anchor.confirmationDeadline else {
-            clearSeekTimelineAnchor()
-            return rawElapsed
-        }
-
         if hasFreshTimestamp, let rawElapsed, abs(rawElapsed - elapsed) <= 1.0 {
             if let coherentSince = anchor.coherentSince,
                now.timeIntervalSince(coherentSince) >= 0.8 {
                 clearSeekTimelineAnchor()
-                return rawElapsed
+                return (rawElapsed, resolvedIsPlaying)
             }
             anchor.coherentSince = anchor.coherentSince ?? now
         } else {
@@ -2105,9 +2410,9 @@ final class MediaRemoteAdapterStreamSource {
         }
         seekTimelineAnchor = anchor
         if let duration, duration > 0 {
-            return min(max(elapsed, 0), duration)
+            return (min(max(elapsed, 0), duration), resolvedIsPlaying)
         }
-        return max(elapsed, 0)
+        return (max(elapsed, 0), resolvedIsPlaying)
     }
 
     private func playbackTimelineIdentity(
@@ -2146,7 +2451,6 @@ final class MediaRemoteAdapterStreamSource {
             guard !Task.isCancelled, let self,
                   let anchor = self.seekTimelineAnchor,
                   anchor.issuedAt == anchorIssuedAt,
-                  !anchor.didObserveTarget,
                   Date() >= anchor.confirmationDeadline else {
                 return
             }

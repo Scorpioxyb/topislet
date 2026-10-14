@@ -1,4 +1,5 @@
 import Foundation
+import MusicUsageDiagnostics
 import Testing
 @testable import MacBookIsland
 
@@ -911,7 +912,8 @@ func trackTransitionStagesExposePresenceWithoutMetadata() throws {
             hasArtwork: false,
             hasAlbum: true,
             hasDuration: true,
-            wasDeferred: true
+            wasDeferred: true,
+            candidateTrackIdentity: .init(processIdentifier: 123, title: "Private Song B", artist: "Private Artist A")
         ),
         QishuiTrackTransitionStageEvent(
             transitionID: "q7",
@@ -921,9 +923,94 @@ func trackTransitionStagesExposePresenceWithoutMetadata() throws {
             hasArtwork: true,
             hasAlbum: true,
             hasDuration: true,
-            wasDeferred: false
+            wasDeferred: false,
+            candidateTrackIdentity: .init(processIdentifier: 123, title: "Private Song B", artist: "Private Artist B")
         )
     ])
+}
+
+@Test("无需顶屿按键也记录被动候选，去重且不泄露元数据")
+@MainActor
+func passiveIdentityObservationIsAnonymousAndDeduplicated() throws {
+    let source = makeStreamSource()
+    let at = Date(timeIntervalSince1970: 2_200)
+    let payload = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music", "title": "Private Song",
+        "artist": "Private Artist", "album": "Private Album",
+        "duration": 180.0, "playing": 1,
+        "artworkData": Data([1]).base64EncodedString()
+    ])
+    var events: [MusicUsageEvent] = []
+    source.setIdentityObservationHandler { events.append($0) }
+    for offset in [0.0, 0.1] {
+        _ = source.ingestStreamEnvelopeForTesting(
+            payload, receivedAt: at.addingTimeInterval(offset), receivedUptime: 220 + offset
+        )
+    }
+    #expect(events.count == 1)
+    #expect(events.first?.fields["received_epoch_ms"] == "2200000")
+    #expect(events.first?.fields["track"] == MusicUsageTrackFingerprint.make(
+        source: "qishui", title: "Private Song", artist: "Private Artist"
+    ))
+    #expect(events.allSatisfy { !$0.encodedMessage.contains("Private") })
+    source.setIdentityObservationHandler(nil)
+    _ = source.ingestStreamEnvelopeForTesting(
+        try streamEnvelope(["title": "Another Private Song", "artist": "Private Artist"]),
+        receivedAt: at.addingTimeInterval(0.2), receivedUptime: 220.2
+    )
+    #expect(events.count == 1)
+}
+
+@Test("完整身份时间不随进度采样刷新，进程失效清空")
+@MainActor
+func completeIdentityTimestampDoesNotAdvanceWithTimelineReads() throws {
+    let source = makeStreamSource()
+    let at = Date(timeIntervalSince1970: 2_200)
+    let payload = try streamEnvelope([
+        "bundleIdentifier": "com.soda.music", "title": "Song", "artist": "Artist",
+        "duration": 180.0, "playing": 1, "artworkData": Data([1]).base64EncodedString()
+    ])
+    let first = source.ingestStreamEnvelopeForTesting(payload, receivedAt: at, receivedUptime: 220)
+    #expect(first?.trackIdentityObservedAt == at)
+    let next = source.ingestStreamEnvelopeForTesting(
+        try streamEnvelope(["elapsedTime": 3.0], diff: true),
+        receivedAt: at.addingTimeInterval(1), receivedUptime: 221
+    )
+    #expect(next?.trackIdentityObservedAt == at)
+    #expect(source.snapshot()?.trackIdentityObservedAt == at)
+    source.invalidateQishuiSession(retireProcessIdentifier: false)
+    let restarted = source.ingestStreamEnvelopeForTesting(
+        payload, receivedAt: at.addingTimeInterval(2), receivedUptime: 222
+    )
+    #expect(restarted?.trackIdentityObservedAt == at.addingTimeInterval(2))
+}
+
+@Test("超时占位不完成切歌计时，真实完整目标才完成")
+@MainActor
+func transitionPlaceholderCannotCompleteDeliveryObservation() throws {
+    let source = makeStreamSource()
+    let at = Date(timeIntervalSince1970: 2_200)
+    var stages: [QishuiTrackTransitionStageEvent] = []
+    source.setTrackTransitionStageHandler { stages.append($0) }
+    _ = source.ingestStreamEnvelopeForTesting(
+        try streamEnvelope(trackPayload(identifier: "a", title: "A", artist: "Artist A", album: "Album A",
+                                        duration: 180, artwork: Data([1]))), receivedAt: at, receivedUptime: 220
+    )
+    source.beginTrackTransitionObservation(transitionID: "q1", startedAt: at)
+    _ = source.ingestStreamEnvelopeForTesting(
+        try streamEnvelope(["title": "B", "contentItemIdentifier": "b"], diff: true),
+        receivedAt: at.addingTimeInterval(0.1), receivedUptime: 220.1
+    )
+    _ = source.forceDeferredTrackPublicationForTesting(receivedAt: at.addingTimeInterval(3), receivedUptime: 223)
+    #expect(!stages.contains { $0.stage == .atomicComplete })
+    _ = source.ingestStreamEnvelopeForTesting(
+        try streamEnvelope(trackPayload(identifier: "b", title: "B", artist: "Artist B", album: "Album B",
+                                        duration: 210, artwork: Data([2]))),
+        receivedAt: at.addingTimeInterval(4), receivedUptime: 224
+    )
+    let complete = stages.filter { $0.stage == .atomicComplete }
+    #expect(complete.count == 1)
+    #expect(complete.first?.candidateTrackIdentity?.artist == "Artist B")
 }
 
 @Test("十次连续切歌始终原子提交完整元数据")
@@ -1259,6 +1346,135 @@ func emptyTransitionPayloadRetainsCommittedTrack() throws {
     #expect(afterNextText == committed)
     #expect(source.snapshot() == committed)
     #expect(afterNextText.currentTrack?.artworkData == initialArtwork)
+}
+
+@Test("空状态流在既有期限内结束等待，重复空包不续期或启动补读")
+@MainActor
+func repeatedEmptyStreamHasBoundedPublicationWait() async throws {
+    let reader = DeferredMetadataReaderProbe(responses: [], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0
+    )
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let startedAt = Date().addingTimeInterval(-2.2)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial),
+        receivedAt: startedAt.addingTimeInterval(-0.1), receivedUptime: 100)
+    let held = source.ingestStreamEnvelopeForTesting(try streamEnvelope([:]),
+        receivedAt: startedAt, receivedUptime: 100.1, schedulesDeferredRefresh: true)
+    #expect(held?.currentTrack?.title == "Song A")
+    #expect(!source.hasFreshVerifiedPlaybackEvidence(maxAge: 5))
+    #expect(source.deferredPublicationTaskForTesting() != nil)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope([:]),
+        receivedAt: Date(), receivedUptime: 102.3, schedulesDeferredRefresh: true)
+    #expect(source.deferredPublicationTaskForTesting() != nil)
+    #expect(await waitUntil(timeout: 1) {
+        source.snapshot()?.sampleOrigin == .cached
+            && source.deferredPublicationTaskForTesting() == nil
+    })
+    #expect(reader.readCount == 0)
+    source.invalidateQishuiSession()
+}
+
+@Test("空包到期后仍保留原子切歌基准，不能先发布缺封面的新歌")
+@MainActor
+func expiredEmptyStreamPreservesAtomicTrackBaseline() async throws {
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let complete = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist B",
+        album: "Album B", duration: 200, artwork: Data([0x62]))
+    var candidate = complete
+    candidate.removeValue(forKey: "artworkData")
+    let reader = DeferredMetadataReaderProbe(
+        responses: [try JSONSerialization.data(withJSONObject: complete)], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0
+    )
+    let startedAt = Date().addingTimeInterval(-2.2)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial),
+        receivedAt: startedAt.addingTimeInterval(-0.1), receivedUptime: 100)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope([:]),
+        receivedAt: startedAt, receivedUptime: 100.1, schedulesDeferredRefresh: true)
+    try #require(await waitUntil(timeout: 1) {
+        source.snapshot()?.sampleOrigin == .cached
+            && source.deferredPublicationTaskForTesting() == nil
+    })
+    let staged = source.ingestStreamEnvelopeForTesting(try streamEnvelope(candidate),
+        receivedAt: Date(), receivedUptime: 102.4, schedulesDeferredRefresh: true)
+    #expect(staged?.currentTrack?.title == "Song A")
+    #expect(staged?.currentTrack?.artworkData == Data([0x61]))
+    #expect(await waitUntil(timeout: 1) {
+        source.snapshot()?.currentTrack?.title == "Song B"
+            && source.snapshot()?.currentTrack?.artworkData == Data([0x62])
+    })
+    #expect(reader.readCount == 1)
+    source.invalidateQishuiSession()
+}
+
+@Test("空包后的新候选立即获得原有补读，不等空包旧期限")
+@MainActor
+func incompleteTrackInterruptsEmptyStreamWait() async throws {
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let complete = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist B",
+        album: "Album B", duration: 200, artwork: Data([0x62]))
+    var candidate = complete
+    candidate.removeValue(forKey: "artworkData")
+    let reader = DeferredMetadataReaderProbe(
+        responses: [try JSONSerialization.data(withJSONObject: complete)], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0
+    )
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial),
+        receivedAt: Date(), receivedUptime: 100)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope([:]),
+        receivedAt: Date(), receivedUptime: 100.1, schedulesDeferredRefresh: true)
+    try #require(await waitUntil(timeout: 1) {
+        source.deferredPublicationIsPassiveForTesting
+    })
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(candidate),
+        receivedAt: Date(), receivedUptime: 100.2, schedulesDeferredRefresh: true)
+    #expect(await waitUntil(timeout: 1) {
+        source.snapshot()?.currentTrack?.title == "Song B"
+            && source.snapshot()?.currentTrack?.artworkData == Data([0x62])
+    })
+    #expect(reader.readCount == 1)
+    source.invalidateQishuiSession()
+}
+
+@Test("空数据等待在同PID完整新曲到达时立即取消，不回写旧缓存")
+@MainActor
+func completeTrackCancelsEmptyStreamWait() async throws {
+    let reader = DeferredMetadataReaderProbe(responses: [], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0
+    )
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let complete = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist B",
+        album: "Album B", duration: 200, artwork: Data([0x62]))
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial),
+        receivedAt: Date(), receivedUptime: 100)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope([:]),
+        receivedAt: Date(), receivedUptime: 100.1, schedulesDeferredRefresh: true)
+    let waiting = source.deferredPublicationTaskForTesting()
+    #expect(waiting != nil)
+    let published = source.ingestStreamEnvelopeForTesting(try streamEnvelope(complete),
+        receivedAt: Date(), receivedUptime: 100.2)
+    await waiting?.value
+    #expect(published?.currentTrack?.title == "Song B")
+    #expect(source.snapshot()?.currentTrack?.artworkData == Data([0x62]))
+    #expect(source.deferredPublicationTaskForTesting() == nil)
+    #expect(reader.readCount == 0)
+    source.invalidateQishuiSession()
 }
 
 @Test("切歌超时降级不能沿用上一首歌手专辑时长或封面")
@@ -1676,9 +1892,77 @@ func deferredMetadataReadHasBoundedRetryCount() async throws {
     #expect(await waitUntil(timeout: 1) { reader.readCount == 6 })
     try? await Task.sleep(nanoseconds: 30_000_000)
     #expect(reader.readCount == 6)
+    #expect(source.snapshot()?.currentTrack?.title == "Song A")
+    #expect(source.snapshot()?.currentTrack?.artist == "Artist A")
+    #expect(source.snapshot()?.currentTrack?.artworkData == Data([0x61]))
+    #expect(await waitUntil(timeout: 3) {
+        source.snapshot()?.currentTrack?.title == "Song B"
+    })
+    #expect(Date().timeIntervalSince(startedAt) >= 2.4)
+    #expect(reader.readCount == 6)
     #expect(source.snapshot()?.currentTrack?.title == "Song B")
     #expect(source.snapshot()?.currentTrack?.artist != "Artist A")
     #expect(source.snapshot()?.currentTrack?.artworkData == nil)
+}
+
+@Test("补读次数耗尽后完整状态流仍可直接结束等待，不再发布占位")
+@MainActor
+func completeStreamWinsAfterDeferredReadsExhausted() async throws {
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let transitional = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let complete = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist B",
+        album: "Album B", duration: 200, artwork: Data([0x62]))
+    let reader = DeferredMetadataReaderProbe(
+        responses: [try JSONSerialization.data(withJSONObject: initial)], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0, deferredRetryRefreshDelayNanoseconds: 0)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial), receivedAt: Date(),
+        receivedUptime: ProcessInfo.processInfo.systemUptime)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(transitional), receivedAt: Date(),
+        receivedUptime: ProcessInfo.processInfo.systemUptime, schedulesDeferredRefresh: true)
+    try #require(await waitUntil(timeout: 1) { reader.readCount == 6 })
+    try await Task.sleep(nanoseconds: 30_000_000)
+    #expect(source.snapshot()?.currentTrack?.title == "Song A")
+    let waitingTask = source.deferredPublicationTaskForTesting()
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(complete), receivedAt: Date(),
+        receivedUptime: ProcessInfo.processInfo.systemUptime)
+    await waitingTask?.value
+    #expect(source.snapshot()?.currentTrack?.title == "Song B")
+    #expect(source.snapshot()?.currentTrack?.artist == "Artist B")
+    #expect(source.snapshot()?.currentTrack?.duration == 200)
+    #expect(source.snapshot()?.currentTrack?.artworkData == Data([0x62]))
+    #expect(source.deferredPublicationTaskForTesting() == nil)
+    #expect(reader.readCount == 6)
+}
+
+@Test("耗尽补读后的等待在来源失效时取消，不回写旧候选")
+@MainActor
+func sessionInvalidationCancelsExhaustedDeferredWait() async throws {
+    let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let transitional = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist A",
+        album: "Album A", duration: 180, artwork: Data([0x61]))
+    let reader = DeferredMetadataReaderProbe(
+        responses: [try JSONSerialization.data(withJSONObject: initial)], delay: 0)
+    let source = MediaRemoteAdapterStreamSource(
+        runningQishuiProcessIdentifiersProvider: { [123] },
+        deferredMetadataDataReader: { reader.read() },
+        deferredInitialRefreshDelayNanoseconds: 0, deferredRetryRefreshDelayNanoseconds: 0)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(initial), receivedAt: Date(),
+        receivedUptime: ProcessInfo.processInfo.systemUptime)
+    _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(transitional), receivedAt: Date(),
+        receivedUptime: ProcessInfo.processInfo.systemUptime, schedulesDeferredRefresh: true)
+    try #require(await waitUntil(timeout: 1) { reader.readCount == 6 })
+    let waitingTask = source.deferredPublicationTaskForTesting()
+    source.invalidateQishuiSession()
+    await waitingTask?.value
+    #expect(source.snapshot()?.currentTrack == nil)
+    #expect(source.deferredPublicationTaskForTesting() == nil)
+    #expect(reader.readCount == 6)
 }
 
 @Test("带封面的适配器读取挂起时会在硬超时内终止")
@@ -1815,6 +2099,53 @@ private final class DeferredMetadataReaderProbe: @unchecked Sendable {
         Thread.sleep(forTimeInterval: delay)
         return response
     }
+}
+
+@Test("跳转观察到目标后仍须在五秒内交还源时间轴，不能永久保留预测位置")
+@MainActor
+func observedSeekAnchorStillHasHardDeadline() throws {
+    let source = makeStreamSource()
+    let now = Date()
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","processIdentifier":123,"contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTime":60,"elapsedTimeNow":60}}"#.utf8)
+    _ = source.ingestStreamEnvelopeForTesting(initial, receivedAt: now.addingTimeInterval(-2), receivedUptime: 98)
+    source.seedSeekTimelineForTesting(target: 14, issuedAt: now)
+    // The raw base proves that the target was reached, but a timestamp-free
+    // patch never satisfies the old coherence rule that releases the anchor.
+    let target = Data(#"{"type":"data","diff":true,"payload":{"elapsedTime":14,"elapsedTimeNow":14,"playing":1,"playbackRate":1}}"#.utf8)
+    _ = source.ingestStreamEnvelopeForTesting(target, receivedAt: now, receivedUptime: 100)
+    #expect(source.hasPendingSeekTimeline(at: now.addingTimeInterval(0.1)))
+    #expect(!source.hasPendingSeekTimeline(at: now.addingTimeInterval(5.1)))
+}
+
+@Test("同曲新鲜暂停位置能立即结束跳转预测，不能继续沿用旧播放锚点")
+@MainActor
+func freshPausedPositionSupersedesSeekPrediction() throws {
+    let source = makeStreamSource()
+    let now = Date()
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","processIdentifier":123,"contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTime":60,"elapsedTimeNow":60}}"#.utf8)
+    _ = source.ingestStreamEnvelopeForTesting(initial, receivedAt: now.addingTimeInterval(-2), receivedUptime: 98)
+    source.seedSeekTimelineForTesting(target: 14, issuedAt: now.addingTimeInterval(-1.2))
+    let pause = Data(#"{"type":"data","diff":true,"payload":{"elapsedTime":14.227428,"elapsedTimeNow":14.227428,"playing":0,"playbackRate":0}}"#.utf8)
+    let snapshot = try #require(source.ingestStreamEnvelopeForTesting(
+        pause, receivedAt: now, receivedUptime: 100))
+    #expect(abs((snapshot.currentTrack?.elapsedTime ?? -1) - 14.227428) < 0.0001)
+    #expect(snapshot.currentTrack?.isPlaying == false)
+    #expect(!source.hasPendingSeekTimeline(at: now))
+}
+
+@Test("仍停在跳转前位置的暂停包不能提前撤销新跳转预测")
+@MainActor
+func preSeekPausedPositionDoesNotReleaseNewSeekAnchor() throws {
+    let source = makeStreamSource()
+    let now = Date()
+    let initial = Data(#"{"type":"data","diff":false,"payload":{"bundleIdentifier":"com.soda.music","processIdentifier":123,"contentItemIdentifier":"song-a","title":"Song A","artist":"Artist A","duration":180,"playing":1,"elapsedTimeNow":60}}"#.utf8)
+    _ = source.ingestStreamEnvelopeForTesting(initial, receivedAt: now.addingTimeInterval(-2), receivedUptime: 98)
+    source.seedSeekTimelineForTesting(target: 14, issuedAt: now.addingTimeInterval(-0.2))
+    let oldPause = Data(#"{"type":"data","diff":true,"payload":{"elapsedTime":60,"elapsedTimeNow":60,"playing":0,"playbackRate":0}}"#.utf8)
+    let snapshot = try #require(source.ingestStreamEnvelopeForTesting(
+        oldPause, receivedAt: now, receivedUptime: 100))
+    #expect(source.hasPendingSeekTimeline(at: now))
+    #expect((snapshot.currentTrack?.elapsedTime ?? 60) < 15)
 }
 
 @MainActor

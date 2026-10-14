@@ -107,6 +107,11 @@ enum QishuiTimedLyricParser {
                 let start = (lineStart + offset) / 1000
                 return QishuiTimedWord(text: text, start: start, end: start + duration / 1000)
             }
+            if words.isEmpty, MusicLyricPresentation.isSourceCredit(body),
+               let duration = Double(ns.substring(with: header.range(at: 2))) {
+                let start = lineStart / 1000
+                return QishuiTimedLine(text: body, words: [.init(text: body, start: start, end: start + duration / 1000)])
+            }
             guard !words.isEmpty else { return nil }
             return QishuiTimedLine(text: words.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines), words: words)
         }
@@ -119,6 +124,7 @@ enum QishuiTimedLyricParser {
         trackDuration: TimeInterval? = nil
     ) -> [QishuiTimedWord] {
         let key = normalized(currentLine)
+        guard !MusicLyricPresentation.isSourceCredit(currentLine) else { return [] }
         guard !key.isEmpty else { return [] }
         if let position,
            let active = activeLine(at: position, in: lines, trackDuration: trackDuration) {
@@ -157,13 +163,22 @@ enum QishuiTimedLyricParser {
 /// Optional network supplement. Search sends only the current title and artist
 /// to the lyric provider. Both search and detail must agree with MediaRemote.
 struct QishuiTimedLyricSource {
+    enum ReadStage: String, Sendable { case search, detail }
+    struct ReadMeasurement: Sendable {
+        let stage: ReadStage
+        let latencyMilliseconds: Int
+        let receivedData: Bool
+    }
     private let readData: @Sendable (URL) async -> Data?
 
     init(readData: (@Sendable (URL) async -> Data?)? = nil) {
         self.readData = readData ?? { await Self.read($0) }
     }
 
-    func fetch(title: String, artist: String, duration: TimeInterval) async -> [QishuiTimedLine] {
+    func fetch(
+        title: String, artist: String, duration: TimeInterval,
+        onRead: (@Sendable (ReadMeasurement) async -> Void)? = nil
+    ) async -> [QishuiTimedLine] {
         guard !title.isEmpty, !artist.isEmpty, duration.isFinite, duration > 0 else { return [] }
         var search = URLComponents(string: "https://api-vehicle.volcengine.com/v2/search/type")!
         search.queryItems = [
@@ -176,7 +191,7 @@ struct QishuiTimedLyricSource {
         ]
         guard !Task.isCancelled,
               let searchURL = search.url,
-              let data = await readData(searchURL),
+              let data = await measuredRead(searchURL, stage: .search, onRead: onRead),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let body = json["data"] as? [String: Any],
               let candidates = body["list"] as? [[String: Any]] else { return [] }
@@ -200,7 +215,7 @@ struct QishuiTimedLyricSource {
               let trackID = best["item_id"] as? String,
               trackID.range(of: #"^\d{10,22}$"#, options: .regularExpression) != nil,
               let detailURL = URL(string: "https://beta-luna.douyin.com/luna/h5/seo_track?track_id=\(trackID)&device_platform=web"),
-              let detailData = await readData(detailURL),
+              let detailData = await measuredRead(detailURL, stage: .detail, onRead: onRead),
               let detail = (try? JSONSerialization.jsonObject(with: detailData)) as? [String: Any],
               let seo = detail["seo_track"] as? [String: Any],
               let verifiedTrack = seo["track"] as? [String: Any],
@@ -214,6 +229,19 @@ struct QishuiTimedLyricSource {
               let content = lyric["content"] as? String else { return [] }
         guard !Task.isCancelled else { return [] }
         return QishuiTimedLyricParser.parse(content)
+    }
+
+    private func measuredRead(
+        _ url: URL, stage: ReadStage,
+        onRead: (@Sendable (ReadMeasurement) async -> Void)?
+    ) async -> Data? {
+        let started = ProcessInfo.processInfo.systemUptime
+        let data = await readData(url)
+        let milliseconds = max(0, Int((ProcessInfo.processInfo.systemUptime - started) * 1_000))
+        if !Task.isCancelled {
+            await onRead?(.init(stage: stage, latencyMilliseconds: milliseconds, receivedData: data != nil))
+        }
+        return data
     }
 
     private static func read(_ url: URL) async -> Data? {

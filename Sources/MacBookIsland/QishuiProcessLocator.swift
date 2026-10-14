@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import OSLog
 
 enum QishuiProcessSelectionPolicy {
     static func preferredProcessIdentifier(
@@ -22,11 +23,37 @@ enum QishuiProcessSelectionPolicy {
 
 enum QishuiProcessLocator {
     static let bundleIdentifier = "com.soda.music"
+    private static let usageLogger = Logger(subsystem: "io.github.scorpioxyb.topislet", category: "MusicUsage")
+
+    // Keep the OS boundary injectable without manufacturing NSRunningApplication
+    // instances in tests. Both providers must supply current, not cached, objects.
+    static func resolveApplications<Application>(
+        bundleApplications: [Application],
+        workspaceApplications: () -> [Application],
+        isEligible: (Application) -> Bool
+    ) -> [Application] {
+        let eligible = bundleApplications.filter(isEligible)
+        guard eligible.isEmpty else { return eligible }
+        // An empty result from one AppKit enumeration is negative evidence,
+        // not sufficient to invalidate a live source without corroboration.
+        return workspaceApplications().filter(isEligible)
+    }
 
     static func runningApplications() -> [NSRunningApplication] {
-        NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleIdentifier)
-            .filter { !$0.isTerminated }
+        resolveApplications(
+            bundleApplications: NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier),
+            workspaceApplications: {
+                let applications = NSWorkspace.shared.runningApplications
+                let count = applications.filter {
+                    !$0.isTerminated && $0.bundleIdentifier == bundleIdentifier
+                }.count
+                if count > 0 {
+                    usageLogger.info("topislet_usage v=1 event=process_inventory_fallback source=qishui valid_count=\(count, privacy: .public)")
+                }
+                return applications
+            },
+            isEligible: { !$0.isTerminated && $0.bundleIdentifier == bundleIdentifier }
+        )
     }
 
     static func application(
@@ -41,8 +68,18 @@ enum QishuiProcessLocator {
            application.bundleIdentifier == bundleIdentifier {
             return application
         }
+        // AppKit's per-PID lookup can briefly miss an application that is
+        // still present in the bundle-scoped inventory. Retain the exact PID
+        // requirement; never substitute another instance for a bound control.
+        let inventory = runningApplications()
+        if let preferredProcessIdentifier,
+           let matchingApplication = inventory.first(where: {
+               $0.processIdentifier == preferredProcessIdentifier
+           }) {
+            return matchingApplication
+        }
         if requirePreferredProcessIdentifier { return nil }
-        return runningApplications().first
+        return inventory.first
     }
 
     static func isRunning(processIdentifier: pid_t? = nil) -> Bool {

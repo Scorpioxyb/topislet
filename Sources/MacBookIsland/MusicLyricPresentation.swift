@@ -187,6 +187,9 @@ enum MarqueeTextLayoutPolicy {
 
 /// Presentation of supplied lyric lines only. This does not infer timing or loop a song.
 enum MusicLyricPresentation {
+    static func isSourceCredit(_ line: String) -> Bool {
+        line.range(of: #"^(作词|作曲|词|曲)\s*[:：·]"#, options: .regularExpression) != nil
+    }
     static func emptyStateText(lines: [String], lyricsEnabled: Bool) -> String {
         // Missing lyrics are not evidence that a track is instrumental.
         // Playback stays the main experience; technical status belongs in diagnostics.
@@ -232,7 +235,7 @@ enum MusicLyricPresentation {
             .filter { line in
                 !line.isEmpty && !unavailableLines.contains(line)
                     && !diagnosticTokens.contains { line.localizedCaseInsensitiveContains($0) }
-                    && line.range(of: metadataLinePattern, options: .regularExpression) == nil
+                    && (isSourceCredit(line) || line.range(of: metadataLinePattern, options: .regularExpression) == nil)
             }
     }
 
@@ -357,7 +360,7 @@ enum MusicLyricPresentation {
     }
 
     private static func isTranslationPair(_ lhs: String, _ rhs: String) -> Bool {
-        containsCJK(lhs) != containsCJK(rhs)
+        !isSourceCredit(lhs) && !isSourceCredit(rhs) && containsCJK(lhs) != containsCJK(rhs)
     }
 
     private static func containsCJK(_ value: String) -> Bool {

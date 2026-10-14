@@ -44,6 +44,7 @@ enum QishuiControlAvailability: String, Equatable, Sendable {
 struct QishuiSemanticAXControlResult: Sendable {
     let didPress: Bool
     let diagnostic: String
+    var dispatchPath: String? = nil
 }
 
 final class QishuiSemanticAXController: @unchecked Sendable {
@@ -157,12 +158,13 @@ final class QishuiSemanticAXController: @unchecked Sendable {
         }
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
-           Self.isEligibleHealthCandidate(candidateFacts(for: cachedControls)) {
+           canReuseCachedControls(cachedControls) {
             let cachedResult = performPress(cachedControls.element(for: command))
             if cachedResult == .success {
                 return QishuiSemanticAXControlResult(
                     didPress: true,
-                    diagnostic: "已通过汽水音乐语义化播放控件执行\(command.label)。"
+                    diagnostic: "已通过汽水音乐语义化播放控件执行\(command.label)。",
+                    dispatchPath: "cached_verified"
                 )
             }
             self.cachedControls = nil
@@ -200,7 +202,8 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
         return QishuiSemanticAXControlResult(
             didPress: true,
-            diagnostic: "已通过汽水音乐语义化播放控件执行\(command.label)。"
+            diagnostic: "已通过汽水音乐语义化播放控件执行\(command.label)。",
+            dispatchPath: "discovered"
         )
     }
 
@@ -246,7 +249,7 @@ final class QishuiSemanticAXController: @unchecked Sendable {
 
         if let cachedControls,
            cachedControls.processIdentifier == processIdentifier,
-           Self.isEligibleHealthCandidate(candidateFacts(for: cachedControls)) {
+           canReuseCachedControls(cachedControls) {
             return .available
         }
 
@@ -353,6 +356,28 @@ final class QishuiSemanticAXController: @unchecked Sendable {
               facts.hasPlaybackTimeContext,
               let relativeY = facts.relativeY else { return false }
         return relativeY >= 0.72 && relativeY <= 1.02
+    }
+
+    static func canReuseCachedControls<Identity: Equatable>(
+        facts: CandidateFacts,
+        cachedOrder: [Identity],
+        currentOrder: [Identity]?
+    ) -> Bool {
+        guard isEligibleHealthCandidate(facts), cachedOrder.count == 3,
+              let currentOrder, currentOrder.count == 3 else { return false }
+        return cachedOrder == currentOrder
+    }
+
+    private func canReuseCachedControls(_ controls: CachedControls) -> Bool {
+        let cachedOrder = [controls.previous, controls.playPause, controls.next]
+            .map { ElementIdentity(element: $0) }
+        // Renderer nodes may remain pressable while changing their role.
+        // Re-read just this group, including its geometry, before reusing it.
+        let currentOrder = playbackControls(in: controls.container)?.map {
+            ElementIdentity(element: $0)
+        }
+        return Self.canReuseCachedControls(facts: candidateFacts(for: controls),
+            cachedOrder: cachedOrder, currentOrder: currentOrder)
     }
 
     static func isEligibleHealthCandidate(_ facts: CandidateFacts) -> Bool {

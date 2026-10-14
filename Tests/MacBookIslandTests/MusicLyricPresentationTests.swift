@@ -57,10 +57,10 @@ func lyricPresentationFlattensEmbeddedNewlines() {
     #expect(pair.next == LyricPair(primary: "Second line", translation: "第二句"))
 }
 
-@Test("歌词文本清理会丢弃汽水 AX 元数据行")
+@Test("歌词文本清理保留源作词作曲，丢弃非歌词贡献元数据")
 func lyricPresentationDropsCreditMetadata() {
     let lines = ["作词：张三", "作曲: 李四", "混音：王五", "夜色渐渐落下", "第二句"]
-    #expect(MusicLyricPresentation.clean(lines) == ["夜色渐渐落下", "第二句"])
+    #expect(MusicLyricPresentation.clean(lines) == ["作词：张三", "作曲: 李四", "夜色渐渐落下", "第二句"])
 }
 
 @Test("末句后的汽水歌词贡献者不能成为译文或下一句")
@@ -80,7 +80,7 @@ func lyricPresentationRemapsIndexAfterFilteringMetadata() {
         == .current(primary: "First line", translation: "第一句"))
     #expect(MusicLyricPresentation.state(lines: lines, index: 3)
         == .current(primary: "Second line", translation: "第二句"))
-    #expect(MusicLyricPresentation.state(lines: lines, index: 0) == .unavailable)
+    #expect(MusicLyricPresentation.state(lines: lines, index: 0) == .current(primary: "作词：张三", translation: ""))
 }
 
 @Test("展开歌词使用同一套清洗后索引，避免元数据导致显示错句")

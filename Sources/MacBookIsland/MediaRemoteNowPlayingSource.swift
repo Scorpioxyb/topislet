@@ -37,6 +37,7 @@ struct MediaRemoteNowPlayingSnapshot: Equatable {
     let sampleID: UInt64
     let sampleOrigin: MediaRemoteSampleOrigin
     let sampleSource: MediaRemoteSampleSource
+    let trackIdentityObservedAt: Date?
 
     init(
         isAvailable: Bool,
@@ -46,7 +47,8 @@ struct MediaRemoteNowPlayingSnapshot: Equatable {
         checkedAt: Date,
         sampleID: UInt64 = 0,
         sampleOrigin: MediaRemoteSampleOrigin = .unknown,
-        sampleSource: MediaRemoteSampleSource = .unknown
+        sampleSource: MediaRemoteSampleSource = .unknown,
+        trackIdentityObservedAt: Date? = nil
     ) {
         self.isAvailable = isAvailable
         self.isVerifiedQishuiSource = isVerifiedQishuiSource
@@ -56,6 +58,7 @@ struct MediaRemoteNowPlayingSnapshot: Equatable {
         self.sampleID = sampleID
         self.sampleOrigin = sampleOrigin
         self.sampleSource = sampleSource
+        self.trackIdentityObservedAt = trackIdentityObservedAt
     }
 }
 

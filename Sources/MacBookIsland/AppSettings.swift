@@ -9,6 +9,7 @@ final class AppSettings: ObservableObject {
         static let showMusicDiagnostics = "showMusicDiagnostics"
         static let showMusicLyrics = "showMusicLyrics"
         static let autoExpandMusicLyrics = "autoExpandMusicLyrics"
+        static let musicExpansionMode = "musicExpansionMode"
         static let appleMusicEnabled = "appleMusicEnabled"
         static let calendarEventsEnabled = "calendarEventsEnabled"
         static let remindersEnabled = "remindersEnabled"
@@ -35,6 +36,10 @@ final class AppSettings: ObservableObject {
 
     @Published var autoExpandMusicLyrics: Bool {
         didSet { persist(Key.autoExpandMusicLyrics, autoExpandMusicLyrics) }
+    }
+
+    @Published var musicExpansionMode: MusicExpansionMode {
+        didSet { defaults.set(musicExpansionMode.rawValue, forKey: storageKey(Key.musicExpansionMode)) }
     }
 
     @Published var appleMusicEnabled: Bool {
@@ -76,6 +81,10 @@ final class AppSettings: ObservableObject {
             in: defaults,
             fallback: false
         )
+        // Preserve the intent of an older always-open lyric preference once.
+        musicExpansionMode = defaults.string(forKey: Self.storageKey(Key.musicExpansionMode))
+            .flatMap(MusicExpansionMode.init(rawValue:))
+            ?? (Self.bool(named: Key.autoExpandMusicLyrics, in: defaults, fallback: false) ? .pinned : .hover)
         appleMusicEnabled = Self.bool(
             named: Key.appleMusicEnabled,
             in: defaults,
@@ -99,6 +108,7 @@ final class AppSettings: ObservableObject {
         showMusicDiagnostics = false
         showMusicLyrics = false
         autoExpandMusicLyrics = false
+        musicExpansionMode = .hover
         appleMusicEnabled = true
         calendarEventsEnabled = false
         remindersEnabled = false

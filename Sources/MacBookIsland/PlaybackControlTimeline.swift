@@ -8,6 +8,7 @@ enum PlaybackControlTimeline {
         let isPlaying: Bool
         let playbackRate: Double
         let sourceTimestamp: Date
+        let sourceEventTimestamp: Date?
         let anchorUptime: TimeInterval
     }
 
@@ -27,10 +28,26 @@ enum PlaybackControlTimeline {
         anchorElapsed: TimeInterval?,
         confirmedElapsed: TimeInterval?
     ) -> TimeInterval? {
-        if targetIsPlaying {
-            return confirmedElapsed ?? anchorElapsed
-        }
-        return anchorElapsed ?? confirmedElapsed
+        // Callers have already rejected cached, pre-command and mismatched
+        // confirmations. The request anchor freezes the optimistic UI only;
+        // once confirmed, the source owns the timeline in either state.
+        return confirmedElapsed ?? anchorElapsed
+    }
+
+    static func shouldReleasePauseFloor(
+        floorIssuedAt: Date,
+        sampleReceivedAt: Date,
+        isFreshSample: Bool,
+        isPlaying: Bool?,
+        elapsedTime: TimeInterval?
+    ) -> Bool {
+        guard isFreshSample, sampleReceivedAt >= floorIssuedAt,
+              let isPlaying, let elapsedTime,
+              elapsedTime.isFinite, elapsedTime >= 0 else { return false }
+        // Both playing and paused source positions supersede the temporary
+        // pause floor. A small backward correction is valid after a seek.
+        _ = isPlaying
+        return true
     }
 
     static func optimisticElapsed(
@@ -99,6 +116,7 @@ enum PlaybackControlTimeline {
             isPlaying: effectiveIsPlaying,
             playbackRate: effectiveRate,
             sourceTimestamp: effectiveTimestamp,
+            sourceEventTimestamp: sourceTimestamp,
             anchorUptime: receivedUptime
         )
     }
@@ -110,6 +128,24 @@ enum PlaybackControlTimeline {
         guard let current else { return candidate }
         guard candidate.trackIdentity == current.trackIdentity else { return candidate }
 
+        // get-now positions are anchored at receipt, whereas stream positions
+        // retain the source event's timestamp. Compare source events first so
+        // a genuine pause is not rejected as older than a get-now receipt.
+        if let candidateEvent = candidate.sourceEventTimestamp,
+           let currentEvent = current.sourceEventTimestamp {
+            let eventDelta = candidateEvent.timeIntervalSince(currentEvent)
+            if eventDelta > 0.001 { return candidate }
+            if eventDelta < -0.001 { return current }
+            if candidate.isPlaying != current.isPlaying,
+               candidate.anchorUptime >= current.anchorUptime {
+                // The source clock is rounded to seconds. A state change in
+                // that same second can be newer than a get-now receipt;
+                // retain the existing backward-position safety tolerance.
+                let currentElapsed = elapsed(from: current, nowUptime: candidate.anchorUptime)
+                    ?? current.elapsedAtAnchor
+                return candidate.elapsedAtAnchor + 0.35 >= currentElapsed ? candidate : current
+            }
+        }
         let timestampDelta = candidate.sourceTimestamp.timeIntervalSince(current.sourceTimestamp)
         if timestampDelta > 0.001 {
             return candidate

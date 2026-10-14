@@ -12,6 +12,42 @@ private func lyricSourceFixture(ambiguous: Bool = false, detailTitle: String = "
     return (search, detail)
 }
 
+private actor LyricReadMeasurements {
+    private var values: [QishuiTimedLyricSource.ReadMeasurement] = []
+    func append(_ value: QishuiTimedLyricSource.ReadMeasurement) { values.append(value) }
+    func snapshot() -> [QishuiTimedLyricSource.ReadMeasurement] { values }
+}
+
+@Test("分段诊断分别记录搜索和详情，不改变核验后的歌词")
+func timedLyricReadMeasurementsSeparateSearchAndDetail() async {
+    let (search, detail) = lyricSourceFixture()
+    let measurements = LyricReadMeasurements()
+    let source = QishuiTimedLyricSource(readData: { url in
+        url.host == "api-vehicle.volcengine.com" ? search : detail
+    })
+    let lines = await source.fetch(title: "Song", artist: "A, B", duration: 100) {
+        await measurements.append($0)
+    }
+    #expect(lines.first?.text == "Hello")
+    let reads = await measurements.snapshot()
+    #expect(reads.map(\.stage) == [.search, .detail])
+    #expect(reads.allSatisfy { $0.receivedData && $0.latencyMilliseconds >= 0 })
+}
+
+@Test("搜索读空时只记录搜索，不请求详情或伪造歌词")
+func timedLyricReadMeasurementsReportFailedSearch() async {
+    let measurements = LyricReadMeasurements()
+    let source = QishuiTimedLyricSource(readData: { _ in nil })
+    let lines = await source.fetch(title: "Song", artist: "A, B", duration: 100) {
+        await measurements.append($0)
+    }
+    let reads = await measurements.snapshot()
+    #expect(lines.isEmpty)
+    #expect(reads.count == 1)
+    #expect(reads.first?.stage == .search)
+    #expect(reads.first?.receivedData == false)
+}
+
 @Test("非有限时长在联网前被拒绝")
 func timedLyricSourceRejectsInvalidDurationBeforeNetwork() async {
     let source = QishuiTimedLyricSource(readData: { _ in
@@ -55,10 +91,16 @@ func timedLyricSourceRejectsAmbiguousSearchVersions() async {
 @Test("请求途中取消，即使输送层返回数据也不能发布歌词")
 func timedLyricSourceRejectsCancelledTransportResult() async {
     let (search, detail) = lyricSourceFixture()
+    let measurements = LyricReadMeasurements()
     let source = QishuiTimedLyricSource(readData: { url in
         withUnsafeCurrentTask { $0?.cancel() }
         return url.host == "api-vehicle.volcengine.com" ? search : detail
     })
-    let task = Task { await source.fetch(title: "Song", artist: "A, B", duration: 100) }
+    let task = Task {
+        await source.fetch(title: "Song", artist: "A, B", duration: 100) {
+            await measurements.append($0)
+        }
+    }
     #expect(await task.value.isEmpty)
+    #expect(await measurements.snapshot().isEmpty)
 }

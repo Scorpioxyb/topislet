@@ -73,8 +73,8 @@ func playbackAnchorFallsBackToCompletionPosition() {
     #expect(anchor == dispatchCompletionElapsed)
 }
 
-@Test("暂停确认不会让进度越过点击锚点")
-func pauseConfirmationKeepsRequestAnchor() {
+@Test("新鲜暂停确认交还源播放器的真实位置")
+func pauseConfirmationUsesSourcePosition() {
     let requestAnchor: TimeInterval = 42.0
     let confirmedElapsed: TimeInterval = 42.45
 
@@ -84,7 +84,7 @@ func pauseConfirmationKeepsRequestAnchor() {
         confirmedElapsed: confirmedElapsed
     )
 
-    #expect(elapsed == requestAnchor)
+    #expect(elapsed == confirmedElapsed)
 }
 
 @Test("乐观暂停从点击瞬间冻结本地时间轴")
@@ -349,4 +349,36 @@ func axProgressFillsOnlyMissingMediaRemoteElapsed() {
     )
 
     #expect(abs((elapsed ?? 0) - 76) < 0.0001)
+}
+
+@Test("跳转后暂停的新鲜位置可以纠正乐观锚点的小幅偏差")
+func freshPausedPositionCorrectsOptimisticSeekOffset() {
+    #expect(PlaybackControlTimeline.confirmedElapsed(
+        targetIsPlaying: false,
+        anchorElapsed: 2.675,
+        confirmedElapsed: 1.932431
+    ) == 1.932431)
+}
+
+@Test("暂停保护只在命令后收到真实时间轴时解除")
+func pauseFloorRequiresFreshPostCommandTimeline() {
+    let issuedAt = Date(timeIntervalSince1970: 100)
+    #expect(PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(0.6),
+        isFreshSample: true, isPlaying: false, elapsedTime: 1.932431))
+    #expect(!PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(-0.1),
+        isFreshSample: true, isPlaying: false, elapsedTime: 1.932431))
+    #expect(!PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(0.6),
+        isFreshSample: false, isPlaying: false, elapsedTime: 1.932431))
+    #expect(!PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(0.6),
+        isFreshSample: true, isPlaying: nil, elapsedTime: 1.932431))
+    #expect(!PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(0.6),
+        isFreshSample: true, isPlaying: false, elapsedTime: nil))
+    #expect(!PlaybackControlTimeline.shouldReleasePauseFloor(
+        floorIssuedAt: issuedAt, sampleReceivedAt: issuedAt.addingTimeInterval(0.6),
+        isFreshSample: true, isPlaying: false, elapsedTime: .nan))
 }

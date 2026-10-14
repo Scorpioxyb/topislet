@@ -297,3 +297,30 @@ func qishuiProcessSelectionPrefersVerifiedMediaRemotePID() {
         runningProcessIdentifiers: [222]
     ) == 222)
 }
+
+@Test("可点击的旧控件不能在节点换位或替换后继续复用")
+func changedControlRolesInvalidateCachedMapping() {
+    let facts = QishuiSemanticAXController.CandidateFacts(
+        windowIsNormal: true, windowIsPrimary: true, windowIsVisible: true,
+        windowIsMinimized: false, containerIsVisible: true, controlsAreEnabled: true,
+        controlsAreInsideWindow: true, relativeY: 0.95, hasPlaybackTimeContext: true)
+    func reuse(_ current: [Int]?) -> Bool {
+        QishuiSemanticAXController.canReuseCachedControls(facts: facts,
+            cachedOrder: [11, 22, 33], currentOrder: current)
+    }
+    #expect(reuse([11, 22, 33]))
+    #expect(!reuse([11, 33, 22])) // Former next node now occupies play/pause.
+    #expect(!reuse([11, 22, 44])) // Renderer replaced next.
+    #expect(!reuse([11, 22]))
+    #expect(!reuse(nil)) // Geometry/child query could not be verified.
+}
+
+@Test("未变的节点身份也不能越过窗口健康与唯一主窗口门禁")
+func unchangedControlOrderStillRequiresHealthyWindow() {
+    let facts = QishuiSemanticAXController.CandidateFacts(
+        windowIsNormal: true, windowIsPrimary: false, windowIsVisible: false,
+        windowIsMinimized: true, containerIsVisible: false, controlsAreEnabled: true,
+        controlsAreInsideWindow: true, relativeY: 0.95, hasPlaybackTimeContext: true)
+    #expect(!QishuiSemanticAXController.canReuseCachedControls(facts: facts,
+        cachedOrder: [11, 22, 33], currentOrder: [11, 22, 33]))
+}

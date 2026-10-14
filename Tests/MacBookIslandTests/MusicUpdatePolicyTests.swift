@@ -2,6 +2,45 @@ import Foundation
 import Testing
 @testable import MacBookIsland
 
+@Test("切歌交付只认可完整目标，不能把旧 AX 或跨来源帧计为完成")
+func transitionDeliveryRequiresActualCompleteTarget() {
+    let event = QishuiTrackTransitionStageEvent(
+        transitionID: "test", stage: .atomicComplete, latencyMilliseconds: 600,
+        hasArtist: true, hasArtwork: true, hasAlbum: true, hasDuration: true, wasDeferred: true,
+        candidateTrackIdentity: QishuiLyricIdentity(
+            processIdentifier: 123, title: "Song B", artist: "Artist"))
+    var state = musicState(title: "Song B", progress: 0.1, elapsedTime: 20, duration: 200)
+    #expect(!QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+    func track(title: String = "Song B", artist: String = "Artist", source: String = "com.soda.music") -> MusicTrack {
+        MusicTrack(title: title, artist: artist, palette: [], lyrics: [], hasArtwork: true,
+            artworkData: Data([0x62]), artworkURL: nil, sourceBundleIdentifier: source)
+    }
+    state.track = track()
+    #expect(QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+    state.duration = nil
+    #expect(!QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+    state.duration = 200
+    state.track = track(title: "Song A")
+    #expect(!QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+    state.track = track(artist: "Another Artist")
+    #expect(!QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+    state.track = track(source: "com.apple.Music")
+    #expect(!QishuiTransitionDeliveryPolicy.accepts(state: state, complete: event))
+}
+
+@Test("播放真假不变但权威状态变为未知时仍需更新图标")
+func playbackAuthorityChangePublishesWithoutTimelineChange() {
+    let current = musicState(title: "Song", progress: 0.2, elapsedTime: 20, duration: 100)
+    var candidate = current
+    candidate.playbackStateKnown = false
+    #expect(MusicUpdatePolicy.playbackPresentationChanged(current: current, candidate: candidate))
+    #expect(MusicUpdatePolicy.playbackPresentationChanged(current: candidate, candidate: current))
+    #expect(!MusicUpdatePolicy.playbackPresentationChanged(current: current, candidate: current))
+    candidate = current
+    candidate.isPlaying = !current.isPlaying
+    #expect(MusicUpdatePolicy.playbackPresentationChanged(current: current, candidate: candidate))
+}
+
 private func musicState(
     title: String,
     progress: Double,
@@ -75,6 +114,50 @@ func sameSourceTrackChangeKeepsControlFeedback() {
     #expect(!MusicUpdatePolicy.didChangeSource(
         current: current,
         candidate: candidate
+    ))
+}
+
+@Test("同来源新歌缺少时间轴时不能被旧歌进度保护吞掉")
+func newTrackWithoutTimingDoesNotKeepOldTrack() {
+    let current = musicState(title: "Track A", progress: 0.5, elapsedTime: 90, duration: 180)
+    let candidate = musicState(title: "Track B", progress: 0, elapsedTime: nil, duration: nil)
+    #expect(!MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
+        current: current, candidate: candidate, sourceAvailability: .qishuiDetectedAXLimited
+    ))
+}
+
+@Test("保留同曲时间轴时仍同步播放状态可信度与控制能力")
+func preservedTimelineUpdatesPlaybackAuthority() {
+    let current = musicState(title: "Current", progress: 0.5, elapsedTime: 90, duration: 180)
+    var candidate = musicState(title: "Current", progress: 0, elapsedTime: nil, duration: nil)
+    candidate.playbackStateKnown = false
+    candidate.isPlaybackPending = true
+    candidate.canPlayPause = false
+    candidate.canPreviousTrack = false
+    candidate.canNextTrack = false
+    candidate.controlUnavailableReason = "Unavailable"
+    #expect(MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
+        current: current, candidate: candidate, sourceAvailability: .qishuiDetectedAXLimited
+    ))
+    let result = MusicUpdatePolicy.preservingTimeline(current: current, candidate: candidate)
+    #expect(result.track == current.track)
+    #expect(result.elapsedTime == 90 && result.duration == 180 && result.progress == 0.5)
+    #expect(!result.playbackStateKnown && !result.isPlaying && result.isPlaybackPending)
+    #expect(!result.canPlayPause && !result.canPreviousTrack && !result.canNextTrack)
+    #expect(result.controlUnavailableReason == candidate.controlUnavailableReason)
+}
+
+@Test("同名不同歌手不能沿用旧歌的进度与歌词")
+func changedArtistWithoutTimingDoesNotKeepOldTrack() {
+    let current = musicState(title: "Same title", progress: 0.5, elapsedTime: 90, duration: 180)
+    var candidate = musicState(title: "Same title", progress: 0, elapsedTime: nil, duration: nil)
+    candidate.track = MusicTrack(
+        title: candidate.track.title, artist: "Another Artist", palette: [], lyrics: [],
+        hasArtwork: false, artworkData: nil, artworkURL: nil,
+        sourceBundleIdentifier: candidate.track.sourceBundleIdentifier
+    )
+    #expect(!MusicUpdatePolicy.shouldIgnoreUntrustedProgressReset(
+        current: current, candidate: candidate, sourceAvailability: .qishuiDetectedAXLimited
     ))
 }
 
@@ -235,27 +318,27 @@ func focusTimerPresetsExposeSupportedDurations() {
 
 @Test("提醒结束后只恢复仍在运行的计时活动")
 func notificationReturnsToLiveTimerOnly() {
-    #expect(IslandActivityReturnPolicy.featureAfterNotification(
+    #expect(IslandActivityArbitrationPolicy.featureAfterNotification(
         returnFeature: .timer,
         timerIsRunning: true,
         hasCurrentMusicTrack: false
     ) == .timer)
-    #expect(IslandActivityReturnPolicy.featureAfterNotification(
+    #expect(IslandActivityArbitrationPolicy.featureAfterNotification(
         returnFeature: .timer,
         timerIsRunning: false,
         hasCurrentMusicTrack: false
     ) == .activityCenter)
-    #expect(IslandActivityReturnPolicy.featureAfterNotification(
+    #expect(IslandActivityArbitrationPolicy.featureAfterNotification(
         returnFeature: .music,
         timerIsRunning: true,
         hasCurrentMusicTrack: true
     ) == .music)
-    #expect(IslandActivityReturnPolicy.featureAfterNotification(
+    #expect(IslandActivityArbitrationPolicy.featureAfterNotification(
         returnFeature: .activityCenter,
         timerIsRunning: false,
         hasCurrentMusicTrack: true
     ) == .music)
-    #expect(IslandActivityReturnPolicy.featureAfterNotification(
+    #expect(IslandActivityArbitrationPolicy.featureAfterNotification(
         returnFeature: nil,
         timerIsRunning: false,
         hasCurrentMusicTrack: false
@@ -264,19 +347,19 @@ func notificationReturnsToLiveTimerOnly() {
 
 @Test("真实音乐出现时只接管空活动中心")
 func musicTakesOverIdleActivityCenter() {
-    #expect(MusicActivityTakeoverPolicy.shouldTakeOver(
+    #expect(IslandActivityArbitrationPolicy.shouldMusicTakeOver(
         activeFeature: .activityCenter,
         becameAvailable: true,
         timerIsRunning: false,
         hasPendingNotification: false
     ))
-    #expect(!MusicActivityTakeoverPolicy.shouldTakeOver(
+    #expect(!IslandActivityArbitrationPolicy.shouldMusicTakeOver(
         activeFeature: .activityCenter,
         becameAvailable: true,
         timerIsRunning: true,
         hasPendingNotification: false
     ))
-    #expect(!MusicActivityTakeoverPolicy.shouldTakeOver(
+    #expect(!IslandActivityArbitrationPolicy.shouldMusicTakeOver(
         activeFeature: .notification,
         becameAvailable: true,
         timerIsRunning: false,

@@ -55,6 +55,19 @@ enum QishuiLyricAttribution {
 }
 
 enum QishuiVerifiedActiveLyricPolicy {
+    static func introCredits(paragraphs: [[String]], corpus: Set<String>) -> [String] {
+        Array(paragraphs.flatMap { paragraph in
+            // A single source-credit paragraph can wrap into several AX
+            // text nodes. Keep those verified fragments together; aggregate
+            // paragraphs with multiple credits retain their separate rows.
+            let raw = MusicLyricPresentation.clean(paragraph)
+            if let credit = wrappedCredit(raw, corpus: corpus) { return [credit] }
+            return raw.filter { MusicLyricPresentation.isSourceCredit($0)
+                && corpus.contains(QishuiLyricAttribution.normalize($0)) }
+        }
+            .prefix(2))
+    }
+
     static func currentLines(activeParagraphs: [[String]], corpus: Set<String>) -> [String]? {
         guard activeParagraphs.count == 1 else { return nil }
         let rawLines = MusicLyricPresentation.clean(activeParagraphs[0])
@@ -67,13 +80,16 @@ enum QishuiVerifiedActiveLyricPolicy {
               rawLines.allSatisfy({ corpus.contains(QishuiLyricAttribution.normalize($0)) }) else {
             return nil
         }
+        if let credit = wrappedCredit(rawLines, corpus: corpus) { return [credit] }
         var folded: [String] = []
         for line in rawLines {
             guard let previous = folded.last else {
                 folded.append(line)
                 continue
             }
-            if containsCJK(previous) == containsCJK(line) {
+            if !MusicLyricPresentation.isSourceCredit(previous),
+               !MusicLyricPresentation.isSourceCredit(line),
+               containsCJK(previous) == containsCJK(line) {
                 folded[folded.count - 1] = join(previous, line)
             } else {
                 folded.append(line)
@@ -91,13 +107,16 @@ enum QishuiVerifiedActiveLyricPolicy {
             return nil
         }
 
+        if let credit = wrappedCredit(rawLines, corpus: corpus) { return [credit] }
         var folded: [String] = []
         for line in rawLines {
             guard let previous = folded.last else {
                 folded.append(line)
                 continue
             }
-            if containsCJK(previous) == containsCJK(line) {
+            if !MusicLyricPresentation.isSourceCredit(previous),
+               !MusicLyricPresentation.isSourceCredit(line),
+               containsCJK(previous) == containsCJK(line) {
                 folded[folded.count - 1] = join(previous, line)
             } else {
                 folded.append(line)
@@ -105,6 +124,16 @@ enum QishuiVerifiedActiveLyricPolicy {
         }
         guard folded.count <= 2 else { return nil }
         return folded
+    }
+
+    private static func wrappedCredit(_ lines: [String], corpus: Set<String>) -> String? {
+        guard let first = lines.first, MusicLyricPresentation.isSourceCredit(first),
+              lines.count <= 4,
+              lines.dropFirst().allSatisfy({ !MusicLyricPresentation.isSourceCredit($0) }),
+              lines.allSatisfy({ corpus.contains(QishuiLyricAttribution.normalize($0)) }) else { return nil }
+        return lines.dropFirst().reduce(first) { result, fragment in
+            result + (containsCJK(fragment) ? "" : " ") + fragment
+        }
     }
 
     private static func join(_ lhs: String, _ rhs: String) -> String {
@@ -199,17 +228,41 @@ struct QishuiDesktopLyricGate {
 /// previous song's corpus and require two complete, matching corpus reads.
 struct QishuiLyricCorpusGate {
     private var previous: Set<String> = []
+    private var previousIdentity: QishuiLyricIdentity?
+    private var currentIdentity: QishuiLyricIdentity?
     private var pending: Set<String>?
     private(set) var verified: Set<String> = []
 
-    mutating func transition(sameProcess: Bool) {
-        previous = sameProcess ? (verified.isEmpty ? previous : verified) : []
+    mutating func transition(to identity: QishuiLyricIdentity) {
+        if currentIdentity?.processIdentifier != identity.processIdentifier {
+            previous = []
+            previousIdentity = nil
+        } else if !verified.isEmpty {
+            previous = verified
+            previousIdentity = currentIdentity
+        }
+        currentIdentity = identity
         pending = nil
         verified = []
     }
 
     mutating func accept(_ candidate: Set<String>) -> Bool {
-        guard !candidate.isEmpty, candidate != previous else { pending = nil; return false }
+        // A title can update before the renderer replaces the previous song's
+        // corpus. Reject that corpus for other identities, but allow a return
+        // to its verified song after an intervening track exposed no lyrics.
+        // Require two fresh identical reads even for that same-song return.
+        let isVerifiedSongReturn = currentIdentity.flatMap { current in
+            previousIdentity.map { previous in
+                current.processIdentifier == previous.processIdentifier
+                    && QishuiTrackCoherencePolicy.matches(
+                        mediaTitle: current.title, mediaArtist: current.artist,
+                        directTitle: previous.title, directArtist: previous.artist)
+            }
+        } ?? false
+        guard !candidate.isEmpty, candidate != previous || isVerifiedSongReturn else {
+            pending = nil
+            return false
+        }
         guard pending == candidate else { pending = candidate; return false }
         verified = candidate
         return true
@@ -244,13 +297,13 @@ final class QishuiLyricReader: @unchecked Sendable {
     private var exhausted = false
     private var nodes = 0
 
-    func read(identity requested: QishuiLyricIdentity) -> QishuiLyricSnapshot {
+    func read(identity requested: QishuiLyricIdentity, includeIntroCredits: Bool = false) -> QishuiLyricSnapshot {
         let now = Date()
         deadline = now.addingTimeInterval(0.18)
         exhausted = false
         nodes = 0
         if identity != requested {
-            corpusGate.transition(sameProcess: identity?.processIdentifier == requested.processIdentifier)
+            corpusGate.transition(to: requested)
             identity = requested
             player = nil
             titleRoot = nil
@@ -451,6 +504,12 @@ final class QishuiLyricReader: @unchecked Sendable {
                             return result(publishedLines)
                         }
                         debugLog("active rejected texts=\(texts(paragraphs[index]))")
+                    }
+                    if includeIntroCredits, !corpus.isEmpty {
+                        let credits = QishuiVerifiedActiveLyricPolicy.introCredits(
+                            paragraphs: paragraphs.map { texts($0) }, corpus: corpus
+                        )
+                        if !credits.isEmpty { return result(credits, desktop: true) }
                     }
                     if now.timeIntervalSince(lastDiscovery) >= 3 {
                         self.player = nil

@@ -55,17 +55,18 @@ func desktopLyricsMustBelongToVerifiedSong() {
 @Test("换歌标题先到而旧歌词尚未更新时必须保持空白")
 func lyricCorpusDoesNotAttributeOldDOMToNewTitle() {
     var gate = QishuiLyricCorpusGate()
+    gate.transition(to: .init(processIdentifier: 42, title: "A", artist: "Singer"))
     let first: Set<String> = ["第一首独有的句子", "共用句"]
     let accepted1 = gate.accept(first)
     #expect(!accepted1)
     let accepted2 = gate.accept(first)
     #expect(accepted2)
-    gate.transition(sameProcess: true)
+    gate.transition(to: .init(processIdentifier: 42, title: "B", artist: "Singer"))
     let accepted3 = gate.accept(first)
     #expect(!accepted3)
     let accepted4 = gate.accept(first)
     #expect(!accepted4)
-    gate.transition(sameProcess: true)
+    gate.transition(to: .init(processIdentifier: 42, title: "C", artist: "Singer"))
     let accepted5 = gate.accept(first)
     #expect(!accepted5)
     let partial: Set<String> = ["第二首的句子"]
@@ -76,11 +77,61 @@ func lyricCorpusDoesNotAttributeOldDOMToNewTitle() {
     #expect(!accepted7)
     let accepted8 = gate.accept(second)
     #expect(accepted8)
-    gate.transition(sameProcess: false)
+    gate.transition(to: .init(processIdentifier: 99, title: "C", artist: "Singer"))
     let accepted9 = gate.accept(second)
     #expect(!accepted9)
     let accepted10 = gate.accept(second)
     #expect(accepted10)
+}
+
+@Test("有歌词歌曲经过无语料曲目再返回时重新核验，不永久拒绝同曲语料")
+func lyricCorpusReattachesAfterTrackWithoutCorpus() {
+    var gate = QishuiLyricCorpusGate()
+    let a = QishuiLyricIdentity(processIdentifier: 42, title: "A", artist: "甲, 乙")
+    let corpus: Set<String> = ["作词：甲", "作曲：乙", "A lyric"]
+    gate.transition(to: a)
+    let acceptedReplay1 = gate.accept(corpus)
+    #expect(!acceptedReplay1)
+    let acceptedReplay2 = gate.accept(corpus)
+    #expect(acceptedReplay2)
+    gate.transition(to: .init(processIdentifier: 42, title: "Instrumental", artist: "Singer"))
+    let acceptedReplay3 = gate.accept(corpus)
+    #expect(!acceptedReplay3)
+    let acceptedReplay4 = gate.accept([])
+    #expect(!acceptedReplay4)
+    gate.transition(to: a)
+    let acceptedReplay5 = gate.accept(corpus)
+    #expect(!acceptedReplay5)
+    let acceptedReplay6 = gate.accept(corpus)
+    #expect(acceptedReplay6)
+    #expect(gate.verified == corpus)
+    gate.transition(to: .init(processIdentifier: 42, title: " A ", artist: "乙 / 甲"))
+    let acceptedReplay7 = gate.accept(corpus)
+    #expect(!acceptedReplay7)
+    let acceptedReplay8 = gate.accept(corpus)
+    #expect(acceptedReplay8)
+}
+
+@Test("同名不同歌手与未取得语料的中间曲目仍不能继承旧语料")
+func lyricCorpusReattachmentDoesNotCrossArtistOrUnknownTrack() {
+    var gate = QishuiLyricCorpusGate()
+    let corpus: Set<String> = ["Old unique lyric", "Shared lyric"]
+    gate.transition(to: .init(processIdentifier: 42, title: "Same", artist: "A"))
+    let acceptedReplay9 = gate.accept(corpus)
+    #expect(!acceptedReplay9)
+    let acceptedReplay10 = gate.accept(corpus)
+    #expect(acceptedReplay10)
+    gate.transition(to: .init(processIdentifier: 42, title: "No Corpus", artist: "C"))
+    gate.transition(to: .init(processIdentifier: 42, title: "Same", artist: "B"))
+    let acceptedReplay11 = gate.accept(corpus)
+    #expect(!acceptedReplay11)
+    let acceptedReplay12 = gate.accept(corpus)
+    #expect(!acceptedReplay12)
+    let newCorpus: Set<String> = ["New unique lyric", "Shared lyric"]
+    let acceptedReplay13 = gate.accept(newCorpus)
+    #expect(!acceptedReplay13)
+    let acceptedReplay14 = gate.accept(newCorpus)
+    #expect(acceptedReplay14)
 }
 
 @Test("歌词段落首次查找后复用节点；没有节点时限制重试频率")
@@ -205,6 +256,24 @@ func qishuiMediaRemoteAdmissionRejectsFreshIdentityMismatch() {
         directCheckedAt: now,
         now: now.addingTimeInterval(0.2)
     ))
+}
+
+@Test("较旧 AX 不阻挡较新完整流，较新 AX 仍拒绝旧流")
+func qishuiAdmissionUsesIdentityReceiptOrder() {
+    let now = Date(timeIntervalSince1970: 100)
+    func accepts(mediaAt: Date?, complete: Bool = true, directAt: Date = Date(timeIntervalSince1970: 99.5)) -> Bool {
+        QishuiMediaRemoteAdmissionPolicy.accepts(
+            mediaTitle: "New Song", mediaArtist: "New Artist",
+            directTitle: "Old Song", directArtist: "Old Artist", directCheckedAt: directAt,
+            mediaIdentityObservedAt: mediaAt, mediaHasCompleteMetadata: complete, now: now
+        )
+    }
+    #expect(accepts(mediaAt: now.addingTimeInterval(-0.1)))
+    #expect(!accepts(mediaAt: now.addingTimeInterval(-0.1), complete: false))
+    #expect(!accepts(mediaAt: nil))
+    #expect(!accepts(mediaAt: now.addingTimeInterval(-0.6)))
+    #expect(!accepts(mediaAt: now.addingTimeInterval(-0.1), directAt: now))
+    #expect(!accepts(mediaAt: now.addingTimeInterval(0.1)))
 }
 
 @Test("active 歌词只接受当前歌曲，并合并播放器拆开的长句片段")
