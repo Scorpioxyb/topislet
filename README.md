@@ -36,18 +36,18 @@
 
 </details>
 
-> 演示素材录制于 build 137；公开下载包为 build 148，本次源码更新为 build 180。录屏只证明其中展示的操作与画面，不代表最新代码、所有曲目或后台场景均已通过验证。
+> 演示素材录制于 build 137；公开下载包与本次源码均为 build 180。录屏只证明其中展示的操作与画面，不代表最新代码、所有曲目或后台场景均已通过验证。
 
 ## 发布状态
 
 | 版本范围 | 当前状态 |
 | --- | --- |
-| 公开下载 | [v0.1.3-alpha.1](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.1)，Apple Silicon 开发者预览版 |
+| 公开下载 | [v0.1.3-alpha.2 · build 180](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.2)，Apple Silicon 开发者预览版 |
 | 源码开发预览 | **0.1.3 build 180**，音乐展开方式、歌词快捷切换及播放状态一致性改进；不是稳定版 |
 | 演示素材 | **build 137** 实机录屏，保留用于展示布局与交互；不代表最新版本已完成全部验收 |
-| 本次 GitHub 更新 | [build 180 开发更新](Docs/updates/2026-10-14-build180-music-interaction.md)：展开方式、歌词切换与验证边界；本次不发布新下载包 |
+| 本次 GitHub 更新 | [build 180 开发更新](Docs/updates/2026-10-14-build180-music-interaction.md)：展开方式、歌词切换与验证边界；同步发布 build 180 预发布包 |
 
-v0.1.3-alpha.1 对应源码 **0.1.3 build 148**，仅支持 Apple Silicon 与 macOS 26.0 或更高版本。安装包为本地 ad-hoc 签名，尚未完成 Developer ID 签名和 Apple 公证。历史 v0.1.1-alpha.4 仍保留；上方演示素材仍是 build 137。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+v0.1.3-alpha.2 对应源码与安装包 **0.1.3 build 180**，仅支持 Apple Silicon 与 macOS 26.0 或更高版本。安装包为本地 ad-hoc 签名，尚未完成 Developer ID 签名和 Apple 公证。历史 v0.1.3-alpha.1 / build 148 与更早 Release 仍保留；上方演示素材仍是 build 137。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。进度见 [v0.1.2 发布检查清单](Docs/RELEASE_CHECKLIST_0.1.2.md)。
 
@@ -95,7 +95,7 @@ build 180 改进了等待元数据期间的播放状态一致性，但快速连�
 
 ### GitHub Release
 
-从 [v0.1.3-alpha.1 预发布页](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.1)下载 `.dmg` 和对应的 `.sha256` 校验文件：
+从 [v0.1.3-alpha.2 · build 180 预发布页](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.2)下载 `.dmg` 和对应的 `.sha256` 校验文件：
 
 1. 打开 `TopIslet-….dmg`。
 2. 将“顶屿.app”拖到右侧“Applications”快捷入口。
@@ -135,7 +135,7 @@ VERSION="0.1.3" bash Scripts/build-release.sh
 1. 打开 App，确认菜单栏出现顶屿图标。
 2. 从菜单栏顶屿图标打开设置，或右键点击岛本体选择“设置…”；进入“音乐”，如果“辅助功能”显示待授权，点击“打开辅助功能设置”并允许当前 `/Applications/顶屿.app`。右键菜单也可正常退出顶屿。
 3. 打开汽水音乐并播放歌曲，灵动岛会自动显示播放状态。
-4. 点击或悬停顶部岛展开；移开后自动收回，点击展开则保持固定。
+4. 默认悬停顶部音乐岛展开；也可从面板右上方、岛右键菜单或设置中选择“点击展开”或“保持展开”。歌词开关只切换阅读区，保持展开仍遵守全屏隐藏。
 5. 如果胶囊与实体刘海不贴合，从顶屿菜单选择“校准布局...”。
 6. 专注计时、日历和提醒事项位于“设置 → 活动”；日历与提醒事项按需单独授权。
 7. 使用 Apple Music Alpha 支持时，在“设置 → 音乐”中检查并授权“自动化 - Apple Music”。顶屿不会自动启动 Apple Music；不需要时可关闭该适配。
