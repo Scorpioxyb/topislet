@@ -1889,8 +1889,11 @@ func deferredMetadataReadHasBoundedRetryCount() async throws {
         schedulesDeferredRefresh: true
     )
 
-    #expect(await waitUntil(timeout: 1) { reader.readCount == 6 })
-    try? await Task.sleep(nanoseconds: 30_000_000)
+    // A read count records entry into the reader, not completion of the last
+    // response. Wait for the actual passive phase before inspecting the hold.
+    try #require(await waitUntil(timeout: 2) {
+        source.deferredPublicationIsPassiveForTesting
+    })
     #expect(reader.readCount == 6)
     #expect(source.snapshot()?.currentTrack?.title == "Song A")
     #expect(source.snapshot()?.currentTrack?.artist == "Artist A")
@@ -1924,13 +1927,15 @@ func completeStreamWinsAfterDeferredReadsExhausted() async throws {
         receivedUptime: ProcessInfo.processInfo.systemUptime)
     _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(transitional), receivedAt: Date(),
         receivedUptime: ProcessInfo.processInfo.systemUptime, schedulesDeferredRefresh: true)
-    try #require(await waitUntil(timeout: 1) { reader.readCount == 6 })
-    try await Task.sleep(nanoseconds: 30_000_000)
+    try #require(await waitUntil(timeout: 2) {
+        source.deferredPublicationIsPassiveForTesting
+    })
+    #expect(reader.readCount == 6)
     #expect(source.snapshot()?.currentTrack?.title == "Song A")
-    let waitingTask = source.deferredPublicationTaskForTesting()
+    let waitingTask = try #require(source.deferredPublicationTaskForTesting())
     _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(complete), receivedAt: Date(),
         receivedUptime: ProcessInfo.processInfo.systemUptime)
-    await waitingTask?.value
+    await waitingTask.value
     #expect(source.snapshot()?.currentTrack?.title == "Song B")
     #expect(source.snapshot()?.currentTrack?.artist == "Artist B")
     #expect(source.snapshot()?.currentTrack?.duration == 200)
@@ -1939,15 +1944,17 @@ func completeStreamWinsAfterDeferredReadsExhausted() async throws {
     #expect(reader.readCount == 6)
 }
 
-@Test("耗尽补读后的等待在来源失效时取消，不回写旧候选")
+// Six delayed responses still fit inside the 2.4s publication budget, but
+// cannot satisfy the old one-second scheduling assumption (even at read entry).
+@Test("耗尽补读后的等待在来源失效时取消，不回写旧候选", arguments: [0.0, 0.22])
 @MainActor
-func sessionInvalidationCancelsExhaustedDeferredWait() async throws {
+func sessionInvalidationCancelsExhaustedDeferredWait(readDelay: TimeInterval) async throws {
     let initial = trackPayload(identifier: "song-a", title: "Song A", artist: "Artist A",
         album: "Album A", duration: 180, artwork: Data([0x61]))
     let transitional = trackPayload(identifier: "song-b", title: "Song B", artist: "Artist A",
         album: "Album A", duration: 180, artwork: Data([0x61]))
     let reader = DeferredMetadataReaderProbe(
-        responses: [try JSONSerialization.data(withJSONObject: initial)], delay: 0)
+        responses: [try JSONSerialization.data(withJSONObject: initial)], delay: readDelay)
     let source = MediaRemoteAdapterStreamSource(
         runningQishuiProcessIdentifiersProvider: { [123] },
         deferredMetadataDataReader: { reader.read() },
@@ -1956,10 +1963,14 @@ func sessionInvalidationCancelsExhaustedDeferredWait() async throws {
         receivedUptime: ProcessInfo.processInfo.systemUptime)
     _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(transitional), receivedAt: Date(),
         receivedUptime: ProcessInfo.processInfo.systemUptime, schedulesDeferredRefresh: true)
-    try #require(await waitUntil(timeout: 1) { reader.readCount == 6 })
-    let waitingTask = source.deferredPublicationTaskForTesting()
+    try #require(await waitUntil(timeout: 2) {
+        source.deferredPublicationIsPassiveForTesting
+    })
+    #expect(reader.readCount == 6)
+    #expect(source.snapshot()?.currentTrack?.title == "Song A")
+    let waitingTask = try #require(source.deferredPublicationTaskForTesting())
     source.invalidateQishuiSession()
-    await waitingTask?.value
+    await waitingTask.value
     #expect(source.snapshot()?.currentTrack == nil)
     #expect(source.deferredPublicationTaskForTesting() == nil)
     #expect(reader.readCount == 6)
