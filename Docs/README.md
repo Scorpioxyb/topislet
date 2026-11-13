@@ -62,4 +62,4 @@
 4. **不写入个人信息。** 不出现个人路径、用户名、原始日志或媒体原文。
 5. **计划被取代时移到 `archive/`**，并在新计划中说明取代关系。
 6. **新增验收记录后**运行 `python3 Scripts/generate-acceptance-index.py`。
-7. **`.build/` 只放可重新生成的构建产物。** `swift package clean` 会清空整个目录；原始采样、回滚副本和候选 DMG 若需保留，必须放在 `.build/` 之外。2026-11-13 的数据丢失见[验收记录索引](acceptance/README.md)。
+7. **`.build/` 只放可重新生成的构建产物。** `swift package clean` 会清空整个目录。原始采样、日报和长时间观察写入 `LocalData/qa/`，候选 DMG 写入 `LocalData/release-artifacts/`，回滚副本放 `LocalData/rollback/`；`LocalData/` 已被 git 忽略，`run-playback-observation.py` 会拒绝 `.build/` 内的输出前缀。2026-11-13 的数据丢失见[验收记录索引](acceptance/README.md)。

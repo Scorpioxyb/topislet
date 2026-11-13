@@ -48,7 +48,7 @@ App 版本：`0.1.1 (18)`
 VERSION="0.1.1" \
 BUILD_NUMBER="18" \
 bash Scripts/build-release.sh
-bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v0.1.1-arm64.dmg
+bash Scripts/verify-release-dmg.sh LocalData/release-artifacts/TopIslet-v0.1.1-arm64.dmg
 ```
 
 正式签名时额外设置：

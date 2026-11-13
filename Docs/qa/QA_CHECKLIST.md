@@ -196,8 +196,8 @@
 - 安装版持续播放音乐至少 2 小时，并以 5 秒间隔采样主进程 CPU、RSS、physical footprint、线程、直接子进程和可见窗口数量。
 - 空闲 CPU 通常不超过 2%，不得连续 30 秒高于 5%；结束时 RSS 与 physical footprint 相对稳定基线增长均不超过 15%。RSS 保留为兼容口径，physical footprint 用于排除共享框架页与可回收驻留页造成的误判。
 - 线程数不得连续 60 秒高于基线 2 个以上；直接子进程数不得连续 30 秒高于基线，结束时不能遗留额外状态流。
-- 顶屿 PID 必须全程存活，可见窗口始终不超过 1 个；采样 CSV 与 JSON 摘要保存在 `.build/qa/`，不纳入版本控制。
-- 运行 `swift Scripts/monitor-long-run.swift --pid <顶屿PID> --duration 7200 --interval 5 --output .build/qa/topislet-long-run-<日期>.json`，以摘要中的 `violations` 为空作为自动门禁，再结合实际音乐切换记录完成验收。
+- 顶屿 PID 必须全程存活，可见窗口始终不超过 1 个；采样 CSV 与 JSON 摘要保存在 `LocalData/qa/`，不纳入版本控制。
+- 运行 `swift Scripts/monitor-long-run.swift --pid <顶屿PID> --duration 7200 --interval 5 --output LocalData/qa/topislet-long-run-<日期>.json`，以摘要中的 `violations` 为空作为自动门禁，再结合实际音乐切换记录完成验收。
 
 ## 安全硬门禁
 
@@ -219,6 +219,6 @@ pgrep -af 'mediaremote-adapter.pl.*stream-client.*com.soda.music'
 swift run DailyUsageAnalyzer --last 24h
 ```
 
-- 日常使用分析只读取 `io.github.scorpioxyb.topislet` 的本机 Unified Logging，默认输出到 `.build/qa/`。
+- 日常使用分析只读取 `io.github.scorpioxyb.topislet` 的本机 Unified Logging，默认输出到 `LocalData/qa/`。
 - 报告必须包含结构化事件数、来源快速切换、控制 / seek 成功率，以及切歌 UI 与封面延迟；测试汇报只列通过数量和异常。
 - 日志不得包含完整歌名、歌手、歌词、封面数据、账号标识或用户文件路径。

@@ -1,4 +1,7 @@
 .build/
+# Non-regenerable local data (raw QA samples, release candidates, rollback copies).
+# Kept outside .build/ because `swift package clean` empties that whole directory.
+/LocalData/
 .swiftpm/
 .DS_Store
 __pycache__/

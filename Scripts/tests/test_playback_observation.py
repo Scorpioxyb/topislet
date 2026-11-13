@@ -17,6 +17,13 @@ audit_spec.loader.exec_module(joint_audit)
 
 
 class ObservationPrivacyAndEvidenceTests(unittest.TestCase):
+    def test_observation_prefix_cannot_live_inside_build_directory(self):
+        root = observation.ROOT
+        self.assertTrue(observation.prefix_inside_build(root / '.build' / 'qa' / 'run1'))
+        self.assertTrue(observation.prefix_inside_build(root / '.build'))
+        self.assertFalse(observation.prefix_inside_build(root / 'LocalData' / 'qa' / 'run1'))
+        self.assertFalse(observation.prefix_inside_build(root / '.buildish' / 'run1'))
+
     def test_paused_or_failed_preflight_cannot_start_observation(self):
         paused = subprocess.CompletedProcess([], 0, stdout='verifiedQishuiSource=true\nisPlaying=false\nsourceProcessIdentifier=42\n')
         failed = subprocess.CompletedProcess([], 1, stdout='verifiedQishuiSource=true\nisPlaying=true\nsourceProcessIdentifier=42\n')

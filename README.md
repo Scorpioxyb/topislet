@@ -183,7 +183,7 @@ VERSION="0.1.3" bash Scripts/build-release.sh
 swift run DailyUsageAnalyzer --last 24h
 ```
 
-诊断命令不会主动申请权限。`DailyUsageAnalyzer` 只汇总本机 Unified Logging 中的结构化事件，默认把聚合报告写入 `.build/qa/`；可分别统计点击到 UI、播放器权威确认和 seek 真实收敛的延迟，并明确区分无媒体活动、样本不完整和样本完整。App 每 15 分钟复用现有状态 tick 写入一次匿名健康心跳，不增加媒体轮询。曲目只使用 12 位截断哈希指纹，不记录完整歌名、歌手、歌词或封面。开发调查记录见 [汽水适配说明](Docs/engineering/qishui-adapter-notes.md)。
+诊断命令不会主动申请权限。`DailyUsageAnalyzer` 只汇总本机 Unified Logging 中的结构化事件，默认把聚合报告写入 `LocalData/qa/`；可分别统计点击到 UI、播放器权威确认和 seek 真实收敛的延迟，并明确区分无媒体活动、样本不完整和样本完整。App 每 15 分钟复用现有状态 tick 写入一次匿名健康心跳，不增加媒体轮询。曲目只使用 12 位截断哈希指纹，不记录完整歌名、歌手、歌词或封面。开发调查记录见 [汽水适配说明](Docs/engineering/qishui-adapter-notes.md)。
 
 `--qishui-status` 分别输出 `PRIMARY_MEDIA_SOURCE`（主媒体源）和 `AX_FALLBACK_SOURCE`（辅助功能补充源）。判断播放状态和进度时，保留分段标题并检查主源的 `verifiedQishuiSource`、`sourceProcessIdentifier`；AX 的 `isPlaying=unknown` 表示该补充源未读到播放状态，不表示主源的真实状态失效。不要将两个分段中的同名字段合并成一份状态。
 

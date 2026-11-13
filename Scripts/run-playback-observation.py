@@ -218,6 +218,12 @@ def event_source(prefix, source_pid, duration):
     return summary
 
 
+def prefix_inside_build(prefix):
+    """True when observation output would land in .build/, which `swift package clean` empties."""
+    build = (ROOT / '.build').resolve()
+    return build == prefix.resolve() or build in prefix.resolve().parents
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare-only', action='store_true')
@@ -237,6 +243,8 @@ def main():
     if min(args.parent_pid, args.source_pid) <= 0 or not math.isfinite(args.duration) or args.duration < 7200:
         parser.error('positive PIDs and a finite duration >=7200 seconds required')
     prefix = args.prefix.resolve()
+    if prefix_inside_build(prefix):
+        parser.error('prefix must not be inside .build/ (swift package clean empties it); use LocalData/qa/')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', prefix.name):
         parser.error('prefix basename must contain only letters, numbers, underscores and hyphens')
     prefix.parent.mkdir(parents=True, exist_ok=True)

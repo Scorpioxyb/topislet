@@ -14,7 +14,7 @@ private struct Configuration {
         var pid: Int32?
         var duration: TimeInterval = 7_200
         var interval: TimeInterval = 5
-        var outputPath = ".build/qa/topislet-long-run-summary.json"
+        var outputPath = "LocalData/qa/topislet-long-run-summary.json"
         var index = 1
 
         while index < arguments.count {

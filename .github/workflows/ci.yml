@@ -44,13 +44,13 @@ jobs:
         run: |
           VERSION="$(plutil -extract CFBundleShortVersionString raw Packaging/Info.plist)"
           bash Scripts/build-release.sh
-          bash Scripts/verify-release-dmg.sh ".build/release-artifacts/TopIslet-v${VERSION}-arm64.dmg"
+          bash Scripts/verify-release-dmg.sh "LocalData/release-artifacts/TopIslet-v${VERSION}-arm64.dmg"
 
       - name: Upload package smoke artifact
         uses: actions/upload-artifact@v7
         with:
           name: topislet-ci-package
           path: |
-            .build/release-artifacts/TopIslet-*.dmg
-            .build/release-artifacts/TopIslet-*.dmg.sha256
+            LocalData/release-artifacts/TopIslet-*.dmg
+            LocalData/release-artifacts/TopIslet-*.dmg.sha256
           if-no-files-found: error

@@ -43,13 +43,13 @@ jobs:
       - name: Verify release candidate
         env:
           VERSION: ${{ inputs.version }}
-        run: bash Scripts/verify-release-dmg.sh .build/release-artifacts/TopIslet-v${{ inputs.version }}-arm64.dmg
+        run: bash Scripts/verify-release-dmg.sh LocalData/release-artifacts/TopIslet-v${{ inputs.version }}-arm64.dmg
 
       - name: Upload candidate artifact
         uses: actions/upload-artifact@v7
         with:
           name: TopIslet-${{ inputs.tag }}
           path: |
-            .build/release-artifacts/TopIslet-*.dmg
-            .build/release-artifacts/TopIslet-*.dmg.sha256
+            LocalData/release-artifacts/TopIslet-*.dmg
+            LocalData/release-artifacts/TopIslet-*.dmg.sha256
           if-no-files-found: error

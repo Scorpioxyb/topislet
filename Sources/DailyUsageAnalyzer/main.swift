@@ -30,7 +30,7 @@ private struct Configuration {
         }
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let date = Date.now.formatted(.iso8601.year().month().day().dateSeparator(.dash))
-        let defaultOutput = ".build/qa/topislet-daily-usage-\(date).json"
+        let defaultOutput = "LocalData/qa/topislet-daily-usage-\(date).json"
         return Configuration(
             last: last,
             inputURL: inputPath.map { absoluteURL(path: $0, relativeTo: root) },
