@@ -5,7 +5,9 @@
 - 命名：`YYYY-MM-DD-buildNNN-主题.md`；一次验收一份文件，事后补证追加到原文件末尾，不改写已有结论。
 - 历史门禁快照：[STAGE0_CURRENT_GATES.md](STAGE0_CURRENT_GATES.md)（截至 build71，已被第一阶段工作流取代）。
 - build 151–180 的逐版本开发说明：[DEV_LOG_build151-180.md](DEV_LOG_build151-180.md)。
-- 隐私：不写入个人路径、原始日志或媒体原文；原始采样留在本机 `.build/qa/`，只引用汇总结果。
+- 隐私：不写入个人路径、原始日志或媒体原文；记录只引用汇总结果。
+
+> **2026-11-13 本机原始数据丢失：** 清理存储时执行的 `swift package clean` 清空了主目录整个 `.build/`，2026-11-13 之前记录中引用的 `.build/qa/…` 原始采样、`.build/rollback/…` 回滚副本和 `.build/release-artifacts/` 下未公开的候选 DMG 均已永久删除（无 Time Machine 或本地快照）。各记录中的汇总数字、哈希与结论仍是现存的唯一证据，引用这些路径的段落按历史描述阅读。已公开的 DMG 仍可从 GitHub Releases 获取。`.build/` 只能存放可重新生成的构建产物。
 
 新增记录后运行 `python3 Scripts/generate-acceptance-index.py` 更新下表；`--check` 可在 CI 中检查索引是否过期。
 
