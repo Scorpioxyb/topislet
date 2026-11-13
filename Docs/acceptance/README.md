@@ -21,6 +21,7 @@
 | --- | --- |
 | 11-13 | [build180 快速连续切歌复验](2026-11-13-build180-rapid-skip-recheck.md) |
 | 11-13 | [build180 保持展开模式外部点击实机验证](2026-11-13-build180-pinned-outside-click.md) |
+| 11-13 | [build180 物理键盘延迟分层测量](2026-11-13-build180-keyboard-latency-layers.md) |
 
 ### 2026-10
 
@@ -246,5 +247,5 @@
 | 07-12 | [顶屿 v0.1.1 发布预检记录](2026-07-12-release-preflight.md) |
 | 07-10 | [MVP v0.1 验收记录](2026-07-10-0056-mvp-v0.1-check.md) |
 
-共 206 份带日期记录。
+共 207 份带日期记录。
 <!-- index:end -->
