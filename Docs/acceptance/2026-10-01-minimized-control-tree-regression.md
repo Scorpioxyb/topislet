@@ -1,0 +1,14 @@
+# 最小化播放树退化现场与重建保护
+
+安装build56、顶屿37264、汽水37785。本轮未点击重启恢复，未安装改动。现有两小时监测22112已轮询确认live；465.769秒94样本、主存活、completed=false。
+
+CUA展开顶屿发现“播放控制暂不可用，顶屿正在自动重试。”及重启并连接，持续至少54秒再次展开仍相同。独立状态primary verifiedQishuiSource=true/isPlaying=true/PID37785；不能将AX fallback缺失解释为已停止播放。只读AXApplication AXManualAccessibility读取成功且true。窗口元数据确认桌面歌词标准窗口非最小化，另一标准窗口最小化，汽水hidden=false、前台Safari。主窗口树只剩4个一级子节点：1个group链至深度4空children及3个窗口按钮，未暴露WebArea或播放控件；控制diagnostic scanned46、candidateCount0。桌面歌词CUA仍有真实文本。这是实际最小化后台控制退化，不能算后台三键通过。
+
+源码discoverControlsWithRecovery对稀疏树首轮调用rebuildManualAccessibility，把AXManualAccessibility设false再true。该操作可能在最小化renderer无法重建时加重或维持退化；现场不能单独证明它是初始原因。实现保护：只有唯一且未最小化的播放窗口允许重建，桌面歌词排除；最小化/关闭/多窗口仍有界只读重试，保留已开启属性。新增策略回归测试；swift test 266项通过，控制安全与diff检查通过。尚需安装实机验证，不宣称修复完成。
+
+CUA检查汽水菜单，前置全部窗口未恢复最小化主窗。没有点击退出/重启，没有改用户设置。Dock读取timeout，停止探索。CUA reset后helper59283 TERM；后续核实无残留。
+
+
+## 启动参数前提核验
+
+2026-10-01独立读取37785进程参数，仅输出是否含已知参数的布尔值，确认--force-renderer-accessibility=true，没有输出完整参数。该进程仍曾最小化退化且恢复主窗后恢复302节点/唯一控制组，故启动参数不是持久健康保证。修正QishuiWindowRecovery源码注释，不修改重启逻辑；保留语义发现与健康检查。不能把“使用参数启动”作为后台控制门禁的替代证据。当前锁屏日志仍true，监测22112本轮实际句柄轮询live；1392秒279样本、completed=false。不新增产品版本或把注释修正解释为功能修复。

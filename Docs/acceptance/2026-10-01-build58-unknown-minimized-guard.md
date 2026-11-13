@@ -1,0 +1,7 @@
+# build58 未知最小化状态保护
+
+复查57保护发现boolAttribute读取失败/非布尔默认false；在重建准入条件中不能把未知状态等价为未最小化。控制树退化正是需要容忍AX读取异常的场景。更改局限于重建准入：通过只读boolAttribute重载保留nil，所有播放窗口的最小化状态必须读取成功且唯一窗口明确未最小化，才允许关闭再开启renderer辅助功能；否则只重试读取。已有两参数boolAttribute调用保持原行为。窗口读取显式设置现有消息超时，不写AXMinimized。
+
+控制安全脚本曾对直接copyAttribute读取报拒绝；未修改或绕过脚本，改为既有只读boolAttribute路径后通过。新增未知状态准入测试，最终代码swift test会话33873 exit0/267项通过；diff和控制安全通过。
+
+Packaging构建号58，Release编译会话27804已开始，日志/tmp/topislet-build58-release.log。SwiftPM曾等待测试构建锁，测试已完成，日志已进入Building for production。随后同一27804会话exit0，Release构建完成16.88秒。DMG尚未生成，不声称安装验收。57候选保留但未包含此修正，下一实机候选应使用58，禁止将57测试结果升级为58通过。安装仍为56/37264，monitor22112实际轮询live、1577.549秒316样本未完成，锁屏context16748仍true；解锁请求待回复。无CUA操作、安装或发布。

@@ -1,0 +1,9 @@
+# build59 从DMG安装，启动与交互待解锁
+
+原22112两小时监测已终结并保存未通过子进程增长门禁的结论，才进行安装。安装前重新确认原summary completed=true/completedAt、build59DMG精确checksum、安装56版本与回滚副本主程序一致，CGSession明确screenLocked=true。
+
+只读挂载最终59DMG，校验版本59、严格签名、designated requirement与已安装56一致。核对PID37264完整可执行路径后SIGTERM，旧主37264及两状态流37266/37797在约0.061秒内均从ps消失，随后再次确认无残留MacBookIsland；这只证明56信号退出场景，不替代59菜单退出或源停止验收。汽水37785保持存活，没有激活/关闭/重启汽水。
+
+原/Applications/顶屿.app用move-to-trash.swift移到Trash；56完整独立回滚副本继续保留在.build/rollback/build56/顶屿.app。使用ditto从挂载镜像复制59到/Applications/顶屿.app，严格签名通过，Info.plist版本59，主程序逐字节与镜像一致，designated requirement一致。安装程序SHA256 300da5b694b03c09f09f6246eff2b3fa2851a0af776fe94c3151d8be8c3704a7，DMG SHA256 7a3fcd7ba514efed874a4b8c2c8f4c5679c5ffd27722ed9e5f5ae18a65ac1b22。mount已卸载，临时挂载目录移Trash，未修改系统权限/偏好。
+
+产物.build/release-artifacts/build59/install-receipt.json及candidate-receipt.json明确installed=true、launched=false、realMachineFinalCandidateVerified=false。机器锁屏期间不调用GUI启动；因此当前顶屿没有运行实例，安装成功不等于启动、AX授权或按钮成功。解锁后通过CUA启动59，核对单实例/窗口、现有权限、三键/歌词卡片等真实交互；另需最终59持续播放和资源采样。阶段0及Goal仍未完成，禁止百度网盘测试仍有效。
