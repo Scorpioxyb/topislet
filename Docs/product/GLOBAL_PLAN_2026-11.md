@@ -66,7 +66,7 @@
 - **适配器协议没有覆盖主适配。** `MusicAppAdapter`（`MusicAppAdapter.swift`）只有 `AppleMusicAppAdapter` 和 `NeteaseMusicAppAdapter` 实现；汽水由协调器直接驱动 `MediaRemoteAdapterStreamSource`、`QishuiAXReader`、`QishuiSemanticAXController`、`QishuiLyricReader`。`MUSIC_ADAPTER_INTAKE.md` 的七条准入门槛因此没有对应的统一类型约束。
 - **身份门禁靠分散的代次检查实现。** build 151–180 的记录标题几乎都是某一处时序或归属的补丁（`Docs/acceptance/DEV_LOG_build151-180.md`；10-13 的 27 篇记录）。门禁本身正确，但没有一个“已发布曲目令牌”类型让编译器帮忙。
 - 状态流通过 `/usr/bin/perl` 子进程运行（`MediaRemoteAdapterStreamSource.swift` 234、2158、2216 行），依赖系统自带 perl 与非公开 MediaRemote；`README.md` 已声明系统更新风险。
-- 仓库里保留 `Experiments/QishuiLyricsOCRBridge.swift.disabled`。它不参与构建，但与“不使用 OCR”的公开承诺并列出现在公开仓库里，容易引起误读。
+- 仓库里保留 `Experiments/QishuiLyricsOCRBridge.swift.disabled`。它不参与构建，但与“不使用 OCR”的公开承诺并列出现在公开仓库里，容易引起误读。（2026-11-13 已按负责人决定删除，git 历史里仍可找回。）
 
 **测试与 QA**
 
@@ -354,7 +354,7 @@ MusicAdapterCoordinator（来源选择、控制授权、向 UI 发布）
 
 - 执行 2.5 的取代与归档；`Docs/README.md` 的“当前产品基准”指向本文。
 - 修正 1.3 列出的三处口径不一致：进度跳转、动画时长、`OPTIMIZATION_BACKLOG.md` 的减少动态效果状态。
-- 决定 `Experiments/QishuiLyricsOCRBridge.swift.disabled` 的去留；建议删除，git 历史里仍可找回。
+- ~~决定 `Experiments/QishuiLyricsOCRBridge.swift.disabled` 的去留~~：2026-11-13 已删除，git 历史里仍可找回。
 - `ISSUE_BOARD.md` 的 P0–P2 历史表中，“相关提交”一列多处仍写“待本次提交”，归档时一并清理。
 
 ---
