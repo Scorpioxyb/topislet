@@ -22,11 +22,14 @@ move_to_trash_if_present() {
   /usr/bin/swift "$ROOT/Scripts/move-to-trash.swift" "$path"
 }
 
+# ps escapes non-ASCII bytes (顶屿) unless the locale is UTF-8, which made
+# this match fail silently in non-interactive shells and left the old build
+# running after install.
 stop_running_app_for_path() {
   local app_path="$1"
   local executable_path="$app_path/Contents/MacOS/MacBookIsland"
   local pids
-  pids="$(ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
+  pids="$(LC_ALL=en_US.UTF-8 ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
   if [ -z "$pids" ]; then
     return
   fi
@@ -37,7 +40,7 @@ stop_running_app_for_path() {
   done <<< "$pids"
 
   for _ in {1..20}; do
-    pids="$(ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
+    pids="$(LC_ALL=en_US.UTF-8 ps -axo pid=,command= | awk -v executable="$executable_path" '$2 == executable {print $1}')"
     [ -z "$pids" ] && return
     sleep 0.1
   done
