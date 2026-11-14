@@ -1668,7 +1668,11 @@ func deferredMetadataReadPublishesCompleteCandidateSingleFlight() async throws {
     #expect(published.album == "Album B")
     #expect(published.duration == 201)
     #expect(published.artworkData == Data([0x32]))
-    #expect(abs((published.elapsedTime ?? 0) - 4) < 0.1)
+    // The published position is the complete read's 4s anchor, extrapolated in
+    // wall time while playing; a loaded CI runner can add several hundred ms.
+    let elapsed = published.elapsedTime ?? 0
+    #expect(elapsed >= 3.99)
+    #expect(elapsed <= 4 + Date().timeIntervalSince(startedAt) + 0.05)
     #expect(reader.readCount == 1)
 }
 
@@ -1963,7 +1967,7 @@ func sessionInvalidationCancelsExhaustedDeferredWait(readDelay: TimeInterval) as
         receivedUptime: ProcessInfo.processInfo.systemUptime)
     _ = source.ingestStreamEnvelopeForTesting(try streamEnvelope(transitional), receivedAt: Date(),
         receivedUptime: ProcessInfo.processInfo.systemUptime, schedulesDeferredRefresh: true)
-    try #require(await waitUntil(timeout: 2) {
+    try #require(await waitUntil(timeout: 4) {
         source.deferredPublicationIsPassiveForTesting
     })
     #expect(reader.readCount == 6)

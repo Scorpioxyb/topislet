@@ -18,6 +18,8 @@ jobs:
         run: |
           bash -n Scripts/package-app.sh Scripts/build-release.sh Scripts/rebuild-mediaremote-adapter.sh Scripts/verify-release-source.sh Scripts/verify-release-dmg.sh Scripts/check-signing-readiness.sh Scripts/notarize-release.sh Scripts/verify-qishui-control-safety.sh
           bash Scripts/verify-qishui-control-safety.sh
+          python3 -m unittest discover -s Scripts/tests -p 'test_*.py'
+          python3 Scripts/generate-acceptance-index.py --check
           plutil -lint Packaging/Info.plist
           test "$(plutil -extract CFBundleIdentifier raw Packaging/Info.plist)" = "io.github.scorpioxyb.topislet"
           plutil -lint Vendor/MediaRemoteAdapter/MediaRemoteAdapter.framework/Versions/A/Resources/Info.plist
