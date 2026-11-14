@@ -17,15 +17,15 @@ struct CompactMusic: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.music.track.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(IslandTheme.Typeface.compactTitle)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .foregroundStyle(.white)
                     Text(model.music.track.artist)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(IslandTheme.Typeface.compactSubtitle)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
-                        .foregroundStyle(.white.opacity(0.58))
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.compactSubtitle))
                 }
             }
             .padding(.leading, 10)
@@ -66,14 +66,14 @@ struct CompactTimer: View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "timer")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(IslandTheme.Typeface.compactTimerIcon)
                     .foregroundStyle(.white)
                     .frame(width: 25, height: 25)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.chip)))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(timeText(model.timerState.remaining))
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(IslandTheme.Typeface.compactTimerTime)
                         .foregroundStyle(.white)
                     ProgressPill(progress: model.timerState.progress, width: 96)
                 }
@@ -118,14 +118,14 @@ struct CompactNotification: View {
             HStack(spacing: 8) {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: "bell.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(IslandTheme.Typeface.compactTitle)
                         .foregroundStyle(.white)
                         .frame(width: 25, height: 25)
-                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.button)))
 
                     if model.notification.count > 1 {
                         Text("\(model.notification.count)")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(IslandTheme.Typeface.compactBadge)
                             .foregroundStyle(.black)
                             .frame(width: 13, height: 13)
                             .background(Circle().fill(Color.white))
@@ -135,13 +135,13 @@ struct CompactNotification: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.notification.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(IslandTheme.Typeface.compactTitle)
                         .lineLimit(1)
                         .foregroundStyle(.white)
                     Text(model.notification.body)
-                        .font(.system(size: 10))
+                        .font(IslandTheme.Typeface.compactBody)
                         .lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.58))
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.compactSubtitle))
                 }
             }
             .padding(.leading, 10)

@@ -51,7 +51,7 @@ struct AlbumArt: View {
         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
             .fill(
                 LinearGradient(
-                    colors: track.hasArtwork ? track.palette : [Color.white.opacity(0.13), Color.white.opacity(0.05)],
+                    colors: track.hasArtwork ? track.palette : [Color.white.opacity(IslandTheme.Fill.artworkFallbackTop), Color.white.opacity(IslandTheme.Fill.artworkFallbackBottom)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -59,11 +59,11 @@ struct AlbumArt: View {
             .overlay {
                 ZStack {
                     Circle()
-                        .fill(Color.white.opacity(0.18))
+                        .fill(Color.white.opacity(IslandTheme.Fill.artworkGlyphBackdrop))
                         .frame(width: size * 0.55, height: size * 0.55)
                     Image(systemName: "music.note")
                         .font(.system(size: size * 0.28, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.86))
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.artworkGlyph))
                 }
             }
     }
@@ -120,12 +120,12 @@ private struct MusicSourceBadge: View {
                     .transition(.opacity)
             } else if bundleIdentifier != nil {
                 Image(systemName: "music.note")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .font(IslandTheme.Typeface.badgeGlyph)
+                    .foregroundStyle(.white.opacity(IslandTheme.Ink.controlGlyph))
                     .frame(width: size, height: size)
                     .background(
                         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-                            .fill(Color.black.opacity(0.9))
+                            .fill(Color.black.opacity(IslandTheme.Surface.badgeBackdrop))
                     )
                     .transition(.opacity)
             }
@@ -152,19 +152,19 @@ struct ControlButton: View {
                     .fill(
                         prominent
                             ? Color.white
-                            : Color.white.opacity(isHovering ? 0.16 : 0.1)
+                            : Color.white.opacity(isHovering ? IslandTheme.Fill.buttonHover : IslandTheme.Fill.button)
                     )
 
                 Image(systemName: icon)
                     .font(.system(size: prominent ? 13 : 12, weight: .bold))
-                    .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
+                    .foregroundStyle(prominent ? Color.black : Color.white.opacity(IslandTheme.Ink.controlGlyph))
                     .id(icon)
                     .transition(iconTransition)
             }
             .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
         }
         .buttonStyle(IslandControlButtonStyle())
-        .opacity(isEnabled ? 1 : 0.38)
+        .opacity(isEnabled ? 1 : IslandTheme.Ink.disabledControl)
         .onHover { hovering in
             isHovering = hovering
         }
@@ -213,9 +213,9 @@ struct TextButton: View {
         Button(action: action) {
             HStack(spacing: 7) {
                 Image(systemName: systemName)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(IslandTheme.Typeface.textButtonIcon)
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(IslandTheme.Typeface.textButtonLabel)
             }
             .foregroundStyle(.black)
             .padding(.horizontal, 13)
@@ -254,12 +254,12 @@ struct ProgressPill: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(prominent ? 0.19 : 0.13))
+                    .fill(Color.white.opacity(prominent ? IslandTheme.Fill.progressTrackProminent : IslandTheme.Fill.progressTrack))
                     .frame(height: prominent ? 6 : 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 
                 Capsule()
-                    .fill(accentColor.opacity(isDragging ? 1 : 0.92))
+                    .fill(accentColor.opacity(isDragging ? 1 : IslandTheme.Accent.progressFill))
                     .frame(width: progressWidth, height: prominent ? 6 : 4)
                     .frame(maxHeight: .infinity, alignment: .center)
 

@@ -114,11 +114,11 @@ struct IslandShell<Content: View>: View {
                     shape
                         .fill(Color.black.opacity(fillOpacity))
                     shape
-                        .stroke(Color.white.opacity(strokeOpacity), lineWidth: 0.65)
+                        .stroke(Color.white.opacity(strokeOpacity), lineWidth: IslandTheme.Surface.strokeWidth)
                 }
             )
             .clipShape(shape)
-            .shadow(color: Color.black.opacity(shadowOpacity), radius: shadowOpacity > 0 ? 14 : 0, x: 0, y: shadowOpacity > 0 ? 8 : 0)
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: shadowOpacity > 0 ? IslandTheme.Surface.shadowRadius : 0, x: 0, y: shadowOpacity > 0 ? IslandTheme.Surface.shadowOffsetY : 0)
     }
 }
 
@@ -170,8 +170,8 @@ struct CollapsedIsland: View {
                                 AlbumArt(track: model.music.track, size: IslandCollapsedLayout.artworkSize)
                             } else {
                                 Image(systemName: model.activeFeature.iconName)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.72))
+                                    .font(IslandTheme.Typeface.collapsedIcon)
+                                    .foregroundStyle(.white.opacity(IslandTheme.Ink.headerIcon))
                             }
                         }
                         .frame(width: model.collapsedWingWidth, height: model.topBandHeight)
@@ -184,8 +184,8 @@ struct CollapsedIsland: View {
                                model.music.playbackStateKnown,
                                !model.music.isPlaying {
                                 Image(systemName: "pause.fill")
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.55))
+                                    .font(IslandTheme.Typeface.collapsedPauseGlyph)
+                                    .foregroundStyle(.white.opacity(IslandTheme.Ink.collapsedPauseGlyph))
                             } else {
                                 StatusDot(
                                     isActive: model.statusWaveIsActive,
@@ -259,8 +259,8 @@ struct ExpandedIsland: View {
             ZStack {
                 HStack(spacing: 0) {
                     Image(systemName: model.activeFeature.iconName)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .font(IslandTheme.Typeface.expandedHeaderIcon)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.headerIcon))
                         .frame(width: model.expandedHeaderWingWidth, height: model.topBandHeight)
 
                     Color.clear
@@ -295,18 +295,18 @@ struct ExpandedIslandBodyPanel: View {
             IslandShell(
                 width: model.expandedWidth,
                 height: model.expandedBodyHeight,
-                cornerRadius: 24,
+                cornerRadius: IslandTheme.Surface.bodyCornerRadius,
                 // Both music states share the same translucent glass capsule.
                 // The previous opaque shell plus inner material card was the
                 // second visible box in the supplied screenshot.
                 fillOpacity: model.activeFeature == .music ? 0 : 1,
-                strokeOpacity: model.activeFeature == .music ? 0.12 : 0,
-                shadowOpacity: model.activeFeature == .music ? 0.18 : 0
+                strokeOpacity: model.activeFeature == .music ? IslandTheme.Surface.musicStrokeOpacity : 0,
+                shadowOpacity: model.activeFeature == .music ? IslandTheme.Surface.musicShadowOpacity : 0
             ) {
                 ZStack {
                     if model.activeFeature == .music {
                         MusicGlassBackground()
-                        Color.black.opacity(0.30)
+                        Color.black.opacity(IslandTheme.Surface.musicGlassDim)
                     }
                 }
             }
@@ -338,12 +338,12 @@ struct ExpandedIslandBodyPanel: View {
                                     HStack(spacing: 5) {
                                         Image(systemName: "bell.fill")
                                         Text(model.notification.count > 1 ? "\(model.notification.count) 条提醒" : "提醒")
-                                            .font(.system(size: 10, weight: .medium))
+                                            .font(IslandTheme.Typeface.chipLabel)
                                     }
-                                    .foregroundStyle(.white.opacity(0.78))
+                                    .foregroundStyle(.white.opacity(IslandTheme.Ink.pendingChip))
                                     .padding(.horizontal, 8)
                                     .frame(height: 24)
-                                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                                    .background(Capsule().fill(Color.white.opacity(IslandTheme.Fill.chip)))
                                 }
                                 .buttonStyle(.plain)
                                 .help("查看提醒")
@@ -395,10 +395,10 @@ struct WindowModeButtons: View {
                     model.toggleMusicLyrics()
                 } label: {
                     Image(systemName: "text.quote")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(model.isMusicLyricsEnabled ? 0.95 : 0.55))
+                        .font(IslandTheme.Typeface.windowButton)
+                        .foregroundStyle(.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Ink.toggleOn : IslandTheme.Ink.toggleOff))
                         .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(model.isMusicLyricsEnabled ? 0.16 : 0.06)))
+                        .background(Circle().fill(Color.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Fill.toggleOn : IslandTheme.Fill.quietButton)))
                 }
                 .buttonStyle(.plain)
                 .help(model.isMusicLyricsEnabled ? "隐藏歌词" : "显示歌词")
@@ -417,10 +417,10 @@ struct WindowModeButtons: View {
                     }
                 } label: {
                     Image(systemName: model.appSettings.musicExpansionMode == .pinned ? "pin.fill" : "ellipsis")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.68))
+                        .font(IslandTheme.Typeface.windowButton)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
                         .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(0.06)))
+                        .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -434,10 +434,10 @@ struct WindowModeButtons: View {
                 model.collapseExpandedPresentation()
             } label: {
                 Image(systemName: "chevron.up")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .font(IslandTheme.Typeface.windowButtonBold)
+                    .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.06)))
+                    .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
             }
             .buttonStyle(.plain)
             .help("收起")
@@ -446,10 +446,10 @@ struct WindowModeButtons: View {
                 model.requestIslandMode(.collapsed, bypassCooldown: true)
             } label: {
                 Image(systemName: "minus")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .font(IslandTheme.Typeface.windowButtonBold)
+                    .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.06)))
+                    .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
             }
             .buttonStyle(.plain)
             .help("最小化")

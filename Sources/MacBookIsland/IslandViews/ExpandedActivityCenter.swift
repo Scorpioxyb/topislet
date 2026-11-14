@@ -14,17 +14,17 @@ struct ExpandedActivityCenter: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Label("专注计时", systemImage: "timer")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.86))
+                    .font(IslandTheme.Typeface.sectionHeading)
+                    .foregroundStyle(.white.opacity(IslandTheme.Ink.sectionHeading))
                 Spacer(minLength: 12)
                 Button {
                     model.requestIslandMode(.collapsed, bypassCooldown: true)
                 } label: {
                     Image(systemName: "chevron.up")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.68))
+                        .font(IslandTheme.Typeface.smallButtonIcon)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
                         .frame(width: 28, height: 28)
-                        .background(Circle().fill(Color.white.opacity(0.06)))
+                        .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
                 }
                 .buttonStyle(.plain)
                 .help("收起快捷面板")
@@ -38,12 +38,12 @@ struct ExpandedActivityCenter: View {
                         model.startTimer(minutes: preset.rawValue)
                     } label: {
                         Text("\(preset.rawValue) 分")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.86))
+                            .font(IslandTheme.Typeface.presetLabel)
+                            .foregroundStyle(.white.opacity(IslandTheme.Ink.rowTitle))
                             .frame(width: 52, height: 32)
                             .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color.white.opacity(0.09))
+                                RoundedRectangle(cornerRadius: IslandTheme.Radius.presetChip, style: .continuous)
+                                    .fill(Color.white.opacity(IslandTheme.Fill.presetChip))
                             )
                     }
                     .buttonStyle(.plain)
@@ -53,25 +53,25 @@ struct ExpandedActivityCenter: View {
             .frame(maxWidth: .infinity, minHeight: 44)
 
             if model.shouldPresentMusicControlRecovery {
-                Divider().overlay(Color.white.opacity(0.08))
+                Divider().overlay(Color.white.opacity(IslandTheme.Fill.divider))
 
                 HStack(spacing: 10) {
                     Image(systemName: "music.note")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .font(IslandTheme.Typeface.sectionHeading)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.sectionTitle))
                         .frame(width: 18)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(model.isRecoveringMusicControl ? "正在连接播放控制" : "音乐控制暂不可用")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.86))
+                            .font(IslandTheme.Typeface.rowTitle)
+                            .foregroundStyle(.white.opacity(IslandTheme.Ink.rowTitle))
                         Text(model.isRecoveringMusicControl
                             ? "正在重新打开汽水音乐"
                             : (model.musicControlRecoveryNeedsUserAction
                                 ? "连接未完成，可再次尝试"
                                 : "不会自动打开汽水音乐"))
-                            .font(.system(size: 10, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.48))
+                            .font(IslandTheme.Typeface.rowDetail)
+                            .foregroundStyle(.white.opacity(IslandTheme.Ink.rowDetail))
                     }
 
                     Spacer(minLength: 8)
@@ -86,15 +86,15 @@ struct ExpandedActivityCenter: View {
                                     .tint(.white)
                             } else {
                                 Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(IslandTheme.Typeface.pillLabel)
                             }
                             Text(model.isRecoveringMusicControl ? "连接中" : "重启并连接")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(IslandTheme.Typeface.pillLabel)
                         }
                         .foregroundStyle(.white)
                         .padding(.horizontal, 9)
                         .frame(height: 28)
-                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                        .background(Capsule().fill(Color.white.opacity(IslandTheme.Fill.selected)))
                     }
                     .buttonStyle(.plain)
                     .disabled(model.isRecoveringMusicControl)
@@ -104,7 +104,7 @@ struct ExpandedActivityCenter: View {
                 .frame(height: 38)
             }
 
-            Divider().overlay(Color.white.opacity(0.08))
+            Divider().overlay(Color.white.opacity(IslandTheme.Fill.divider))
 
             ActivityPermissionRow(
                 model: model,
@@ -113,7 +113,7 @@ struct ExpandedActivityCenter: View {
                 entityType: .event
             )
 
-            Divider().overlay(Color.white.opacity(0.08))
+            Divider().overlay(Color.white.opacity(IslandTheme.Fill.divider))
 
             ActivityPermissionRow(
                 model: model,
@@ -163,19 +163,19 @@ private struct ActivityPermissionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.72))
+                .font(IslandTheme.Typeface.sectionHeading)
+                .foregroundStyle(.white.opacity(IslandTheme.Ink.sectionTitle))
                 .frame(width: 18)
 
             Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.86))
+                .font(IslandTheme.Typeface.rowTitle)
+                .foregroundStyle(.white.opacity(IslandTheme.Ink.rowTitle))
 
             Spacer(minLength: 10)
 
             Text(statusText)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.48))
+                .font(IslandTheme.Typeface.rowDetailMedium)
+                .foregroundStyle(.white.opacity(IslandTheme.Ink.rowDetail))
                 .lineLimit(1)
 
             if access.canRead {
@@ -201,8 +201,8 @@ private struct ActivityPermissionRow: View {
                     }
                 } label: {
                     Image(systemName: access == .notDetermined ? "arrow.right.circle.fill" : "gearshape.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .font(IslandTheme.Typeface.rowIcon)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.rowIcon))
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)

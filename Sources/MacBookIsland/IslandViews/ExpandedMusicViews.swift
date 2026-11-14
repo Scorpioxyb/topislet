@@ -48,15 +48,15 @@ struct ExpandedMusic: View {
                 } else {
                     HStack(spacing: 7) {
                         Image(systemName: "waveform")
-                            .font(.system(size: 13, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.38))
+                            .font(IslandTheme.Typeface.musicPlaceholderIcon)
+                            .foregroundStyle(.white.opacity(IslandTheme.Ink.musicPlaceholderIcon))
                             .accessibilityHidden(true)
                         Text(MusicLyricPresentation.emptyStateText(
                             lines: model.music.track.lyrics,
                             lyricsEnabled: model.isMusicLyricsEnabled
                         ))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.58))
+                            .font(IslandTheme.Typeface.musicStatus)
+                            .foregroundStyle(.white.opacity(IslandTheme.Ink.musicStatus))
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -78,7 +78,7 @@ struct ExpandedMusic: View {
                 ? MusicExpandedLayout.lyricsBodyHeight : MusicExpandedLayout.noLyricsBodyHeight)
         .overlay(alignment: .leading) {
             Rectangle()
-                .fill(.white.opacity(0.12))
+                .fill(.white.opacity(IslandTheme.Fill.musicColumnDivider))
                 .frame(width: 1, height: showsLyrics ? 110 : 82)
                 .offset(x: ExpandedMusicLayout.controlContentWidth + ExpandedMusicLayout.controlToLyricSpacing / 2)
                 .allowsHitTesting(false)
@@ -111,11 +111,11 @@ private struct MusicTransportControls: View {
                         VStack(spacing: 6) {
                             Image(systemName: "arrow.clockwise")
                             Text(model.isRecoveringMusicControl ? "连接中" : "恢复控制")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(IslandTheme.Typeface.recoveryLabel)
                         }
                         .foregroundStyle(.white)
                         .frame(width: 104, height: 48)
-                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        .background(.white.opacity(IslandTheme.Fill.chip), in: RoundedRectangle(cornerRadius: IslandTheme.Radius.recoveryButton))
                     }
                     .buttonStyle(.plain)
                     .disabled(model.isRecoveringMusicControl)
@@ -168,13 +168,13 @@ private struct LyricMusicLeftRail: View {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.music.track.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.96))
+                        .font(IslandTheme.Typeface.musicTitle)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.musicTitle))
                         .lineLimit(2)
                         .truncationMode(.tail)
                     Text(model.music.track.artist)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .font(IslandTheme.Typeface.musicArtist)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.musicArtist))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -224,14 +224,14 @@ private struct LyricsShelf: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 9) {
                 Capsule()
-                    .fill(accent.opacity(0.95))
+                    .fill(accent.opacity(IslandTheme.Accent.lyricBar))
                     .frame(width: 3, height: 28)
                 if let elapsedTime, !timedWords.isEmpty {
                     KaraokeLyricText(
                         text: current.primary,
-                        font: .system(size: 23, weight: .semibold),
-                        highlightedColor: .white.opacity(0.98),
-                        unhighlightedColor: .white.opacity(0.34),
+                        font: IslandTheme.Typeface.lyricCurrent,
+                        highlightedColor: .white.opacity(IslandTheme.Ink.lyricHighlighted),
+                        unhighlightedColor: .white.opacity(IslandTheme.Ink.lyricUnhighlighted),
                         lineHeight: 29,
                         clock: lyricClock,
                         isPlaying: isPlaying,
@@ -242,8 +242,8 @@ private struct LyricsShelf: View {
                 } else {
                     MarqueeText(
                         text: current.primary,
-                        font: .system(size: 23, weight: .semibold),
-                        color: .white.opacity(0.98),
+                        font: IslandTheme.Typeface.lyricCurrent,
+                        color: .white.opacity(IslandTheme.Ink.lyricHighlighted),
                         lineHeight: 29,
                         clock: lyricClock
                     )
@@ -253,8 +253,8 @@ private struct LyricsShelf: View {
             if !current.translation.isEmpty {
                 MarqueeText(
                     text: current.translation,
-                    font: .system(size: 14, weight: .regular),
-                    color: .white.opacity(0.62),
+                    font: IslandTheme.Typeface.lyricTranslation,
+                    color: .white.opacity(IslandTheme.Ink.lyricTranslation),
                     lineHeight: 19,
                     clock: lyricClock
                 )
@@ -264,8 +264,8 @@ private struct LyricsShelf: View {
             if !next.primary.isEmpty && next.primary != current.primary {
                 MarqueeText(
                     text: next.primary,
-                    font: .system(size: 16, weight: .medium),
-                    color: .white.opacity(0.38),
+                    font: IslandTheme.Typeface.lyricNext,
+                    color: .white.opacity(IslandTheme.Ink.lyricNext),
                     lineHeight: 21,
                     clock: lyricClock
                 )
@@ -320,20 +320,20 @@ private struct MusicProgressRow: View {
             .help(model.music.canSeek ? "拖动调整播放进度" : "当前歌曲暂不支持进度拖动")
 
             Text(playbackPositionText(model.music, progressOverride: scrubPreviewProgress))
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(IslandTheme.Typeface.timeReadout)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .allowsTightening(true)
-                .foregroundStyle(.white.opacity(0.52))
+                .foregroundStyle(.white.opacity(IslandTheme.Ink.timeReadout))
                 .frame(width: ExpandedMusicLayout.timeWidth, alignment: .leading)
         }
         .padding(.horizontal, prominent ? 11 : 0)
         .frame(height: prominent ? 30 : nil)
         .background {
             if prominent {
-                RoundedRectangle(cornerRadius: 15)
-                    .fill(.white.opacity(0.065))
+                RoundedRectangle(cornerRadius: IslandTheme.Radius.progressPill)
+                    .fill(.white.opacity(IslandTheme.Fill.progressPill))
             }
         }
         .onDisappear {

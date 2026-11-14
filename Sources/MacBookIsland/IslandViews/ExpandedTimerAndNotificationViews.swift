@@ -14,20 +14,20 @@ struct ExpandedTimer: View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.12), lineWidth: 5)
+                    .stroke(Color.white.opacity(IslandTheme.Fill.timerRingTrack), lineWidth: 5)
                 Circle()
                     .trim(from: 0, to: model.timerState.progress)
                     .stroke(Color.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 Text(timeText(model.timerState.remaining))
-                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .font(IslandTheme.Typeface.timerDisplay)
                     .foregroundStyle(.white)
             }
             .frame(width: 76, height: 76)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(model.timerState.isRunning ? "专注计时中" : "计时器已暂停")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(IslandTheme.Typeface.timerStatus)
                     .foregroundStyle(.white)
                 ProgressPill(progress: model.timerState.progress, width: 232)
                 HStack(spacing: 10) {
@@ -62,22 +62,22 @@ struct ExpandedNotification: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Image(systemName: "bell.badge.fill")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(IslandTheme.Typeface.notificationIcon)
                     .foregroundStyle(.white)
                     .frame(width: 54, height: 54)
-                    .background(RoundedRectangle(cornerRadius: 17, style: .continuous).fill(Color.white.opacity(0.1)))
+                    .background(RoundedRectangle(cornerRadius: IslandTheme.Radius.notificationIcon, style: .continuous).fill(Color.white.opacity(IslandTheme.Fill.button)))
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(model.notification.source)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.48))
+                        .font(IslandTheme.Typeface.notificationSource)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.notificationSource))
                     Text(model.notification.title)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(IslandTheme.Typeface.notificationTitle)
                         .foregroundStyle(.white)
                     Text(model.notification.body)
-                        .font(.system(size: 12))
+                        .font(IslandTheme.Typeface.notificationBody)
                         .lineLimit(2)
-                        .foregroundStyle(.white.opacity(0.62))
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.notificationBody))
                 }
 
                 Spacer()
