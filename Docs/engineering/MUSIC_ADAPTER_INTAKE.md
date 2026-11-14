@@ -4,7 +4,7 @@
 
 | 应用 | 支持等级 | 状态来源 | 定向控制 | 封面 | 进度 |
 | --- | --- | --- | --- | --- | --- |
-| 汽水音乐 | 主适配 | Bundle ID 专属 MediaRemote 流 | PID 内唯一语义 AX 控件 | 支持 | 可信只读 |
+| 汽水音乐 | 主适配 | Bundle ID 专属 MediaRemote 流 | PID 内唯一语义 AX 控件 | 支持 | 可信进度；受保护跳转（跟随系统媒体焦点，明文例外，见 `Docs/qa/QA_CHECKLIST.md`“安全硬门禁”），校验失败时只读 |
 | Apple Music | Alpha | PID 定向 Apple Event | PID 与曲目绑定 Apple Event | 支持，电台可用 Apple 公共目录补齐 | 支持跳转 |
 | 网易云音乐 | Alpha | Bundle ID + PID 专属 MediaRemote client | PID 内原生“控制”菜单 | 支持 | 可信只读 |
 

@@ -16,12 +16,11 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [V0.2_PRODUCT_REPLAN](product/V0.2_PRODUCT_REPLAN.md) | **当前产品基准**：定位、活动引擎、AI 边界、P0/P1/P2 |
+| [GLOBAL_PLAN_2026-11](product/GLOBAL_PLAN_2026-11.md) | **当前产品基准**：定位、前后端方案、工程与质量、路线图、负责人决策 |
+| [V0.2_PRODUCT_REPLAN](product/V0.2_PRODUCT_REPLAN.md) | 部分被取代：恢复契约、仲裁规则、音乐边界、权限分级仍有效 |
 | [PRODUCT_REQUIREMENTS](product/PRODUCT_REQUIREMENTS.md) | 产品需求总表 |
 | [LYRICS_PRODUCT_PLAN](product/LYRICS_PRODUCT_PLAN.md) | 歌词能力的产品规划 |
-| [V0.2_PLAN](product/V0.2_PLAN.md) | V0.2 稳定性与活动扩展计划（定位以重规划为准） |
-| [V0.1.3_PLAN](product/V0.1.3_PLAN.md) | v0.1.3 里程碑计划 |
-| [OPTIMIZATION_BACKLOG](product/OPTIMIZATION_BACKLOG.md) | 体验与性能优化待办 |
+| [V0.1.3_PLAN](product/V0.1.3_PLAN.md) | v0.1.3 里程碑计划，收尾后归档 |
 
 ## 工程 `engineering/`
 
@@ -39,7 +38,7 @@
 | [STAGE1_DEVELOPMENT_WORKFLOW](qa/STAGE1_DEVELOPMENT_WORKFLOW.md) | **当前开发与分层验收流程** |
 | [QA_CHECKLIST](qa/QA_CHECKLIST.md) | 实机回归清单与硬性安全规则 |
 | [MVP_ACCEPTANCE](qa/MVP_ACCEPTANCE.md) | MVP 验收标准 |
-| [RELEASE_CHECKLIST](qa/RELEASE_CHECKLIST.md) | 发布检查清单 |
+| [RELEASE_CHECKLIST](qa/RELEASE_CHECKLIST.md) | 发布检查清单模板，每次发布复制使用 |
 
 ## 证据 `acceptance/`
 
@@ -52,7 +51,7 @@
 
 ## 归档 `archive/`
 
-已被取代的计划和旧版本发布说明：v0.1.2 计划与检查清单、v0.1.0 / v0.1.1 发布说明。只读保留，不再更新。
+已被取代的计划和旧版本发布说明：V0.2 计划、优化清单、v0.1.2 计划、v0.1.1-alpha.4 与 v0.1.2 检查清单、v0.1.0 / v0.1.1 发布说明。只读保留，不再更新。
 
 ## 维护规则
 
