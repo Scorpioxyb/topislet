@@ -10,7 +10,7 @@
 - [ ] `python3 Scripts/generate-acceptance-index.py --check` 通过。
 - [ ] `bash Scripts/verify-qishui-control-safety.sh` 通过。
 - [ ] `Docs/qa/QA_CHECKLIST.md` 全量短项实机通过，“安全硬门禁”逐条确认。
-- [ ] 一次完整两小时长跑：`swift Scripts/monitor-long-run.swift --pid <顶屿PID> --duration 7200 --interval 5 --output LocalData/qa/topislet-long-run-<日期>.json`，摘要 `violations` 为空。失败则如实记录并开问题，不发布。
+- [ ] 近期日常使用没有未解决的问题：`swift run DailyUsageAnalyzer --last 7d` 无新增异常，`ISSUE_BOARD` 无阻断项。不做例行长时间测试（负责人 2026-11-13 决定：不再例行做长时间测试，日常使用中出现问题再修复）；只有在排查资源或稳定性问题时才用 `Scripts/monitor-long-run.swift` 做针对性测量。
 - [ ] 门禁表记录本次验证所用的 macOS 版本与汽水音乐版本。
 
 ## 2. 构建
@@ -42,7 +42,7 @@ VERSION="<版本>" BUILD_NUMBER="<build>" bash Scripts/build-release.sh
 - [ ] Release 页包含 SHA-256、已知限制、权限说明、第三方声明链接。
 - [ ] README、截图和演示素材与发布 build 一致；不出现权属不明的第三方专辑封面。
 - [ ] 更新 `Docs/CHANGELOG.md`、`Docs/ROADMAP.md` 顶部一节，新增 `Docs/updates/` 更新页（Release 页链接到这里，发布后不移动、不改名）。
-- [ ] 原始采样、日报与长跑结果在 `LocalData/qa/`，未写入仓库。
+- [ ] 原始采样与日报在 `LocalData/qa/`，未写入仓库。
 
 ## 5. 发布后验收
 

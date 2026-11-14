@@ -336,7 +336,7 @@ MusicAdapterCoordinator（来源选择、控制授权、向 UI 发布）
 1. **每个对外版本一张门禁表**：`Docs/acceptance/GATES_vX.Y.Z.md`，接替 `STAGE0_CURRENT_GATES.md`。每行一条门禁，三列分开写：自动化结果、实机结果、证据链接。未做的写“未做”，不继承旧 build 的证据。
 2. **实机分三档**，避免每个 build 都做全量：
    - 每个 build：自动化 + 与改动相关的一项短实机。
-   - 每个对外版本：`QA_CHECKLIST.md` 全量短项 + 一次两小时长跑。
+   - 每个对外版本：`QA_CHECKLIST.md` 全量短项（不做例行长跑，见决策 7 更新）。
    - 持续：日常使用的匿名日志与心跳，用 `DailyUsageAnalyzer` 每周出一份汇总，作为“无反证”的被动证据。它不能替代主动验收，只用于发现回归。
 3. **单轮通过如实标注**。`ISSUE_BOARD.md` 现在的“单轮复验通过”“单轮实机通过”写法是对的，保持。
 4. **产出位置**：原始采样、日报、长跑结果写 `LocalData/qa/`，候选 DMG 写 `LocalData/release-artifacts/`，回滚副本写 `LocalData/rollback/`。不运行 `swift package clean`。建议给 `LocalData/` 配一个本机备份（Time Machine 或定期拷贝），因为它是唯一不可再生的目录。
@@ -365,7 +365,7 @@ MusicAdapterCoordinator（来源选择、控制授权、向 UI 发布）
 
 | 工作 | 退出标准 |
 | --- | --- |
-| build 180 或其后继做一次完整两小时长跑 | `monitor-long-run.swift` 摘要 `violations` 为空；失败则如实记录并开问题 |
+| ~~build 180 或其后继做一次完整两小时长跑~~ | 已取消（决策 7 更新）：build 181 的长跑在 14 分钟时按负责人决定中止 |
 | 歌词结果分类埋点（4.4 第 1 步） | 分类事件进入 `DailyUsageAnalyzer` 报告；不含歌名与歌词 |
 | 重录 README 演示 | README 与素材 build 号一致；无权属不明的封面 |
 | 文档收口（2.5、5.4） | `Docs/README.md` 基准更新；旧计划归档；三处口径统一 |
@@ -390,7 +390,7 @@ MusicAdapterCoordinator（来源选择、控制授权、向 UI 发布）
 | 日历与提醒事项验收 | 授权、撤权、关闭开关、大日历库各一轮（`ISSUE_BOARD.md` P2） |
 | 签名公证（取决于决策 3） | `spctl` 与 `stapler validate` 通过 |
 
-**阶段退出**：`GATES_v0.2.0.md` 全绿或逐项书面豁免；两小时长跑通过；从 Release 页下载的安装包完成发布后验收。
+**阶段退出**：`GATES_v0.2.0.md` 全绿或逐项书面豁免；从 Release 页下载的安装包完成发布后验收。
 
 ### 远期：v0.3 及以后
 
@@ -417,6 +417,8 @@ MusicAdapterCoordinator（来源选择、控制授权、向 UI 发布）
 ## 7. 需要负责人决策的问题
 
 **结果（2026-11-13）：负责人接受下表“建议”列的全部八项。** 决策 4 的结论是“v0.2.0 退出前不定，倾向 QQ 音乐”；决策 5 已按建议写入 `QA_CHECKLIST.md`“安全硬门禁”与 `verify-qishui-control-safety.sh`。
+
+**决策 7 更新（2026-11-13）：** 负责人进一步决定改为接近选项 C——不再例行做两小时长跑，以日常使用为准，出现问题再修复；只在排查具体的资源或稳定性问题时做针对性测量。下文第 5.2、第 6 节中关于长跑的门禁以此为准。
 
 | # | 问题 | 选项 | 建议 |
 | --- | --- | --- | --- |
