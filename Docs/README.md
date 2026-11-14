@@ -46,7 +46,7 @@
 
 ## 设计与素材
 
-- [design/](design/)：布局与视觉设计记录。
+- [design/](design/)：布局与视觉设计记录；当前提案见 [前端设计新方案（2026-11）](design/FRONTEND_REDESIGN_2026-11.md)。
 - [assets/](assets/)：README 与更新页引用的截图、展示素材。
 
 ## 归档 `archive/`

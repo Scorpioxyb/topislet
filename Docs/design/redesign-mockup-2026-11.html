@@ -1,0 +1,502 @@
+<title>顶屿前端新方案</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column of numbered decisions; every island mockup sits on a
+   1:1-pt desktop strip (menu bar + notch) inside its own horizontal scroller. */
+:root {
+  --bg: #f2f3f5;
+  --panel: #ffffff;
+  --fg: #16181d;
+  --muted: #5b606b;
+  --line: #dadde3;
+  --accent: #0f8a6f;
+  --accent-soft: #e2f3ee;
+  --wall-a: #c9d3e6;
+  --wall-b: #e9d7cf;
+  --wall-c: #b9c7d8;
+  --menubar: rgba(255,255,255,.58);
+  --menubar-fg: rgba(20,22,28,.82);
+  --font-ui: "Inter", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-island: -apple-system, "SF Pro Text", "PingFang SC", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* island tokens (proposal) */
+  --i-surface: #000;
+  --i-p: rgba(255,255,255,.96);
+  --i-s: rgba(255,255,255,.62);
+  --i-t: rgba(255,255,255,.40);
+  --i-d: rgba(255,255,255,.24);
+  --i-fill: rgba(255,255,255,.08);
+  --i-fill-h: rgba(255,255,255,.14);
+  --i-sep: rgba(255,255,255,.10);
+  --i-accent: #f0a35e;
+  --i-timer: #34c97f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e0f12; --panel: #16181d; --fg: #eceef2; --muted: #9aa0ab; --line: #262a31;
+    --accent: #3cc9a5; --accent-soft: #12302a;
+    --wall-a: #1d2738; --wall-b: #3a2a2a; --wall-c: #1a2230;
+    --menubar: rgba(28,30,36,.55); --menubar-fg: rgba(236,238,242,.86);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e0f12; --panel: #16181d; --fg: #eceef2; --muted: #9aa0ab; --line: #262a31;
+  --accent: #3cc9a5; --accent-soft: #12302a;
+  --wall-a: #1d2738; --wall-b: #3a2a2a; --wall-c: #1a2230;
+  --menubar: rgba(28,30,36,.55); --menubar-fg: rgba(236,238,242,.86);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; display: grid; gap: 56px; }
+header.top { display: grid; gap: 14px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.12; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-size: 22px; margin: 0; letter-spacing: -.005em; text-wrap: balance; }
+h3 { font-size: 15px; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { font-size: 17px; color: var(--muted); }
+section { display: grid; gap: 18px; }
+.sec-head { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 18px; }
+.sec-head .num { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+.note { font-size: 13px; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .86em; }
+
+.switch { display: inline-flex; gap: 4px; padding: 4px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); width: fit-content; }
+.switch button { font: inherit; font-size: 13px; font-weight: 600; border: 0; border-radius: 7px; padding: 6px 12px; background: transparent; color: var(--muted); cursor: pointer; }
+.switch button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.decision { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 6px; align-content: start; }
+.decision .q { font-weight: 600; }
+.decision .rec { font-size: 13px; color: var(--accent); font-weight: 600; }
+.decision p { font-size: 13.5px; color: var(--muted); }
+
+/* desktop stage */
+.stage { overflow-x: auto; border-radius: 14px; border: 1px solid var(--line); }
+.desk { position: relative; min-width: var(--w, 760px); padding-bottom: 28px; background:
+  radial-gradient(120% 140% at 15% 0%, var(--wall-b), transparent 60%),
+  radial-gradient(90% 120% at 90% 10%, var(--wall-a), transparent 65%),
+  var(--wall-c); }
+.menubar { height: 33px; background: var(--menubar); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-family: var(--font-island); font-size: 13px; color: var(--menubar-fg); }
+.menubar .l, .menubar .r { display: flex; gap: 16px; align-items: center; }
+.menubar .r span { font-variant-numeric: tabular-nums; }
+.notch { position: absolute; top: 0; left: 50%; width: 185px; height: 33px; transform: translateX(-50%); background: #000; border-radius: 0 0 10px 10px; }
+.slot { position: relative; display: flex; justify-content: center; margin-top: -33px; z-index: 2; }
+.caption { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px 0; font-size: 12.5px; color: var(--fg); position: relative; z-index: 2; }
+.caption .dim { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+/* island shell */
+.island { position: relative; background: var(--i-surface); color: var(--i-p); font-family: var(--font-island); overflow: hidden; -webkit-font-smoothing: antialiased; }
+.island.bar { height: 33px; border-radius: 0 0 16.5px 16.5px; display: flex; align-items: center; justify-content: space-between; }
+.island.exp { border-radius: 0 0 28px 28px; padding-top: 33px; }
+.glow { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(260px 220px at 48px 70px, color-mix(in srgb, var(--i-accent) 22%, transparent), transparent 70%); }
+html.surface-b .island.exp.music { background: rgba(26,27,32,.55); backdrop-filter: blur(28px) saturate(1.4); -webkit-backdrop-filter: blur(28px) saturate(1.4); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.10); }
+html.surface-b .island.exp.music .glow { opacity: .5; }
+html.surface-b .island.exp.plain { background: rgba(26,27,32,.55); backdrop-filter: blur(28px) saturate(1.4); -webkit-backdrop-filter: blur(28px) saturate(1.4); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.10); }
+.island.exp::before { content: ""; position: absolute; top: 0; left: 50%; width: 185px; height: 33px; transform: translateX(-50%); background: #000; z-index: 0; }
+.content { position: relative; z-index: 1; padding: 14px 16px 14px; display: grid; gap: 0; }
+
+.art { flex: none; border-radius: 22%; background: linear-gradient(140deg, #f6b46a 0%, #d9745a 45%, #6e3a62 100%); position: relative; }
+.art::after { content: ""; position: absolute; inset: 22% 22% auto auto; width: 26%; height: 26%; border-radius: 50%; background: rgba(255,240,220,.65); }
+.dimmed .art-row .art, .dimmed .art-row .txt { opacity: .45; }
+
+.row1 { display: flex; align-items: center; height: 56px; gap: 12px; }
+.row1 .txt { flex: 1; min-width: 0; display: grid; }
+.ttl { font-size: 15px; font-weight: 600; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--i-p); }
+.sub { font-size: 13px; line-height: 18px; color: var(--i-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.src { font-size: 11px; line-height: 14px; color: var(--i-t); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.src.warn { color: rgba(255,200,140,.86); }
+.ctl { display: flex; align-items: center; gap: 8px; flex: none; width: 118px; justify-content: flex-end; }
+.btn { border-radius: 50%; background: var(--i-fill); display: grid; place-items: center; color: var(--i-p); flex: none; }
+.btn.s { width: 32px; height: 32px; }
+.btn.p { width: 38px; height: 38px; background: #fff; color: #000; }
+.btn.m { width: 24px; height: 24px; margin-left: 4px; }
+.btn.off { opacity: .30; }
+.btn svg { width: 14px; height: 14px; fill: currentColor; }
+.btn.p svg { width: 15px; height: 15px; }
+.btn.m svg { width: 12px; height: 12px; }
+.pill { height: 32px; border-radius: 14px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; background: var(--i-fill-h); color: var(--i-p); }
+.pill.white { background: #fff; color: #000; }
+.spin { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--i-t); border-top-color: var(--i-p); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.lyr { margin-top: 12px; height: 44px; display: grid; grid-template-columns: 3px 1fr; column-gap: 8px; }
+.lyr .bar { grid-row: 1 / span 2; width: 3px; height: 22px; margin-top: 2px; border-radius: 2px; background: var(--i-accent); }
+.lyr .cur { font-size: 21px; font-weight: 600; line-height: 26px; white-space: nowrap; overflow: hidden; color: rgba(255,255,255,.34); }
+.lyr .cur b { font-weight: 600; color: var(--i-p); }
+.lyr .nxt { font-size: 13px; line-height: 18px; color: var(--i-t); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyr.empty .cur { font-size: 13px; line-height: 26px; color: var(--i-t); font-weight: 500; }
+.lyr.switching .bar { animation: breathe 1.2s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { opacity: .9; } 50% { opacity: .25; } }
+
+.prog { margin-top: 10px; height: 16px; display: flex; align-items: center; gap: 10px; font-size: 11px; font-weight: 500; color: var(--i-s); font-variant-numeric: tabular-nums; }
+.prog.tight { margin-top: 10px; }
+.track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: var(--i-fill-h); }
+.track i { position: absolute; inset: 0 auto 0 0; width: var(--p, 28%); border-radius: 2px; background: var(--i-accent); }
+.track.hover { height: 6px; border-radius: 3px; }
+.track.hover::after { content: ""; position: absolute; left: var(--p, 28%); top: 50%; width: 10px; height: 10px; border-radius: 50%; background: #fff; transform: translate(-50%, -50%); }
+.track.frozen i { background: var(--i-t); }
+
+/* collapsed & compact */
+.wing { display: flex; align-items: center; gap: 8px; padding: 0 10px; min-width: 0; }
+.wave { display: flex; align-items: center; gap: 2px; height: 12px; }
+.wave i { width: 2.5px; border-radius: 2px; background: var(--i-accent); animation: wv .76s ease-in-out infinite; }
+.wave i:nth-child(1) { height: 7px; } .wave i:nth-child(2) { height: 12px; animation-delay: -.25s; } .wave i:nth-child(3) { height: 9px; animation-delay: -.5s; }
+@keyframes wv { 0%,100% { transform: scaleY(.55); } 50% { transform: scaleY(1); } }
+.wave.paused i { height: 2.5px !important; animation: none; background: var(--i-s); }
+.wave.dots i { height: 3px !important; animation: dot 1s ease-in-out infinite; background: var(--i-accent); }
+.wave.dots i:nth-child(2) { animation-delay: .2s; } .wave.dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes dot { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+.cmp-lyric { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cmp-time { font-size: 11px; font-weight: 500; color: var(--i-s); font-variant-numeric: tabular-nums; }
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+
+/* current design replica */
+.cur-island { position: relative; font-family: var(--font-island); color: #fff; }
+.cur-band { width: 694px; height: 33px; background: #000; border-radius: 0 0 16.5px 16.5px; }
+.cur-body { width: 694px; height: 144px; margin-top: 0; border-radius: 0 0 24px 24px; background: rgba(48,50,58,.72); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: inset 0 0 0 .65px rgba(255,255,255,.12), 0 8px 14px rgba(0,0,0,.18); position: relative; padding: 18px 16px; display: flex; gap: 14px; }
+.cur-body::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: rgba(0,0,0,.30); }
+.cur-body > * { position: relative; }
+.cur-rail { width: 204px; display: flex; gap: 10px; }
+.cur-rail .col { width: 118px; display: grid; align-content: start; gap: 2px; }
+.cur-rail .t { font-size: 13px; font-weight: 600; line-height: 16px; }
+.cur-rail .a { font-size: 11px; color: rgba(255,255,255,.62); }
+.cur-tr { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.cur-tr .s { width: 29px; height: 29px; border-radius: 50%; background: rgba(255,255,255,.10); display: grid; place-items: center; }
+.cur-tr .pp { width: 34px; height: 34px; border-radius: 50%; background: #fff; color: #000; display: grid; place-items: center; }
+.cur-tr svg { width: 12px; height: 12px; fill: currentColor; }
+.cur-div { width: 1px; height: 110px; background: rgba(255,255,255,.12); }
+.cur-lyr { flex: 1; min-width: 0; display: grid; align-content: start; gap: 4px; }
+.cur-lyr .l1 { display: flex; gap: 8px; align-items: center; font-size: 23px; font-weight: 600; line-height: 29px; white-space: nowrap; }
+.cur-lyr .l1::before { content: ""; width: 3px; height: 28px; border-radius: 2px; background: var(--i-accent); flex: none; }
+.cur-lyr .l2 { font-size: 16px; color: rgba(255,255,255,.38); padding-left: 11px; white-space: nowrap; overflow: hidden; }
+.cur-prog { margin-top: 10px; height: 30px; border-radius: 15px; background: rgba(255,255,255,.065); display: flex; align-items: center; gap: 12px; padding: 0 14px; font-size: 11px; color: rgba(255,255,255,.72); font-variant-numeric: tabular-nums; }
+.cur-prog .tr { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.14); position: relative; }
+.cur-prog .tr i { position: absolute; inset: 0 auto 0 0; width: 28%; background: var(--i-accent); border-radius: 3px; }
+.cur-top { position: absolute; top: 10px; right: 14px; display: flex; gap: 6px; }
+.cur-top span { width: 24px; height: 24px; border-radius: 50%; background: rgba(255,255,255,.12); }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; }
+.grid2 > * { min-width: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+td.mono, td .mono { font-variant-numeric: tabular-nums; }
+.tbl { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.typespec { display: grid; gap: 4px; background: #000; color: #fff; border-radius: 14px; padding: 18px; font-family: var(--font-island); }
+.typespec div { display: flex; align-items: baseline; gap: 14px; }
+.typespec .k { width: 70px; flex: none; font-family: var(--font-mono); font-size: 11px; color: rgba(255,255,255,.4); }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; background: #000; padding: 14px; border-radius: 14px; }
+.sw { display: grid; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: rgba(255,255,255,.5); }
+.sw span { width: 64px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: #000; font-size: 11px; font-weight: 600; }
+.steps { display: grid; gap: 0; }
+.step { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.step .id { font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 500; }
+.step .risk { font-size: 12px; color: var(--muted); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  .wave i, .wave.dots i, .spin, .lyr.switching .bar { animation: none; }
+}
+@media (max-width: 560px) { .step { grid-template-columns: 36px 1fr; } .step .risk { grid-column: 2; } }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="prev" viewBox="0 0 24 24"><path d="M11 6v12L2.5 12 11 6zm10.5 0v12L13 12l8.5-6z"/></symbol>
+  <symbol id="next" viewBox="0 0 24 24"><path d="M13 6v12l8.5-6L13 6zM2.5 6v12L11 12 2.5 6z"/></symbol>
+  <symbol id="pause" viewBox="0 0 24 24"><path d="M6.5 4h4v16h-4zM13.5 4h4v16h-4z"/></symbol>
+  <symbol id="play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></symbol>
+  <symbol id="reset" viewBox="0 0 24 24"><path d="M12 5a7 7 0 1 1-6.3 4H3l3.5-4L10 9H7.9A5 5 0 1 0 12 7z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
+</svg>
+
+<template id="menubar"><div class="menubar"><div class="l"><b></b><span>访达</span><span>文件</span><span>编辑</span><span>显示</span></div><div class="r"><span>Wi-Fi</span><span>周六 21:40</span></div></div><div class="notch"></div></template>
+
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">顶屿 TopIslet · 设计提案 · 2026-11-14</div>
+    <h1>岛就是刘海本身</h1>
+    <p class="lede">一块纯黑表面、五档字号、四档文字层级；展开面板固定 560 宽，不再随歌词有无伸缩。下面所有画面按 1 点 = 1 像素绘制，歌名与歌词都是合成内容。</p>
+    <div class="switch" role="group" aria-label="表面方向">
+      <button type="button" id="sw-a" aria-pressed="true">方向 A：纯黑刘海延伸</button>
+      <button type="button" id="sw-b" aria-pressed="false">方向 B：精修玻璃</button>
+    </div>
+    <p class="note">切换只改变展开面板的表面；布局、字号、状态两种方向完全相同。</p>
+  </header>
+
+  <section>
+    <div class="sec-head"><span class="num">需要你决定</span><h2>三件事</h2></div>
+    <div class="decisions">
+      <div class="decision"><div class="q">表面：纯黑还是玻璃</div><div class="rec">建议 A</div><p>纯黑让岛和刘海是一个物体，“降低透明度”不需要第二套外观。代价是放弃 build 112 选定的玻璃质感。可以先做令牌层，用实验开关在实机上比两天。</p></div>
+      <div class="decision"><div class="q">展开音乐改成上下三行</div><div class="rec">建议接受</div><p>从“左封面控制、右大歌词、694 宽”改成“信息行、歌词、进度，560 宽”。歌名不再被 118pt 的窄列截成两行，歌词可用宽度反而从 446 增加到 528。</p></div>
+      <div class="decision"><div class="q">紧凑态显示歌词行</div><div class="rec">先查清旧记录</div><p>代码里已有紧凑歌词布局，build 144 后被固定关闭，仓库里没找到原因。新方案用固定翼宽，避开随歌词长短伸缩。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">01 · 对照</span><h2>展开音乐：现在与提案</h2>
+      <p class="note">现在的画面按代码尺寸复刻：头部纯黑，展开体是毛玻璃加黑色叠层，右上角四个按钮。</p></div>
+    <div class="stage"><div class="desk" style="--w: 760px">
+      <div class="menubar-host"></div>
+      <div class="slot" style="flex-direction:column; align-items:center">
+        <div class="cur-island">
+          <div class="cur-band" style="border-radius:0"></div>
+          <div class="cur-body">
+            <div class="cur-top"><span></span><span></span><span></span><span></span></div>
+            <div class="cur-rail"><div class="art" style="width:76px;height:76px"></div>
+              <div class="col"><div class="t">雾中灯塔（合成示例）· 夜航版</div><div class="a">示例歌手</div>
+                <div class="cur-tr"><span class="s"><svg><use href="#prev"/></svg></span><span class="pp"><svg><use href="#pause"/></svg></span><span class="s"><svg><use href="#next"/></svg></span></div></div></div>
+            <div class="cur-div"></div>
+            <div class="cur-lyr"><div class="l1">我们在海岸线等一盏灯</div><div class="l2">风把名字吹进潮声里</div>
+              <div class="cur-prog"><div class="tr"><i></i></div><span>1:02 / 3:45</span></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span>现在 · 有歌词</span><span class="dim">694 × 177 · 无歌词时 496 × 149</span></div>
+    </div></div>
+
+    <div class="stage"><div class="desk" style="--w: 760px">
+      <div class="menubar-host"></div>
+      <div class="slot"><div class="island exp music" style="width:560px">
+        <div class="glow"></div>
+        <div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div>
+            <div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src">汽水音乐</div></div>
+            <div class="ctl"><span class="btn s"><svg><use href="#prev"/></svg></span><span class="btn p"><svg><use href="#pause"/></svg></span><span class="btn s"><svg><use href="#next"/></svg></span></div>
+            <span class="btn m" aria-label="更多"><svg><use href="#more"/></svg></span></div>
+          <div class="lyr"><span class="bar"></span><div class="cur"><b>我们在海岸线</b>等一盏灯</div><div class="nxt">风把名字吹进潮声里</div></div>
+          <div class="prog"><span>1:02</span><div class="track hover" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+      <div class="caption"><span>提案 · 有歌词（进度条为悬停态）</span><span class="dim">560 × 199 · 关闭歌词时 560 × 141</span></div>
+    </div></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">02 · 折叠与紧凑</span><h2>折叠态更安静，紧凑态给歌词</h2>
+      <p class="note">折叠两翼从 22 加宽到 28。暂停不再用暂停图标，而是把声波压成三个点。紧凑态两翼固定 132，总宽不随内容变化。</p></div>
+    <div class="stage"><div class="desk" style="--w: 760px; padding-bottom: 20px">
+      <div class="menubar-host"></div>
+      <div class="slot"><div class="island bar" style="width:241px"><div class="wing"><div class="art" style="width:18px;height:18px;border-radius:5px"></div></div><div class="wing"><div class="wave"><i></i><i></i><i></i></div></div></div></div>
+      <div class="caption"><span>折叠 · 播放中</span><span class="dim">241 × 33</span></div>
+    </div></div>
+    <div class="grid2">
+      <div class="stage"><div class="desk" style="--w: 460px; padding-bottom: 20px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island bar" style="width:241px"><div class="wing"><div class="art" style="width:18px;height:18px;border-radius:5px"></div></div><div class="wing"><div class="wave paused"><i></i><i></i><i></i></div></div></div></div>
+        <div class="caption"><span>折叠 · 已暂停</span><span class="dim">声波压成点</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 460px; padding-bottom: 20px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island bar" style="width:241px"><div class="wing"><div class="art" style="width:18px;height:18px;border-radius:5px;opacity:.4"></div></div><div class="wing"><div class="wave dots"><i></i><i></i><i></i></div></div></div></div>
+        <div class="caption"><span>折叠 · 切换中</span><span class="dim">封面 0.4，三点依次明暗</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 460px; padding-bottom: 20px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island bar" style="width:265px"><div class="wing" style="color:var(--i-timer)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/></svg></div><div class="wing"><span class="cmp-time" style="color:var(--i-timer)">24 分</span></div></div></div>
+        <div class="caption"><span>折叠 · 计时</span><span class="dim">右翼按内容到 40</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 460px; padding-bottom: 20px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island bar" style="width:241px"><div class="wing"><div class="art" style="width:18px;height:18px;border-radius:5px"></div></div><div class="wing" style="gap:6px"><span class="badge-dot"></span><div class="wave"><i></i><i></i><i></i></div></div></div></div>
+        <div class="caption"><span>折叠 · 有未读提醒</span><span class="dim">6pt 白点，展开后消失</span></div>
+      </div></div>
+    </div>
+    <div class="stage"><div class="desk" style="--w: 760px; padding-bottom: 20px">
+      <div class="menubar-host"></div>
+      <div class="slot"><div class="island bar" style="width:449px"><div class="wing" style="width:132px"><div class="art" style="width:22px;height:22px;border-radius:6px"></div><span class="cmp-lyric">等一盏灯</span></div><div class="wing" style="width:132px;justify-content:flex-end"><span class="cmp-time">-2:43</span><div class="wave"><i></i><i></i><i></i></div></div></div></div>
+      <div class="caption"><span>紧凑 · 悬停预览（歌词行；无歌词时显示“歌名 · 歌手”）</span><span class="dim">449 × 33 · 两翼各 132，固定</span></div>
+    </div></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">03 · 展开音乐的状态</span><h2>同一块面板，高度只由“显示歌词”设置决定</h2>
+      <p class="note">这首歌有没有歌词不改变尺寸。切歌等待期与控制不可用都在原位置呈现，面板不变形。</p></div>
+    <div class="grid2">
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">潮汐练习曲（合成示例）</div><div class="sub">示例乐团</div><div class="src">汽水音乐</div></div>
+            <div class="ctl"><span class="btn s"><svg><use href="#prev"/></svg></span><span class="btn p"><svg><use href="#pause"/></svg></span><span class="btn s"><svg><use href="#next"/></svg></span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="lyr empty"><span class="bar" style="opacity:.4"></span><div class="cur">纯音乐，请欣赏</div></div>
+          <div class="prog"><span>0:41</span><div class="track" style="--p:18%"><i></i></div><span>-3:12</span></div>
+        </div></div></div>
+        <div class="caption"><span>歌词开着，但这首没有</span><span class="dim">560 × 199，不变</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src">汽水音乐</div></div>
+            <div class="ctl"><span class="btn s"><svg><use href="#prev"/></svg></span><span class="btn p"><svg><use href="#play"/></svg></span><span class="btn s"><svg><use href="#next"/></svg></span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="prog"><span>1:02</span><div class="track" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+        <div class="caption"><span>关闭歌词 · 已暂停</span><span class="dim">560 × 141</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music dimmed" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1 art-row"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src">汽水音乐</div></div>
+            <div class="ctl"><span class="btn s"><svg><use href="#prev"/></svg></span><span class="btn p"><svg><use href="#pause"/></svg></span><span class="btn s"><svg><use href="#next"/></svg></span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="lyr switching"><span class="bar"></span><div class="cur"></div></div>
+          <div class="prog" style="color:var(--i-t)"><span>切换中</span><div class="track frozen" style="--p:28%"><i></i></div><span></span></div>
+        </div></div></div>
+        <div class="caption"><span>切换中（规划 3.2）</span><span class="dim">旧内容 0.45，不显示任何新歌字段</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src warn">汽水音乐 · 需要辅助功能权限</div></div>
+            <div class="ctl"><span class="pill">授权辅助功能 ›</span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="prog"><span>1:02</span><div class="track" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+        <div class="caption"><span>不可用 · 权限缺失</span><span class="dim">胶囊可点，打开系统设置</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src">汽水音乐 · 正在重新连接</div></div>
+            <div class="ctl"><span class="spin" aria-hidden="true"></span><span class="btn s off"><svg><use href="#prev"/></svg></span><span class="btn p off"><svg><use href="#pause"/></svg></span><span class="btn s off"><svg><use href="#next"/></svg></span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="prog"><span>1:02</span><div class="track" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+        <div class="caption"><span>不可用 · 控件树暂不可用</span><span class="dim">按钮禁用，后台退避重试</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src">汽水音乐 · 窗口已关闭，重新显示后恢复</div></div>
+            <div class="ctl"><span class="btn s off"><svg><use href="#prev"/></svg></span><span class="btn p off"><svg><use href="#pause"/></svg></span><span class="btn s off"><svg><use href="#next"/></svg></span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="prog"><span>1:02</span><div class="track" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+        <div class="caption"><span>不可用 · 主窗口已关闭</span><span class="dim">不提供“帮你打开”</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 600px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp music" style="width:560px"><div class="glow"></div><div class="content">
+          <div class="row1"><div class="art" style="width:56px;height:56px"></div><div class="txt"><div class="ttl">雾中灯塔（合成示例）· 夜航版</div><div class="sub">示例歌手</div><div class="src warn">汽水音乐 · 需要重启汽水以连接控制</div></div>
+            <div class="ctl"><span class="pill white">重启并连接</span></div><span class="btn m"><svg><use href="#more"/></svg></span></div>
+          <div class="prog"><span>1:02</span><div class="track" style="--p:28%"><i></i></div><span>-2:43</span></div>
+        </div></div></div>
+        <div class="caption"><span>不可用 · 需要用户恢复</span><span class="dim">只在用户点击时执行</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">04 · 其他活动</span><h2>计时、通知、活动中心用同一套表面与字号</h2>
+      <p class="note">宽度统一 460，不再随刘海宽度变化。</p></div>
+    <div class="grid2">
+      <div class="stage"><div class="desk" style="--w: 500px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp plain" style="width:460px"><div class="content" style="display:flex;align-items:center;gap:14px;height:96px;padding-block:0">
+          <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="25" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="4"/><circle cx="28" cy="28" r="25" fill="none" style="stroke:var(--i-timer)" stroke-width="4" stroke-linecap="round" stroke-dasharray="157" stroke-dashoffset="62" transform="rotate(-90 28 28)"/></svg>
+          <div style="flex:1;min-width:0;display:grid"><span style="font-size:28px;font-weight:600;line-height:32px;font-variant-numeric:tabular-nums;font-family:ui-rounded,var(--font-island)">15:12</span><span class="sub">专注计时 · 25 分钟</span></div>
+          <div class="ctl" style="width:auto"><span class="btn s"><svg><use href="#pause"/></svg></span><span class="btn s"><svg><use href="#reset"/></svg></span><span class="btn s"><svg><use href="#plus"/></svg></span></div>
+        </div></div></div>
+        <div class="caption"><span>计时</span><span class="dim">460 × 129</span></div>
+      </div></div>
+      <div class="stage"><div class="desk" style="--w: 500px">
+        <div class="menubar-host"></div>
+        <div class="slot"><div class="island exp plain" style="width:460px"><div class="content" style="display:flex;align-items:center;gap:12px;height:96px;padding-block:0">
+          <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(160deg,#ff6b5e,#e8433a);flex:none;display:grid;place-items:center;font-size:11px;font-weight:700">17</div>
+          <div style="flex:1;min-width:0;display:grid"><span class="src">日历 · 10 分钟后</span><span class="ttl">设计评审（示例日程）</span><span class="sub">会议室 B · 22:00–22:30</span></div>
+          <div style="display:flex;gap:8px;flex:none"><span class="pill white" style="height:28px">打开</span><span class="pill" style="height:28px">关闭</span></div>
+        </div></div></div>
+        <div class="caption"><span>通知</span><span class="dim">460 × 129</span></div>
+      </div></div>
+    </div>
+    <div class="stage"><div class="desk" style="--w: 500px">
+      <div class="menubar-host"></div>
+      <div class="slot"><div class="island exp plain" style="width:460px"><div class="content" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:16px">
+        <div style="background:var(--i-fill);border-radius:14px;padding:12px;display:grid;gap:8px"><span class="src">专注计时</span><div style="display:flex;gap:6px">
+          <span class="pill" style="height:28px;padding:0 10px">5</span><span class="pill" style="height:28px;padding:0 10px">15</span><span class="pill white" style="height:28px;padding:0 10px">25</span><span class="pill" style="height:28px;padding:0 10px">45</span></div></div>
+        <div style="background:var(--i-fill);border-radius:14px;padding:12px;display:grid;gap:4px"><span class="src">音乐</span><span class="ttl" style="font-size:13px">汽水音乐未在播放</span><span class="sub" style="font-size:11px">播放后自动出现在岛上</span></div>
+        <div style="background:var(--i-fill);border-radius:14px;padding:12px;display:grid;gap:4px"><span class="src">日历</span><span class="ttl" style="font-size:13px">22:00 设计评审</span><span class="sub" style="font-size:11px">今天还有 1 项</span></div>
+        <div style="background:var(--i-fill);border-radius:14px;padding:12px;display:grid;gap:4px"><span class="src">提醒事项</span><span class="ttl" style="font-size:13px">未授权</span><span class="sub" style="font-size:11px">在设置里开启</span></div>
+      </div></div></div>
+      <div class="caption"><span>活动中心 · 2×2 卡片</span><span class="dim">460 × 201</span></div>
+    </div></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">05 · 令牌</span><h2>IslandTheme：从约 10 档字号、9 档透明度收成 5 档与 4 档</h2></div>
+    <div class="grid2">
+      <div class="typespec" aria-label="字号">
+        <div><span class="k">caption</span><span style="font-size:11px;font-weight:500">11 medium · 1:02 · 汽水音乐</span></div>
+        <div><span class="k">body</span><span style="font-size:13px;color:rgba(255,255,255,.62)">13 regular · 示例歌手</span></div>
+        <div><span class="k">title</span><span style="font-size:15px;font-weight:600">15 semibold · 雾中灯塔</span></div>
+        <div><span class="k">lyric</span><span style="font-size:21px;font-weight:600">21 · 等一盏灯</span></div>
+        <div><span class="k">display</span><span style="font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;font-family:ui-rounded,var(--font-island)">15:12</span></div>
+      </div>
+      <div class="swatches" aria-label="文字层级与填充">
+        <div class="sw"><span style="background:rgba(255,255,255,.96)">.96</span>primary</div>
+        <div class="sw"><span style="background:rgba(255,255,255,.62)">.62</span>secondary</div>
+        <div class="sw"><span style="background:rgba(255,255,255,.40)">.40</span>tertiary</div>
+        <div class="sw"><span style="background:rgba(255,255,255,.24)">.24</span>disabled</div>
+        <div class="sw"><span style="background:rgba(255,255,255,.08);color:#fff">.08</span>fill</div>
+        <div class="sw"><span style="background:rgba(255,255,255,.14);color:#fff">.14</span>fillHover</div>
+        <div class="sw"><span style="background:var(--i-accent)">主色</span>accent</div>
+        <div class="sw"><span style="background:var(--i-timer)">计时</span>timer</div>
+      </div>
+    </div>
+    <div class="tbl"><table>
+      <thead><tr><th>动画令牌</th><th>值</th><th>变化</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">expand</td><td class="mono">240ms · (0.20, 0.85, 0.25, 1.0)</td><td>不变</td></tr>
+        <tr><td class="mono">collapse</td><td class="mono">180ms · (0.40, 0, 0.20, 1.0)</td><td>不变</td></tr>
+        <tr><td class="mono">content</td><td class="mono">框体开始后 60ms 淡入，120ms</td><td>替代从 y 0.025 放大，文字不再被压扁</td></tr>
+        <tr><td class="mono">lyricLine</td><td class="mono">180ms，上移 6pt 交替</td><td>现在换句无动画；减少动态效果下只淡入淡出</td></tr>
+        <tr><td class="mono">swap</td><td class="mono">160ms 交叉淡化</td><td>原子发布之后才发生</td></tr>
+        <tr><td class="mono">accent</td><td class="mono">240ms</td><td>现为 200–240ms，统一</td></tr>
+      </tbody></table></div>
+    <div class="tbl"><table>
+      <thead><tr><th>状态</th><th>现在</th><th>提案</th></tr></thead>
+      <tbody>
+        <tr><td>折叠（有活动）</td><td class="mono">229 × 33</td><td class="mono">241 × 33</td></tr>
+        <tr><td>紧凑</td><td class="mono">377 × 33</td><td class="mono">449 × 33</td></tr>
+        <tr><td>展开音乐 · 有歌词</td><td class="mono">694 × 177</td><td class="mono">560 × 199</td></tr>
+        <tr><td>展开音乐 · 无歌词</td><td class="mono">496 × 149</td><td class="mono">560 × 199（开着歌词）/ 560 × 141（关闭歌词）</td></tr>
+        <tr><td>计时 / 通知</td><td class="mono">≥ 420 × 179 / 189</td><td class="mono">460 × 129</td></tr>
+      </tbody></table></div>
+    <p class="note">以默认刘海宽 185 计算；实际宽度仍按每台机器的刘海实测值。</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">06 · 落地</span><h2>九步，每步一个提交、一轮实机截图</h2>
+      <p class="note">D1–D2 放在“实验：新外观”开关后，新旧外观可以在同一台机器上切换比较。</p></div>
+    <div class="steps">
+      <div class="step"><span class="id">D0</span><span>建 <code>IslandTheme</code>，视图改引用令牌名，先填旧数值</span><span class="risk">外观不变</span></div>
+      <div class="step"><span class="id">D1</span><span>新令牌数值、连续圆角、表面方向 A 或 B</span><span class="risk">风险低</span></div>
+      <div class="step"><span class="id">D2</span><span>展开音乐新布局：固定 560 宽、⋯ 菜单、进度行</span><span class="risk">复测命中与悬停</span></div>
+      <div class="step"><span class="id">D3</span><span>控制不可用四态的画面</span><span class="risk">风险低</span></div>
+      <div class="step"><span class="id">D4</span><span>折叠与紧凑新布局，含查清紧凑歌词旧记录</span><span class="risk">风险中</span></div>
+      <div class="step"><span class="id">D5</span><span>计时、通知、活动中心统一</span><span class="risk">风险低</span></div>
+      <div class="step"><span class="id">D6</span><span>切换中画面，先看早期候选误报数据</span><span class="risk">依赖数据</span></div>
+      <div class="step"><span class="id">D7</span><span>设置页调整与三步首次引导</span><span class="risk">独立窗口</span></div>
+      <div class="step"><span class="id">D8</span><span>新外观设为默认，删除旧视图代码</span><span class="risk">删前再走一遍</span></div>
+    </div>
+    <p class="note">完整说明在仓库 <code>Docs/design/FRONTEND_REDESIGN_2026-11.md</code>。不变的：33pt 摄像头带、悬停 30ms / 350ms、三种展开方式、原子发布与身份门禁、媒体键归属只在设置里出现。</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  var tpl = document.getElementById('menubar');
+  document.querySelectorAll('.menubar-host').forEach(function (host) {
+    host.replaceWith(tpl.content.cloneNode(true));
+  });
+  var a = document.getElementById('sw-a'), b = document.getElementById('sw-b');
+  function set(surface) {
+    document.documentElement.classList.toggle('surface-b', surface === 'b');
+    a.setAttribute('aria-pressed', String(surface === 'a'));
+    b.setAttribute('aria-pressed', String(surface === 'b'));
+    try { localStorage.setItem('topislet-surface', surface); } catch (e) {}
+  }
+  a.addEventListener('click', function () { set('a'); });
+  b.addEventListener('click', function () { set('b'); });
+  try { if (localStorage.getItem('topislet-surface') === 'b') set('b'); } catch (e) {}
+})();
+</script>
