@@ -1,0 +1,104 @@
+[
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 31,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 1,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 32,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.045,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 32,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.3,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 32,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.6,
+    "track" : {
+      "album" : "Album 2",
+      "artist" : "Artist 2",
+      "artwork" : "artwork-2",
+      "duration" : 204.5,
+      "elapsed" : 1.1,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 2"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 3.6,
+    "track" : {
+      "album" : "Album 2",
+      "artist" : "Artist 2",
+      "artwork" : "artwork-2",
+      "duration" : 204.5,
+      "elapsed" : 2.1,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 2"
+    },
+    "verified" : true
+  }
+]

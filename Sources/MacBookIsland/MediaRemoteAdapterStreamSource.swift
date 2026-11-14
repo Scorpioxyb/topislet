@@ -170,17 +170,22 @@ final class MediaRemoteAdapterStreamSource {
     private let deferredInitialRefreshDelayNanoseconds: UInt64
     private let deferredRetryRefreshDelayNanoseconds: UInt64
     private let deferredPublicationTimeBudget: TimeInterval = 2.4
+    /// Wall clock for elapsed-time extrapolation and cache age. Injected only
+    /// so recorded stream sequences can be replayed deterministically.
+    private let clock: () -> Date
 
     init(
         runningQishuiProcessIdentifiersProvider: @escaping () -> Set<pid_t> = {
             Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
         },
+        clock: @escaping () -> Date = Date.init,
         metadataDataReader: (@Sendable () -> Data?)? = nil,
         deferredMetadataDataReader: (@Sendable () -> Data?)? = nil,
         deferredInitialRefreshDelayNanoseconds: UInt64 = 0,
         deferredRetryRefreshDelayNanoseconds: UInt64 = 35_000_000
     ) {
         self.runningQishuiProcessIdentifiersProvider = runningQishuiProcessIdentifiersProvider
+        self.clock = clock
         self.metadataDataReader = metadataDataReader
         self.deferredMetadataDataReader = deferredMetadataDataReader
         self.deferredInitialRefreshDelayNanoseconds = deferredInitialRefreshDelayNanoseconds
@@ -1139,6 +1144,27 @@ final class MediaRemoteAdapterStreamSource {
         deferredTrackPublicationTask
     }
 
+    var deferredPublicationStartedAtForTesting: Date? {
+        deferredTrackPublicationStartedAt
+    }
+
+    var deferredPublicationTimeBudgetForTesting: TimeInterval {
+        deferredPublicationTimeBudget
+    }
+
+    /// Runs the same deadline path as the scheduled task, at a replayed time.
+    func expireDeferredTrackPublicationForTesting(
+        receivedAt: Date,
+        receivedUptime: TimeInterval
+    ) -> MediaRemoteNowPlayingSnapshot? {
+        guard deferredTrackPublicationStartedAt != nil else { return nil }
+        return publishExpiredDeferredTrack(
+            onChange: nil,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime
+        )
+    }
+
     func seedSeekTimelineForTesting(target: TimeInterval, issuedAt: Date) {
         guard let track = latestRawSnapshot?.currentTrack ?? latestSnapshot?.currentTrack else { return }
         seekTimelineAnchor = MediaRemoteSeekTimelineAnchor(
@@ -1396,23 +1422,35 @@ final class MediaRemoteAdapterStreamSource {
                   generation == self.deferredTrackPublicationGeneration,
                   self.deferredTrackPublicationStartedAt != nil else { return }
 
-            let timelinePayload = self.deferredTimelinePayload
-            let references = self.deferredTrackReferencePayloads
-            let shouldSanitize = self.shouldDeferDeferredTrackPublication(self.mergedPayload)
-            if shouldSanitize {
-                self.mergedPayload = self.sanitizedTrackTransitionPayload(
-                    self.mergedPayload,
-                    previousPayloads: references
-                )
-            }
-            self.clearDeferredTrackPublication()
-            _ = self.publishMergedPayload(
-                origin: .synchronousRead,
-                timelinePayload: timelinePayload,
-                onChange: onChange,
-                allowsMetadataRefresh: false
+            _ = self.publishExpiredDeferredTrack(onChange: onChange)
+        }
+    }
+
+    /// The publication deadline passed without a complete frame: strip any
+    /// field still carried over from a reference track, then publish.
+    private func publishExpiredDeferredTrack(
+        onChange: ChangeHandler?,
+        receivedAt: Date = Date(),
+        receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> MediaRemoteNowPlayingSnapshot {
+        let timelinePayload = deferredTimelinePayload
+        let references = deferredTrackReferencePayloads
+        let shouldSanitize = shouldDeferDeferredTrackPublication(mergedPayload)
+        if shouldSanitize {
+            mergedPayload = sanitizedTrackTransitionPayload(
+                mergedPayload,
+                previousPayloads: references
             )
         }
+        clearDeferredTrackPublication()
+        return publishMergedPayload(
+            origin: .synchronousRead,
+            timelinePayload: timelinePayload,
+            onChange: onChange,
+            receivedAt: receivedAt,
+            receivedUptime: receivedUptime,
+            allowsMetadataRefresh: false
+        )
     }
 
     private func scheduleDeferredMetadataRetryIfAllowed(
@@ -1630,7 +1668,7 @@ final class MediaRemoteAdapterStreamSource {
             return nil
         }
 
-        let now = Date()
+        let now = clock()
         guard now.timeIntervalSince(cachedSnapshot.checkedAt) <= lastVerifiedQishuiSnapshotTTL else {
             lastVerifiedQishuiSnapshot = nil
             return nil
@@ -2441,7 +2479,7 @@ final class MediaRemoteAdapterStreamSource {
         }
         let playbackRate = doubleValue(payload["playbackRate"]) ?? 0
         guard playbackRate >= 0 else { return elapsed }
-        return elapsed + Date().timeIntervalSince(timestamp) * playbackRate
+        return elapsed + clock().timeIntervalSince(timestamp) * playbackRate
     }
 
     private func scheduleSeekTimelineConfirmationTimeout(for anchorIssuedAt: Date) {

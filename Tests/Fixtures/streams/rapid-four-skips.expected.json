@@ -1,0 +1,155 @@
+[
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 43,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0.05,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 43,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0.54,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 43,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0.937,
+    "track" : {
+      "album" : "Album 3",
+      "artist" : "Artist 3",
+      "artwork" : "artwork-3",
+      "duration" : 167.25,
+      "elapsed" : 1.237,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 3"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 1.03,
+    "track" : {
+      "album" : "Album 3",
+      "artist" : "Artist 3",
+      "artwork" : "artwork-3",
+      "duration" : 167.25,
+      "elapsed" : 1.237,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 3"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 1.473,
+    "track" : {
+      "album" : "Album 4",
+      "artist" : "Artist 4",
+      "artwork" : "artwork-4",
+      "duration" : 236,
+      "elapsed" : 0.773,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 4"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : true,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 1.52,
+    "track" : {
+      "album" : "Album 4",
+      "artist" : "Artist 4",
+      "artwork" : "artwork-4",
+      "duration" : 236,
+      "elapsed" : 0.773,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 4"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.012,
+    "track" : {
+      "album" : "Album 5",
+      "artist" : "Artist 5",
+      "artwork" : "artwork-5",
+      "duration" : 192.75,
+      "elapsed" : 1.412,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 5"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 3,
+    "track" : {
+      "album" : "Album 5",
+      "artist" : "Artist 5",
+      "artwork" : "artwork-5",
+      "duration" : 192.75,
+      "elapsed" : 2.4,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 5"
+    },
+    "verified" : true
+  }
+]

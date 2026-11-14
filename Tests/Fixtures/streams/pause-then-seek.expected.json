@@ -1,0 +1,109 @@
+[
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 61,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 1,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 61,
+      "pid" : 1001,
+      "playing" : false,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "step" : "op:seed_seek",
+    "t" : 2
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.2,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 14,
+      "pid" : 1001,
+      "playing" : false,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 2.7,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 14.2,
+      "pid" : 1001,
+      "playing" : false,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 4,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 15.2,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 5,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 16.2,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  }
+]

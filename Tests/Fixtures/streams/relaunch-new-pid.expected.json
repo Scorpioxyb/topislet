@@ -1,0 +1,80 @@
+[
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 0,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 34,
+      "pid" : 1001,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "step" : "op:invalidate_session",
+    "t" : 1
+  },
+  {
+    "deferred" : false,
+    "step" : "op:running_pids",
+    "t" : 1
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 3,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 0,
+      "pid" : 1002,
+      "playing" : false,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 3.2,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 0,
+      "pid" : 1002,
+      "playing" : false,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  },
+  {
+    "deferred" : false,
+    "origin" : "streamEvent",
+    "step" : "event",
+    "t" : 5,
+    "track" : {
+      "album" : "Album 1",
+      "artist" : "Artist 1",
+      "artwork" : "artwork-1",
+      "duration" : 181,
+      "elapsed" : 2,
+      "pid" : 1002,
+      "playing" : true,
+      "title" : "Title 1"
+    },
+    "verified" : true
+  }
+]
