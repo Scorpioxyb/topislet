@@ -8,7 +8,8 @@ import SwiftUI
 //   type   caption 11 · body 13 · title 15 · lyric 21 · display 28
 // Font roles of the compact, timer, notification and activity-center views
 // keep their previous sizes until those layouts are redone (D4, D5); only
-// their text and fill opacities move to the shared levels here.
+// their text and fill opacities move to the shared levels here. Expanded music
+// keeps its left-rail + lyric-column composition on the black surface.
 enum IslandTheme {
     enum Level {
         static let primary: Double = 0.96
@@ -53,6 +54,8 @@ enum IslandTheme {
         static let windowButton = Level.secondary
         static let controlGlyph = Level.primary
         static let disabledControl = Level.disabled
+        static let toggleOn: Double = 0.95
+        static let toggleOff: Double = 0.55
         static let artworkGlyph = Level.secondary
         static let sectionHeading = Level.primary
         static let sectionTitle = Level.secondary
@@ -75,6 +78,9 @@ enum IslandTheme {
         static let timerRingTrack = Level.fillHover
         static let progressTrack = Level.fillHover
         static let progressTrackProminent = Level.fillHover
+        static let toggleOn: Double = 0.16
+        static let musicColumnDivider: Double = 0.12
+        static let progressPill: Double = 0.065
         static let artworkFallbackTop: Double = 0.13
         static let artworkFallbackBottom: Double = 0.05
         static let artworkGlyphBackdrop: Double = 0.18
@@ -89,6 +95,8 @@ enum IslandTheme {
     enum Radius {
         static let presetChip: CGFloat = 7
         static let notificationIcon: CGFloat = 17
+        static let recoveryButton: CGFloat = 12
+        static let progressPill: CGFloat = 15
     }
 
     /// Fonts by role.
@@ -116,14 +124,19 @@ enum IslandTheme {
         static let compactTimerTime: Font = .system(size: 13, weight: .semibold, design: .rounded)
         static let compactBadge: Font = .system(size: 8, weight: .bold)
 
-        // Expanded music (D2)
-        static let musicTitle = title
-        static let musicArtist = body
+        // Expanded music: left rail (cover, title, transport) beside a wide
+        // lyric column. The D2 three-row layout was tried in build 182 and
+        // rejected because it left the lyrics too little room, so these keep
+        // the earlier sizes.
+        static let musicTitle: Font = .system(size: 13, weight: .semibold)
+        static let musicArtist: Font = .system(size: 11, weight: .medium)
         static let musicSource = caption
-        static let musicStatus = body
-        static let recoveryLabel: Font = .system(size: 12, weight: .semibold)
-        static let lyricCurrent = lyric
-        static let lyricNext = body
+        static let musicPlaceholderIcon: Font = .system(size: 13, weight: .regular)
+        static let musicStatus: Font = .system(size: 12, weight: .medium)
+        static let recoveryLabel: Font = .system(size: 11, weight: .medium)
+        static let lyricCurrent: Font = .system(size: 23, weight: .semibold)
+        static let lyricTranslation: Font = .system(size: 14, weight: .regular)
+        static let lyricNext: Font = .system(size: 16, weight: .medium)
         static let timeReadout: Font = .system(size: 11, weight: .medium, design: .rounded)
 
         // Controls

@@ -192,7 +192,10 @@ final class IslandModel: ObservableObject {
         case .activityCenter:
             return max(notchWidth + 140, 420)
         case .music:
-            return max(notchWidth + 160, ExpandedMusicLayout.panelWidth)
+            let lyricWidth = isMusicLyricsEnabled && hasCurrentDisplayableLyric
+                ? ExpandedMusicLayout.contentWidth + 32
+                : ExpandedMusicLayout.controlOnlyContentWidth + 32
+            return max(notchWidth + 160, lyricWidth)
         case .timer, .notification:
             return max(notchWidth + 140, 420)
         }
@@ -270,7 +273,7 @@ final class IslandModel: ObservableObject {
             // observer uses this same value to grow the window before the
             // shelf is painted, avoiding a clipped bottom edge.
             return topBandHeight + MusicExpandedLayout.bodyHeight(
-                showsLyricRow: isMusicLyricsEnabled,
+                lines: isMusicLyricsEnabled ? music.track.lyrics : [],
                 heightAdjustment: CGFloat(layout.expandedHeightAdjustment)
             )
         case .timer:

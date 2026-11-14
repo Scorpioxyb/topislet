@@ -315,7 +315,7 @@ struct ExpandedIslandBodyPanel: View {
 
                 case .music:
                     ExpandedMusic(model: model)
-                        .padding(.horizontal, ExpandedMusicLayout.horizontalPadding)
+                        .padding(.horizontal, 16)
                         // Camera housing occupies the menu-bar band. Both
                         // columns start below it, inside the same capsule.
                         .padding(.top, model.topBandHeight)
@@ -359,6 +359,11 @@ struct ExpandedIslandBodyPanel: View {
                     .padding(.bottom, 12)
                 }
 
+                if model.activeFeature == .music {
+                    WindowModeButtons(model: model)
+                        .padding(.top, 4)
+                        .padding(.trailing, 16)
+                }
             }
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
             .opacity(model.mode == .expanded ? 1 : 0)
@@ -377,6 +382,46 @@ struct WindowModeButtons: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            if model.activeFeature == .music {
+                Button {
+                    model.toggleMusicLyrics()
+                } label: {
+                    Image(systemName: "text.quote")
+                        .font(IslandTheme.Typeface.windowButton)
+                        .foregroundStyle(.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Ink.toggleOn : IslandTheme.Ink.toggleOff))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Fill.toggleOn : IslandTheme.Fill.quietButton)))
+                }
+                .buttonStyle(.plain)
+                .help(model.isMusicLyricsEnabled ? "隐藏歌词" : "显示歌词")
+                .accessibilityLabel(model.isMusicLyricsEnabled ? "隐藏歌词" : "显示歌词")
+                .accessibilityIdentifier("topislet.music.lyrics.toggle")
+                .accessibilityValue(model.isMusicLyricsEnabled ? "已开启" : "已关闭")
+
+                Menu {
+                    Picker("展开方式", selection: Binding(
+                    get: { model.appSettings.musicExpansionMode },
+                    set: { model.notePresentationInteraction(); model.appSettings.musicExpansionMode = $0 }
+                )) {
+                        ForEach(MusicExpansionMode.allCases) { expansion in
+                            Text(expansion.title).tag(expansion)
+                        }
+                    }
+                } label: {
+                    Image(systemName: model.appSettings.musicExpansionMode == .pinned ? "pin.fill" : "ellipsis")
+                        .font(IslandTheme.Typeface.windowButton)
+                        .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("音乐展开方式")
+                .accessibilityLabel("音乐展开方式")
+                .accessibilityIdentifier("topislet.music.expansion.menu")
+                .simultaneousGesture(TapGesture().onEnded { model.notePresentationInteraction() })
+            }
             Button {
                 model.collapseExpandedPresentation()
             } label: {

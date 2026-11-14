@@ -277,20 +277,28 @@ func topEdgeBleedCoversWindowServerSeam() {
     #expect(frame.minY == screenFrame.maxY - size.height + 0.5)
 }
 
-@Test("展开音乐三行布局：宽度固定 560，进度行与信息行填满内容宽度")
+@Test("展开音乐布局保持封面、时间轴和控制轨道对齐")
 func expandedMusicLayoutKeepsPrimaryContentAligned() {
-    #expect(ExpandedMusicLayout.panelWidth == 560)
     #expect(
-        ExpandedMusicLayout.timeWidth * 2
-            + ExpandedMusicLayout.timelineToTimeSpacing * 2
-            + ExpandedMusicLayout.timelineWidth
-            == ExpandedMusicLayout.contentWidth
+        ExpandedMusicLayout.contentWidth
+            == ExpandedMusicLayout.controlColumnWidth
+                + ExpandedMusicLayout.controlToLyricSpacing
+                + ExpandedMusicLayout.lyricColumnWidth
     )
-    #expect(ExpandedMusicLayout.transportWidth == 118)
-    #expect(ExpandedMusicLayout.artworkSize == ExpandedMusicLayout.infoRowHeight)
-    // Body heights below the 33pt camera band, from the design doc.
-    #expect(ExpandedMusicLayout.lyricsBodyHeight == 166)
-    #expect(ExpandedMusicLayout.noLyricsBodyHeight == 108)
+    #expect(ExpandedMusicLayout.controlOnlyContentWidth < ExpandedMusicLayout.contentWidth)
+    #expect(
+        ExpandedMusicLayout.detailsWidth
+            == ExpandedMusicLayout.timelineWidth
+                + ExpandedMusicLayout.timelineToTimeSpacing
+                + ExpandedMusicLayout.timeWidth
+    )
+    #expect(ExpandedMusicLayout.controlRailWidth == ExpandedMusicLayout.timelineWidth)
+    #expect(
+        ExpandedMusicLayout.titleWidth
+            + ExpandedMusicLayout.titleToModeButtonsSpacing
+            + ExpandedMusicLayout.modeButtonsWidth
+            == ExpandedMusicLayout.detailsWidth
+    )
 }
 
 @Test("MacBook 机型矩阵使用系统刘海宽度和高度")

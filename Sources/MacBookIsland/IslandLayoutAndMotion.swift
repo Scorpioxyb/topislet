@@ -168,42 +168,35 @@ enum IslandMotion {
 }
 
 enum ExpandedMusicLayout {
-    // Three rows inside a fixed 560pt surface (redesign D2,
-    // Docs/design/FRONTEND_REDESIGN_2026-11.md 4.3). Width never depends on
-    // lyric availability; height depends only on the lyric setting.
-    static let horizontalPadding: CGFloat = 16
-    static let contentWidth: CGFloat = 528
-    static let panelWidth: CGFloat = contentWidth + horizontalPadding * 2
-
-    static let topInset: CGFloat = 14
-    static let infoRowHeight: CGFloat = 56
-    static let artworkSize: CGFloat = 56
-    static let artworkToDetailsSpacing: CGFloat = 12
-    static let skipButtonSize: CGFloat = 32
-    static let playButtonSize: CGFloat = 38
-    static let transportSpacing: CGFloat = 8
-    static let transportWidth: CGFloat = skipButtonSize * 2 + playButtonSize + transportSpacing * 2
-    static let moreButtonSize: CGFloat = 24
-
-    static let infoToLyricSpacing: CGFloat = 12
-    static let lyricRowHeight: CGFloat = 44
-    static let lyricLineHeight: CGFloat = 26
-    static let lyricBarSpacing: CGFloat = 8
-
-    static let toProgressSpacing: CGFloat = 10
-    static let progressRowHeight: CGFloat = 16
-    static let timeWidth: CGFloat = 44
+    // The lyric mode gives the reading surface the larger share of the
+    // expanded island. Controls stay in a stable left rail so the lyric
+    // viewport can grow without reflowing the playback buttons.
+    static let controlContentWidth: CGFloat = 204
+    static let controlOnlyContentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + detailsWidth
+    static let controlSurfacePadding: CGFloat = 0
+    // The lyric state is intentionally wider than the control-only state.
+    // This keeps the cover/controls rail stable and gives the lyric viewport
+    // enough room to scroll long lines without shrinking the type.
+    static let contentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + lyricColumnWidth
+    static let artworkSize: CGFloat = 76
+    static let artworkToDetailsSpacing: CGFloat = 10
+    static let detailsWidth: CGFloat = 248
+    static let lyricColumnWidth: CGFloat = 446
+    static let controlToLyricSpacing: CGFloat = 12
+    static let timelineWidth: CGFloat = 164
     static let timelineToTimeSpacing: CGFloat = 10
-    static let timelineWidth: CGFloat = contentWidth - timeWidth * 2 - timelineToTimeSpacing * 2
+    static let timeWidth: CGFloat = 74
+    static let lyricTimelineWidth: CGFloat = 306
+    static let controlRailWidth: CGFloat = timelineWidth
+    static let modeButtonsWidth: CGFloat = 56
+    static let titleToModeButtonsSpacing: CGFloat = 12
+    static let titleWidth: CGFloat = detailsWidth
+        - modeButtonsWidth
+        - titleToModeButtonsSpacing
 
-    static let bottomInsetWithLyrics: CGFloat = 14
-    static let bottomInsetWithoutLyrics: CGFloat = 12
-
-    /// Body height below the 33pt camera band.
-    static let lyricsBodyHeight: CGFloat = topInset + infoRowHeight + infoToLyricSpacing + lyricRowHeight
-        + toProgressSpacing + progressRowHeight + bottomInsetWithLyrics
-    static let noLyricsBodyHeight: CGFloat = topInset + infoRowHeight
-        + toProgressSpacing + progressRowHeight + bottomInsetWithoutLyrics
+    static var controlColumnWidth: CGFloat {
+        controlContentWidth + controlSurfacePadding * 2
+    }
 }
 
 enum IslandDisplayRefreshPolicy {

@@ -49,15 +49,18 @@ enum MusicCompactLayout {
 }
 
 enum MusicExpandedLayout {
-    static let noLyricsBodyHeight: CGFloat = ExpandedMusicLayout.noLyricsBodyHeight
-    static let lyricsBodyHeight: CGFloat = ExpandedMusicLayout.lyricsBodyHeight
-    static let minimumBodyHeight: CGFloat = 96
+    static let noLyricsBodyHeight: CGFloat = 116
+    // Lyrics are a reading surface, not a taller copy of the control card.
+    // Keep enough vertical room for a strong current line, translation and
+    // next-line context while staying within one horizontal capsule.
+    static let lyricsBodyHeight: CGFloat = 144
+    static let minimumBodyHeight: CGFloat = 112
 
-    /// The lyric row follows the user's setting only. A song without lyrics
-    /// keeps the row (showing a placeholder) so the panel does not resize
-    /// when lyrics arrive late or are unavailable.
-    static func bodyHeight(showsLyricRow: Bool, heightAdjustment: CGFloat = 0) -> CGFloat {
-        max(minimumBodyHeight, (showsLyricRow ? lyricsBodyHeight : noLyricsBodyHeight) + heightAdjustment)
+    static func bodyHeight(lines: [String], heightAdjustment: CGFloat = 0) -> CGFloat {
+        let baseHeight = MusicLyricPresentation.hasDisplayableLines(lines)
+            ? lyricsBodyHeight
+            : noLyricsBodyHeight
+        return max(minimumBodyHeight, baseHeight + heightAdjustment)
     }
 }
 
