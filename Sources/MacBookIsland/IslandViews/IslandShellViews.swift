@@ -132,21 +132,12 @@ private struct IslandShellShape: Shape {
                 .path(in: rect)
         }
         let radius = min(cornerRadius, rect.width / 2, rect.height)
-        return Path { path in
-            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
-            path.addQuadCurve(
-                to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
-                control: CGPoint(x: rect.maxX, y: rect.maxY)
-            )
-            path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
-            path.addQuadCurve(
-                to: CGPoint(x: rect.minX, y: rect.maxY - radius),
-                control: CGPoint(x: rect.minX, y: rect.maxY)
-            )
-            path.closeSubpath()
-        }
+        return UnevenRoundedRectangle(
+            bottomLeadingRadius: radius,
+            bottomTrailingRadius: radius,
+            style: .continuous
+        )
+        .path(in: rect)
     }
 }
 
@@ -295,19 +286,20 @@ struct ExpandedIslandBodyPanel: View {
             IslandShell(
                 width: model.expandedWidth,
                 height: model.expandedBodyHeight,
-                cornerRadius: IslandTheme.Surface.bodyCornerRadius,
-                // Both music states share the same translucent glass capsule.
-                // The previous opaque shell plus inner material card was the
-                // second visible box in the supplied screenshot.
-                fillOpacity: model.activeFeature == .music ? 0 : 1,
-                strokeOpacity: model.activeFeature == .music ? IslandTheme.Surface.musicStrokeOpacity : 0,
-                shadowOpacity: model.activeFeature == .music ? IslandTheme.Surface.musicShadowOpacity : 0
+                // Expanded music is one black surface flush with the top of
+                // the screen, an extension of the camera housing (redesign
+                // direction A). Other features keep their detached body.
+                cornerRadius: model.activeFeature == .music
+                    ? IslandTheme.Surface.musicBodyCornerRadius
+                    : IslandTheme.Surface.bodyCornerRadius,
+                fillOpacity: 1,
+                strokeOpacity: 0,
+                attachesToTop: model.activeFeature == .music
             ) {
-                ZStack {
-                    if model.activeFeature == .music {
-                        MusicGlassBackground()
-                        Color.black.opacity(IslandTheme.Surface.musicGlassDim)
-                    }
+                if model.activeFeature == .music {
+                    MusicAmbientGlow(accent: model.musicAccentColor)
+                } else {
+                    Color.clear
                 }
             }
             .scaleEffect(x: shellScaleX, y: shellScaleY, anchor: .top)
@@ -323,7 +315,7 @@ struct ExpandedIslandBodyPanel: View {
 
                 case .music:
                     ExpandedMusic(model: model)
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, ExpandedMusicLayout.horizontalPadding)
                         // Camera housing occupies the menu-bar band. Both
                         // columns start below it, inside the same capsule.
                         .padding(.top, model.topBandHeight)
@@ -367,11 +359,6 @@ struct ExpandedIslandBodyPanel: View {
                     .padding(.bottom, 12)
                 }
 
-                if model.activeFeature == .music {
-                    WindowModeButtons(model: model)
-                        .padding(.top, 4)
-                        .padding(.trailing, 16)
-                }
             }
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
             .opacity(model.mode == .expanded ? 1 : 0)
@@ -390,46 +377,6 @@ struct WindowModeButtons: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if model.activeFeature == .music {
-                Button {
-                    model.toggleMusicLyrics()
-                } label: {
-                    Image(systemName: "text.quote")
-                        .font(IslandTheme.Typeface.windowButton)
-                        .foregroundStyle(.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Ink.toggleOn : IslandTheme.Ink.toggleOff))
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(model.isMusicLyricsEnabled ? IslandTheme.Fill.toggleOn : IslandTheme.Fill.quietButton)))
-                }
-                .buttonStyle(.plain)
-                .help(model.isMusicLyricsEnabled ? "隐藏歌词" : "显示歌词")
-                .accessibilityLabel(model.isMusicLyricsEnabled ? "隐藏歌词" : "显示歌词")
-                .accessibilityIdentifier("topislet.music.lyrics.toggle")
-                .accessibilityValue(model.isMusicLyricsEnabled ? "已开启" : "已关闭")
-
-                Menu {
-                    Picker("展开方式", selection: Binding(
-                    get: { model.appSettings.musicExpansionMode },
-                    set: { model.notePresentationInteraction(); model.appSettings.musicExpansionMode = $0 }
-                )) {
-                        ForEach(MusicExpansionMode.allCases) { expansion in
-                            Text(expansion.title).tag(expansion)
-                        }
-                    }
-                } label: {
-                    Image(systemName: model.appSettings.musicExpansionMode == .pinned ? "pin.fill" : "ellipsis")
-                        .font(IslandTheme.Typeface.windowButton)
-                        .foregroundStyle(.white.opacity(IslandTheme.Ink.windowButton))
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(IslandTheme.Fill.quietButton)))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("音乐展开方式")
-                .accessibilityLabel("音乐展开方式")
-                .accessibilityIdentifier("topislet.music.expansion.menu")
-                .simultaneousGesture(TapGesture().onEnded { model.notePresentationInteraction() })
-            }
             Button {
                 model.collapseExpandedPresentation()
             } label: {

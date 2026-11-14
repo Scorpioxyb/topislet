@@ -75,6 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isSuppressedByFullScreen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if let path = PreviewSnapshot.outputPath(
+            arguments: CommandLine.arguments,
+            isPreview: model.isPreviewPresentation
+        ) {
+            let succeeded = PreviewSnapshot.render(model: model, to: path)
+            exit(succeeded ? 0 : 1)
+        }
+        #endif
         NSApp.setActivationPolicy(.accessory)
         DistributedNotificationCenter.default().addObserver(
             self,

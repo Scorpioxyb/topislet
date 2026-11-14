@@ -109,11 +109,12 @@ func compactMusicLayoutUsesStableWidthTiers() {
     #expect(MusicCompactLayout.lyricContentHeight + MusicCompactLayout.lyricVerticalSafeInset * 2 <= 33)
 }
 
-@Test("展开歌词栏到达后使用带歌词高度，空歌词不预留面板")
+@Test("展开音乐高度只随“显示歌词”设置变化，与这首歌有无歌词无关")
 func expandedMusicLayoutReservesLyricShelfOnlyForDisplayableLines() {
-    #expect(MusicExpandedLayout.bodyHeight(lines: ["当前句"]) == 144)
-    #expect(MusicExpandedLayout.bodyHeight(lines: ["纯音乐，请欣赏"]) == 116)
-    #expect(MusicExpandedLayout.bodyHeight(lines: [], heightAdjustment: -200) == 112)
+    #expect(MusicExpandedLayout.bodyHeight(showsLyricRow: true) == 166)
+    #expect(MusicExpandedLayout.bodyHeight(showsLyricRow: false) == 108)
+    #expect(MusicExpandedLayout.bodyHeight(showsLyricRow: true, heightAdjustment: 12) == 178)
+    #expect(MusicExpandedLayout.bodyHeight(showsLyricRow: false, heightAdjustment: -200) == 96)
 }
 
 @Test("歌词媒体发布节拍不慢于 AX 歌词读取节拍")

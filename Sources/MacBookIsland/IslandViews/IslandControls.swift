@@ -161,7 +161,7 @@ struct ControlButton: View {
                     .id(icon)
                     .transition(iconTransition)
             }
-            .frame(width: prominent ? 34 : size, height: prominent ? 34 : size)
+            .frame(width: prominent ? max(size, 34) : size, height: prominent ? max(size, 34) : size)
         }
         .buttonStyle(IslandControlButtonStyle())
         .opacity(isEnabled ? 1 : IslandTheme.Ink.disabledControl)
