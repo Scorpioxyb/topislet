@@ -175,7 +175,7 @@ func dailyAnalyzerSummarizesQishuiTransitionStagesWithoutMetadata() {
         records,
         generatedAt: start.addingTimeInterval(2)
     )
-    #expect(summary.schemaVersion == 6)
+    #expect(summary.schemaVersion == 7)
     #expect(summary.qishuiTrackTransitions.total == 2)
     #expect(summary.qishuiTrackTransitions.deferredCount == 2)
     #expect(summary.qishuiTrackTransitions.firstCandidateCount == 2)
@@ -356,7 +356,7 @@ func dailyAnalyzerDoesNotTreatMissingUsageAsPassingCoverage() {
         records,
         generatedAt: start.addingTimeInterval(16 * 60)
     )
-    #expect(summary.schemaVersion == 6)
+    #expect(summary.schemaVersion == 7)
     #expect(summary.sampleCoverage.status == "no_media_activity")
     #expect(summary.sampleCoverage.observationHeartbeatCount == 1)
     #expect(summary.sampleCoverage.mediaPresenceHeartbeatCount == 0)
@@ -483,7 +483,7 @@ func dailyAnalyzerTreatsCancelledSeeksAsTerminalCoverage() {
         records,
         generatedAt: start.addingTimeInterval(1)
     )
-    #expect(summary.schemaVersion == 6)
+    #expect(summary.schemaVersion == 7)
     #expect(summary.seekCancellationCount == 2)
     #expect(summary.seekCancellationReasons == [
         "superseded": 1,

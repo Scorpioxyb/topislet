@@ -465,6 +465,7 @@ final class MusicAdapterCoordinator {
     private var requestedQishuiLyricIdentity: QishuiLyricIdentity?
     private var qishuiLyricGeneration: UInt64 = 0
     private var qishuiLyricReadInFlight = false
+    private var qishuiLyricOutcome = QishuiLyricOutcomeTracker()
     private var lastQishuiLyricReadAt = Date.distantPast
     private var requestedTimedLyricIdentity: QishuiLyricIdentity?
     private var latestTimedLyricIdentity: QishuiLyricIdentity?
@@ -4059,6 +4060,14 @@ final class MusicAdapterCoordinator {
         if requestedQishuiLyricIdentity != desiredIdentity {
             invalidateQishuiLyrics()
             requestedQishuiLyricIdentity = desiredIdentity
+            let finished = qishuiLyricOutcome.restart(
+                track: desiredIdentity.map {
+                    MusicUsageTrackFingerprint.make(source: "qishui", title: $0.title, artist: $0.artist)
+                },
+                timedEnabled: timedLyricsEnabled,
+                at: Date()
+            )
+            if let finished { recordUsage("lyric_outcome", fields: finished.fields) }
         }
         guard let identity = desiredIdentity else { return }
         scheduleQishuiTimedLyricRefresh(identity: identity)
@@ -4080,6 +4089,8 @@ final class MusicAdapterCoordinator {
         let reader = qishuiLyricReader
         qishuiLyricQueue.async { [weak self] in
             let snapshot = reader.read(identity: identity, includeIntroCredits: isIntro)
+            let diagnosis = reader.lastDiagnosis
+            let windowState = reader.lastWindowState
             if self?.qishuiLyricDebugEnabled == true {
                 fputs("[MusicAdapter] lyric read lines=\(snapshot.lines) identity=\(snapshot.identity)\n", stderr)
             }
@@ -4094,6 +4105,12 @@ final class MusicAdapterCoordinator {
                 )
                 let linesChanged = self.latestQishuiLyrics?.lines != accepted.lines
                 self.latestQishuiLyrics = accepted
+                self.qishuiLyricOutcome.recordRead(
+                    diagnosis: diagnosis,
+                    windowState: windowState,
+                    acceptedLines: !accepted.lines.isEmpty,
+                    acceptedDesktop: accepted.isDesktopSnapshot
+                )
                 if linesChanged {
                     self.publishCurrentState()
                 }
@@ -4133,6 +4150,7 @@ final class MusicAdapterCoordinator {
             requestedTimedLyricIdentity = identity
             latestTimedLyricIdentity = identity
             latestTimedLines = cached
+            qishuiLyricOutcome.recordTimedFinished(hasLines: true)
             recordUsage("timed_lyrics_ready", fields: ["origin": "cache"])
             return
         }
@@ -4155,6 +4173,7 @@ final class MusicAdapterCoordinator {
                           self.requestedTimedLyricIdentity == identity,
                           self.qishuiLyricIdentity() == identity,
                           self.timedLyricsEnabled else { return }
+                    self.qishuiLyricOutcome.recordTimedRead(receivedData: measurement.receivedData)
                     self.recordUsage("timed_lyric_read", fields: [
                         "stage": measurement.stage.rawValue,
                         "latency_ms": String(measurement.latencyMilliseconds),
@@ -4169,6 +4188,7 @@ final class MusicAdapterCoordinator {
                   self.timedLyricsEnabled else { return }
             self.latestTimedLyricIdentity = lines.isEmpty ? nil : identity
             self.latestTimedLines = lines
+            self.qishuiLyricOutcome.recordTimedFinished(hasLines: !lines.isEmpty)
             if lines.isEmpty {
                 self.requestedTimedLyricIdentity = nil
                 self.timedLyricFailureCount = min(self.timedLyricFailureCount + 1, 5)

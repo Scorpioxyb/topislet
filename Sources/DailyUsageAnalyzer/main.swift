@@ -143,6 +143,16 @@ private func run() throws {
         + "原子 P95=\(report.qishuiTrackTransitions.atomicCompleteLatency.p95Milliseconds.map { "\($0)ms" } ?? "无")；"
         + "\(coverageText)；\(anomalyText)"
     )
+    let lyrics = report.lyricOutcomes
+    if lyrics.total > 0 {
+        let missing = lyrics.missingByWindowState.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+        print(
+            "汽水歌词：计入 \(lyrics.countedTotal) 首（另有 \(lyrics.shortObservationCount) 首观察不足 "
+            + "\(MusicUsageLyricOutcomeSummary.minimumObservedSeconds) 秒），有歌词 \(lyrics.countedWithLyrics) 首"
+            + (missing.isEmpty ? "" : "；无歌词：\(missing)")
+        )
+    }
     if !report.sampleCoverage.missingSampleKinds.isEmpty {
         print("缺少样本：\(report.sampleCoverage.missingSampleKinds.joined(separator: ", "))")
     }

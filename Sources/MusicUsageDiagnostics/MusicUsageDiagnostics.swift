@@ -123,6 +123,42 @@ public struct MusicUsageSampleCoverage: Codable, Equatable, Sendable {
     public let missingSampleKinds: [String]
 }
 
+/// Per-track lyric outcomes from `lyric_outcome` events. Tracks observed for
+/// less than `minimumObservedSeconds` (quick skips) are counted separately so
+/// they do not read as missing lyrics. Categories only; no track content.
+public struct MusicUsageLyricOutcomeSummary: Codable, Equatable, Sendable {
+    public static let minimumObservedSeconds = 20
+
+    public let total: Int
+    public let shortObservationCount: Int
+    public let results: [String: Int]
+    public let timedStates: [String: Int]
+    public let windowStates: [String: Int]
+    /// "result@window" for counted tracks without any lyric.
+    public let missingByWindowState: [String: Int]
+
+    public init(
+        total: Int,
+        shortObservationCount: Int,
+        results: [String: Int],
+        timedStates: [String: Int],
+        windowStates: [String: Int],
+        missingByWindowState: [String: Int]
+    ) {
+        self.total = total
+        self.shortObservationCount = shortObservationCount
+        self.results = results
+        self.timedStates = timedStates
+        self.windowStates = windowStates
+        self.missingByWindowState = missingByWindowState
+    }
+
+    public var countedTotal: Int { total - shortObservationCount }
+    public var countedWithLyrics: Int {
+        results.filter { !$0.key.hasPrefix("none_") && $0.key != "not_attempted" }.values.reduce(0, +)
+    }
+}
+
 public struct MusicUsageQishuiTransitionSummary: Codable, Equatable, Sendable {
     public let total: Int
     public let deferredCount: Int
@@ -163,6 +199,7 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let metadataToArtworkLatency: MusicUsageLatencySummary
     public let controlToArtworkLatency: MusicUsageLatencySummary
     public let lyricUIPublicationLatency: MusicUsageLatencySummary
+    public let lyricOutcomes: MusicUsageLyricOutcomeSummary
     public let seekConfirmationLatency: MusicUsageLatencySummary
     public let seekConfirmationTimeoutCount: Int
     public let seekCancellationCount: Int
@@ -251,6 +288,12 @@ public enum MusicUsageDailyAnalyzer {
         var metadataToArtworkLatencies: [Int] = []
         var controlToArtworkLatencies: [Int] = []
         var lyricUIPublicationLatencies: [Int] = []
+        var lyricOutcomeTotal = 0
+        var lyricOutcomeShort = 0
+        var lyricResults: [String: Int] = [:]
+        var lyricTimedStates: [String: Int] = [:]
+        var lyricWindowStates: [String: Int] = [:]
+        var lyricMissingByWindow: [String: Int] = [:]
         var seekConfirmationLatencies: [Int] = []
         var seekConfirmationTimeouts = 0
         var seekCancellations = 0
@@ -470,6 +513,21 @@ public enum MusicUsageDailyAnalyzer {
                 if let latency = integer(event.fields["lyric_age_ms"]), latency >= 0 {
                     lyricUIPublicationLatencies.append(latency)
                 }
+            case "lyric_outcome":
+                lyricOutcomeTotal += 1
+                guard let observed = integer(event.fields["observed_s"]),
+                      observed >= MusicUsageLyricOutcomeSummary.minimumObservedSeconds else {
+                    lyricOutcomeShort += 1
+                    break
+                }
+                let result = event.fields["result"] ?? "unknown"
+                let window = event.fields["window"] ?? "unknown"
+                lyricResults[result, default: 0] += 1
+                lyricTimedStates[event.fields["timed"] ?? "unknown", default: 0] += 1
+                lyricWindowStates[window, default: 0] += 1
+                if result.hasPrefix("none_") {
+                    lyricMissingByWindow["\(result)@\(window)", default: 0] += 1
+                }
             default:
                 break
             }
@@ -576,7 +634,7 @@ public enum MusicUsageDailyAnalyzer {
         }
 
         return MusicUsageDailySummary(
-            schemaVersion: 6,
+            schemaVersion: 7,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -609,6 +667,14 @@ public enum MusicUsageDailyAnalyzer {
             metadataToArtworkLatency: latencySummary(metadataToArtworkLatencies),
             controlToArtworkLatency: latencySummary(controlToArtworkLatencies),
             lyricUIPublicationLatency: latencySummary(lyricUIPublicationLatencies),
+            lyricOutcomes: MusicUsageLyricOutcomeSummary(
+                total: lyricOutcomeTotal,
+                shortObservationCount: lyricOutcomeShort,
+                results: lyricResults,
+                timedStates: lyricTimedStates,
+                windowStates: lyricWindowStates,
+                missingByWindowState: lyricMissingByWindow
+            ),
             seekConfirmationLatency: latencySummary(seekConfirmationLatencies),
             seekConfirmationTimeoutCount: seekConfirmationTimeouts,
             seekCancellationCount: seekCancellations,

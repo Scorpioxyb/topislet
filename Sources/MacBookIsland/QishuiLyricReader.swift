@@ -296,12 +296,19 @@ final class QishuiLyricReader: @unchecked Sendable {
     private var deadline = Date.distantPast
     private var exhausted = false
     private var nodes = 0
+    // Diagnostics for the anonymous lyric outcome event. Written and read only
+    // on the reader's queue, right after `read` returns.
+    private(set) var lastDiagnosis = QishuiLyricReadDiagnosis.noCandidate
+    private(set) var lastWindowState = QishuiMainWindowState.unknown
+    private var identityMismatch = false
 
     func read(identity requested: QishuiLyricIdentity, includeIntroCredits: Bool = false) -> QishuiLyricSnapshot {
         let now = Date()
         deadline = now.addingTimeInterval(0.18)
         exhausted = false
         nodes = 0
+        lastWindowState = .unknown
+        identityMismatch = false
         if identity != requested {
             corpusGate.transition(to: requested)
             identity = requested
@@ -320,6 +327,16 @@ final class QishuiLyricReader: @unchecked Sendable {
             lastDesktopParagraphDiscovery = .distantPast
         }
         func result(_ lines: [String] = [], desktop: Bool = false) -> QishuiLyricSnapshot {
+            let snapshot = resolvedResult(lines, desktop: desktop)
+            lastDiagnosis = .classify(
+                hasLines: !snapshot.lines.isEmpty,
+                windowState: lastWindowState,
+                hasDesktopWindow: desktopWindow != nil,
+                identityMismatch: identityMismatch
+            )
+            return snapshot
+        }
+        func resolvedResult(_ lines: [String], desktop: Bool) -> QishuiLyricSnapshot {
             if !exhausted, !lines.isEmpty {
                 let snapshot = QishuiLyricSnapshot(
                     identity: requested,
@@ -376,6 +393,7 @@ final class QishuiLyricReader: @unchecked Sendable {
         let canReadMain = mainWindow != nil
             && (mainWindow.flatMap { attribute($0, "AXMinimized") as? Bool } != true)
         let minimizedValue = mainWindow.map { attribute($0, "AXMinimized") }
+        lastWindowState = mainWindow == nil ? .closed : (canReadMain ? .open : .minimized)
         debugLog("canReadMain=\(canReadMain) minimized=\(String(describing: minimizedValue)) playerCached=\(player != nil)")
         if mainWindow == nil {
             player = nil
@@ -404,8 +422,11 @@ final class QishuiLyricReader: @unchecked Sendable {
                 debugLog("candidate classes=\(classes(candidate)) titles=\(titles.count) artists=\(artistRoots.count) lyrics=\(lyricRoots.count) title=\(candidateTitle) artists=\(candidateArtists)")
                 guard let title = titles.first,
                       let artists = artistRoots.first,
-                      let lyrics = lyricRoots.first,
-                      QishuiLyricAttribution.matches(requested, title: candidateTitle, artists: candidateArtists) else {
+                      let lyrics = lyricRoots.first else {
+                    continue
+                }
+                guard QishuiLyricAttribution.matches(requested, title: candidateTitle, artists: candidateArtists) else {
+                    identityMismatch = true
                     continue
                 }
                 selected = (candidate, title, artists, lyrics)
@@ -517,6 +538,7 @@ final class QishuiLyricReader: @unchecked Sendable {
                     }
                 }
             } else {
+                identityMismatch = true
                 // Cached native element can survive a renderer replacement. Rediscover
                 // at the bounded interval; never reuse another song's corpus.
                 corpus = []
