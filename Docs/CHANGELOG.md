@@ -1,5 +1,13 @@
 # 变更记录
 
+## v0.1.4-alpha.1 — 待发布
+
+对应应用版本 **0.1.4 build 189**，Apple Silicon / macOS 26+ 开发者预览；ad-hoc 签名，未完成 Apple 公证。详情见[更新页](updates/2026-11-15-build189-immersive-panel.md)。
+
+- 展开音乐改为“沉浸”面板：纯黑贴顶表面，124pt 封面 + 单栏歌词，封面模糊铺底，面板固定 660×190，控制行悬停出现（静止时为细进度线），左侧已播放、右侧剩余时间；降低透明度与增强对比度时为纯黑。
+- 修复悬停展开模式下点按面板后移开不收起。
+- 内部：`main.swift` 按文件拆分，协调器拆分第 1–3 步，状态流重放夹具进入 CI，匿名歌词结果分类，删除停用的 OCR 实验；行为不变。
+
 ## v0.1.3-alpha.2 — 2026-10-14
 
 对应应用版本 **0.1.3 build 180**，Apple Silicon / macOS 26+ 开发者预览；ad-hoc 签名，未完成 Apple 公证。[下载与发布说明](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.2)。历史 Release 保留。

@@ -1,0 +1,74 @@
+# v0.1.4 版本门禁表
+
+候选：`0.1.4 build 189`（2026-11-15）。目标发布：**v0.1.4-alpha.1**，ad-hoc 签名开发者预览版。依据 [版本计划](../product/VERSION_PLAN_2026-11.md)（2026-11-15 确认），接替 [GATES_v0.1.3](GATES_v0.1.3.md)；v0.1.3 未单独发布，其开放项“后台歌词”转入 [GATES_v0.2.0](GATES_v0.2.0.md)。
+
+规则：自动化结果和实机结果分开写；未做的写“未做”。不继承 build 180–188 的实机证据。
+
+验证环境：本机 MacBook（`Mac17,4`），macOS 27.3；汽水音乐 2.9.1。
+
+## 相对公开版 build 180 的改动
+
+| 改动 | 行为影响 |
+| --- | --- |
+| 展开音乐“沉浸”面板（build 187–188） | 界面：纯黑贴顶表面、124pt 封面、单栏歌词、封面模糊铺底、控制行悬停出现、面板固定 660×190 |
+| 悬停展开模式下点按后移开会收起（build 185） | 交互修复 |
+| 主题层 `IslandTheme` 与新的不透明度令牌（build 182） | 全局细节，计时、通知等其他界面字号未变 |
+| `main.swift` 按文件拆分；协调器拆分第 1–3 步 | 无：行为不变，测试与重放夹具覆盖 |
+| 状态流重放夹具进入 CI | 仅测试 |
+| 每首汽水歌曲一条匿名歌词结果分类 | 只新增本地诊断日志，不含歌名与歌词 |
+| 移除已停用的汽水歌词 OCR 实验代码 | 无（原本就不运行） |
+
+## 门禁
+
+| 门禁 | 自动化 | 实机 | 证据 |
+| --- | --- | --- | --- |
+| Swift 测试 | 本机 433/433 通过（不少于 v0.1.3 的 403） | — | 本地 `swift test`；云端 CI 通过（提交 `55439d5`，含测试修复 `2083b5d`） |
+| 脚本测试 | 22/22 通过 | — | `python3 -m unittest discover -s Scripts/tests -p 'test_*.py'` |
+| 验收索引 | `--check` 通过 | — | `Scripts/generate-acceptance-index.py` |
+| 控制安全脚本 | 通过 | — | `Scripts/verify-qishui-control-safety.sh` |
+| 日常日志（近 7 天） | 控制 25/25、进度跳转 25/25（确认 16、超时 0、取消 9）、汽水切歌 12/12 完整发布（原子 P95 710ms）；另记 `rapid_source_switch` 1 次、`artwork_unresolved` 1 次；`playback_confirmation` 缺样本 | — | `LocalData/qa/topislet-daily-usage-2026-11-15.json`（主检出目录） |
+| 安装后启动 | — | 通过（2026-11-15）：安装后新进程启动，版本 0.1.4 / 189，辅助功能授权保留（`--ax-check` 为 true），两个状态流辅助进程在运行 | 本机 `Scripts/package-app.sh` 输出 |
+| 汽水专属控制（含拆分第 1–3 步） | — | 未做：播放、暂停、上一首、下一首各一次；拖动进度一次；暂停中拖动后自动续播一次 | — |
+| 新面板 | — | 未做：悬停出现控制行、拖动命中、有歌词与无歌词同尺寸、“降低透明度”退回纯黑 | — |
+| `QA_CHECKLIST.md` 短项与安全硬门禁 | — | 未做 | — |
+| README 演示素材 | — | 未做：仍为 build 137，需要人工录制 | — |
+| 发布包 | 未做：`build-release.sh` 与 `verify-release-dmg.sh` | — | — |
+
+## 发布检查清单
+
+复制自 [RELEASE_CHECKLIST](../qa/RELEASE_CHECKLIST.md)。
+
+### 1. 发布前门禁
+
+- [ ] 本表全部通过，或逐项写明豁免理由与负责人确认。
+- [x] `swift test` 全部通过，测试数不少于上一版本（433 ≥ 403）。
+- [x] 脚本测试通过。
+- [x] 验收索引 `--check` 通过。
+- [x] 控制安全脚本通过。
+- [ ] `QA_CHECKLIST.md` 全量短项实机通过，“安全硬门禁”逐条确认。
+- [x] 近期日常使用没有未解决的问题：日报无新增异常，`ISSUE_BOARD` 无阻断项（2026-11-15 日报见上表）。
+- [x] 记录 macOS 与汽水音乐版本（见上）。
+
+### 2. 构建
+
+- [ ] 工作区干净，版本号与 build 号已提交；在该提交上打 tag `v0.1.4-alpha.1`。
+- [ ] 通过 GitHub Actions `release.yml` 或本机 `VERSION="0.1.4" BUILD_NUMBER="189" bash Scripts/build-release.sh` 构建。
+- [ ] 产物写入 `LocalData/release-artifacts/`。
+- [ ] `verify-release-dmg.sh` 通过。
+
+### 3. 签名
+
+- [ ] Release 页写明“ad-hoc 签名开发者预览版，未公证”，并说明 Gatekeeper 提示与可能需要重新授予辅助功能。
+
+### 4. 发布材料
+
+- [ ] Release 页包含 SHA-256、已知限制、权限说明、第三方声明链接。
+- [ ] README、截图和演示素材与 build 189 一致；不出现权属不明的第三方专辑封面。
+- [ ] `Docs/CHANGELOG.md`、`Docs/ROADMAP.md` 顶部、[更新页](../updates/2026-11-15-build189-immersive-panel.md) 已更新。
+- [ ] 原始采样与日报留在 `LocalData/qa/`。
+
+### 5. 发布后验收
+
+- [ ] 从 Release 页重新下载 DMG，校验 SHA-256，安装。
+- [ ] 首次启动、权限授予、汽水三键控制、歌词开关和设置页各一次短实机。
+- [ ] 写 `Docs/acceptance/<日期>-v0.1.4-alpha.1-post-release.md`，重建验收索引。
