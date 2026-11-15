@@ -76,13 +76,6 @@ struct ExpandedMusic: View {
             ? ExpandedMusicLayout.contentWidth : ExpandedMusicLayout.controlOnlyContentWidth,
             height: showsLyrics
                 ? MusicExpandedLayout.lyricsBodyHeight : MusicExpandedLayout.noLyricsBodyHeight)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(.white.opacity(IslandTheme.Fill.musicColumnDivider))
-                .frame(width: 1, height: showsLyrics ? 110 : 82)
-                .offset(x: ExpandedMusicLayout.controlContentWidth + ExpandedMusicLayout.controlToLyricSpacing / 2)
-                .allowsHitTesting(false)
-        }
     }
 }
 
@@ -227,16 +220,31 @@ private struct LyricsShelf: View {
         }
     }
 
+    /// Current line shrinks (down to 85%) before it has to scroll.
+    private var currentLineSize: CGFloat {
+        let base = IslandTheme.Typeface.lyricCurrentSize
+        let natural = NSAttributedString(
+            string: current.primary,
+            attributes: [.font: NSFont.systemFont(ofSize: base, weight: .semibold)]
+        ).size().width
+        return LyricFitPolicy.pointSize(
+            naturalWidth: natural,
+            availableWidth: ExpandedMusicLayout.lyricColumnWidth - ExpandedMusicLayout.lyricTextInset,
+            base: base
+        )
+    }
+
     private var lyricLines: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .center, spacing: 9) {
                 Capsule()
                     .fill(accent.opacity(IslandTheme.Accent.lyricBar))
                     .frame(width: 3, height: 28)
+                let currentFont = IslandTheme.Typeface.lyricCurrent(size: currentLineSize)
                 if let elapsedTime, !timedWords.isEmpty {
                     KaraokeLyricText(
                         text: current.primary,
-                        font: IslandTheme.Typeface.lyricCurrent,
+                        font: currentFont,
                         highlightedColor: .white.opacity(IslandTheme.Ink.lyricHighlighted),
                         unhighlightedColor: .white.opacity(IslandTheme.Ink.lyricUnhighlighted),
                         lineHeight: 29,
@@ -249,7 +257,7 @@ private struct LyricsShelf: View {
                 } else {
                     MarqueeText(
                         text: current.primary,
-                        font: IslandTheme.Typeface.lyricCurrent,
+                        font: currentFont,
                         color: .white.opacity(IslandTheme.Ink.lyricHighlighted),
                         lineHeight: 29,
                         clock: lyricClock
@@ -335,14 +343,10 @@ private struct MusicProgressRow: View {
                 .foregroundStyle(.white.opacity(IslandTheme.Ink.timeReadout))
                 .frame(width: ExpandedMusicLayout.timeWidth, alignment: .leading)
         }
-        .padding(.horizontal, prominent ? 11 : 0)
+        // Under lyrics the bar starts on the lyric text's leading edge. No
+        // capsule behind it: a thin track on the black surface is enough.
+        .padding(.leading, prominent ? ExpandedMusicLayout.lyricTextInset : 0)
         .frame(height: prominent ? 30 : nil)
-        .background {
-            if prominent {
-                RoundedRectangle(cornerRadius: IslandTheme.Radius.progressPill)
-                    .fill(.white.opacity(IslandTheme.Fill.progressPill))
-            }
-        }
         .onDisappear {
             model.setMusicScrubbing(false)
         }

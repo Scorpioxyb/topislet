@@ -270,6 +270,9 @@ struct ExpandedIsland: View {
 
 struct ExpandedIslandBodyPanel: View {
     @ObservedObject var model: IslandModel
+    /// Expanded music shows its corner buttons only while the pointer is over
+    /// the panel, so a resting panel is just artwork, title and lyrics.
+    @State private var isPointerOverBody = false
 
     private var shellScaleX: CGFloat {
         guard model.mode != .expanded else { return 1 }
@@ -363,6 +366,8 @@ struct ExpandedIslandBodyPanel: View {
                     WindowModeButtons(model: model)
                         .padding(.top, 4)
                         .padding(.trailing, 16)
+                        .opacity(isPointerOverBody ? 1 : 0)
+                        .animation(.easeOut(duration: 0.15), value: isPointerOverBody)
                 }
             }
             .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
@@ -374,6 +379,10 @@ struct ExpandedIslandBodyPanel: View {
             .allowsHitTesting(model.mode == .expanded)
         }
         .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
+        .onHover { isPointerOverBody = $0 }
+        .onChange(of: model.mode) { _, mode in
+            if mode != .expanded { isPointerOverBody = false }
+        }
     }
 }
 

@@ -174,6 +174,19 @@ enum KaraokeHighlightPolicy {
     }
 }
 
+/// Fits the current lyric line to its column: a line slightly too wide is set
+/// smaller (never below `minimumScale` of the base size, in half-point steps)
+/// instead of being cut off; only lines still too wide after that scroll.
+enum LyricFitPolicy {
+    static let minimumScale: CGFloat = 0.85
+
+    static func pointSize(naturalWidth: CGFloat, availableWidth: CGFloat, base: CGFloat) -> CGFloat {
+        guard naturalWidth > availableWidth, naturalWidth > 0, availableWidth > 0 else { return base }
+        let fitted = (base * availableWidth / naturalWidth * 2).rounded(.down) / 2
+        return max((base * minimumScale * 2).rounded(.up) / 2, fitted)
+    }
+}
+
 enum MarqueeTextLayoutPolicy {
     static func overflow(
         for text: String,

@@ -226,3 +226,11 @@ func karaokeHighlightPolicyRevealsCharactersWithoutInventingTiming() {
     #expect(KaraokeHighlightPolicy.duration(characterCount: 0) == KaraokeHighlightPolicy.minimumDuration)
     #expect(KaraokeHighlightPolicy.duration(characterCount: 100) == KaraokeHighlightPolicy.maximumDuration)
 }
+
+@Test("当前句略宽时先缩小（不低于 85%），放得下则保持原字号")
+func lyricFitShrinksBeforeScrolling() {
+    #expect(LyricFitPolicy.pointSize(naturalWidth: 400, availableWidth: 434, base: 23) == 23)
+    #expect(LyricFitPolicy.pointSize(naturalWidth: 460, availableWidth: 434, base: 23) == 21.5)
+    #expect(LyricFitPolicy.pointSize(naturalWidth: 900, availableWidth: 434, base: 23) == 20)
+    #expect(LyricFitPolicy.pointSize(naturalWidth: 0, availableWidth: 434, base: 23) == 23)
+}

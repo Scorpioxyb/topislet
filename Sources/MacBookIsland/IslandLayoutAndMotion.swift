@@ -186,7 +186,11 @@ enum ExpandedMusicLayout {
     static let timelineWidth: CGFloat = 164
     static let timelineToTimeSpacing: CGFloat = 10
     static let timeWidth: CGFloat = 74
-    static let lyricTimelineWidth: CGFloat = 306
+    /// Leading inset of lyric text and the progress bar: accent bar (3) plus
+    /// its gap (9), so text and timeline start on one vertical line.
+    static let lyricTextInset: CGFloat = 12
+    static let lyricTimelineWidth: CGFloat =
+        lyricColumnWidth - lyricTextInset - timelineToTimeSpacing - timeWidth
     static let controlRailWidth: CGFloat = timelineWidth
     static let modeButtonsWidth: CGFloat = 56
     static let titleToModeButtonsSpacing: CGFloat = 12

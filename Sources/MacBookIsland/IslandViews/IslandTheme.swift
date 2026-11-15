@@ -79,8 +79,6 @@ enum IslandTheme {
         static let progressTrack = Level.fillHover
         static let progressTrackProminent = Level.fillHover
         static let toggleOn: Double = 0.16
-        static let musicColumnDivider: Double = 0.12
-        static let progressPill: Double = 0.065
         static let artworkFallbackTop: Double = 0.13
         static let artworkFallbackBottom: Double = 0.05
         static let artworkGlyphBackdrop: Double = 0.18
@@ -96,7 +94,6 @@ enum IslandTheme {
         static let presetChip: CGFloat = 7
         static let notificationIcon: CGFloat = 17
         static let recoveryButton: CGFloat = 12
-        static let progressPill: CGFloat = 15
     }
 
     /// Fonts by role.
@@ -134,7 +131,9 @@ enum IslandTheme {
         static let musicPlaceholderIcon: Font = .system(size: 13, weight: .regular)
         static let musicStatus: Font = .system(size: 12, weight: .medium)
         static let recoveryLabel: Font = .system(size: 11, weight: .medium)
-        static let lyricCurrent: Font = .system(size: 23, weight: .semibold)
+        static let lyricCurrentSize: CGFloat = 23
+        static let lyricCurrent: Font = lyricCurrent(size: lyricCurrentSize)
+        static func lyricCurrent(size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
         static let lyricTranslation: Font = .system(size: 14, weight: .regular)
         static let lyricNext: Font = .system(size: 16, weight: .medium)
         static let timeReadout: Font = .system(size: 11, weight: .medium, design: .rounded)

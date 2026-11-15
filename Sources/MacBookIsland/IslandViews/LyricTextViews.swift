@@ -90,11 +90,13 @@ struct MarqueeText: View {
                 // Fade only the trailing edge. Fading the leading 6% made the
                 // first glyph look clipped at the resting position, which is
                 // especially obvious for short bilingual lyric pairs.
+                // Fade the trailing edge only when the line is too wide and
+                // scrolls; a line that fits must keep its last glyph solid.
                 LinearGradient(
                     stops: [
                         .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.96),
-                        .init(color: .clear, location: 1)
+                        .init(color: .black, location: overflow > 0 ? 0.96 : 1),
+                        .init(color: overflow > 0 ? .clear : .black, location: 1)
                     ],
                     startPoint: .leading,
                     endPoint: .trailing
@@ -204,11 +206,13 @@ struct KaraokeLyricText: View {
             .frame(width: proxy.size.width, height: lineHeight, alignment: .leading)
             .clipped()
             .mask {
+                // Fade the trailing edge only when the line is too wide and
+                // scrolls; a line that fits must keep its last glyph solid.
                 LinearGradient(
                     stops: [
                         .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.96),
-                        .init(color: .clear, location: 1)
+                        .init(color: .black, location: overflow > 0 ? 0.96 : 1),
+                        .init(color: overflow > 0 ? .clear : .black, location: 1)
                     ],
                     startPoint: .leading,
                     endPoint: .trailing
