@@ -32,7 +32,7 @@
 | 新面板 | — | 用户完成悬停、拖动、有 / 无歌词与“降低透明度”的目视检查，未报告问题（2026-11-15）；控制行命中由上一行的控制与跳转事件佐证 | 用户口头确认 |
 | `QA_CHECKLIST.md` 短项与安全硬门禁 | — | **部分做，其余豁免**（负责人 2026-11-15 确认）：汽水控制与安全相关项已由上方“汽水专属控制”一行覆盖（只用语义控件、未发送全局媒体键、未自动打开或取消最小化汽水）；Apple Music、网易云、日历与提醒事项、多来源共存、布局像素项豁免，理由是这些代码路径自 build 180 起未改动，且本版本是 ad-hoc 开发预览 | 上方汽水控制证据；豁免见本行 |
 | README 演示素材 | — | **豁免**（负责人 2026-11-15 确认）：仍为 build 137 的素材，重录推迟到 v0.2.0；Release 页注明演示不是当前面板 | — |
-| 发布包 | 未做：`build-release.sh` 与 `verify-release-dmg.sh` | — | — |
+| 发布包 | 通过（2026-11-15）：本机由提交 `b259d75` 构建 `TopIslet-v0.1.4-arm64.dmg`（3.6 MB），40 段代码与数据核验一致；`verify-release-dmg.sh` 通过（DMG 校验和、挂载后签名、版本与 build 号）；SHA-256 `cdecc72deda638cffcd1ad45702742e3b90a67fbaa2e2b78b61f6b65bc598353`。ad-hoc 签名，未公证 | `LocalData/release-artifacts/`（主检出目录） |
 
 ## 观察（不阻断）
 
@@ -57,9 +57,9 @@
 ### 2. 构建
 
 - [ ] 工作区干净，版本号与 build 号已提交；在该提交上打 tag `v0.1.4-alpha.1`。
-- [ ] 通过 GitHub Actions `release.yml` 或本机 `VERSION="0.1.4" BUILD_NUMBER="189" bash Scripts/build-release.sh` 构建。
-- [ ] 产物写入 `LocalData/release-artifacts/`。
-- [ ] `verify-release-dmg.sh` 通过。
+- [x] 通过 GitHub Actions `release.yml` 或本机 `VERSION="0.1.4" BUILD_NUMBER="189" bash Scripts/build-release.sh` 构建。——本机，提交 `b259d75`。
+- [x] 产物写入 `LocalData/release-artifacts/`。
+- [x] `verify-release-dmg.sh` 通过。
 
 ### 3. 签名
 
