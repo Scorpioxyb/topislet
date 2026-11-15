@@ -236,7 +236,8 @@ struct TextButton: View {
 
 struct ProgressPill: View {
     let progress: Double
-    let width: CGFloat
+    /// Fixed width, or nil to fill the width offered by the parent.
+    let width: CGFloat?
     var accentColor: Color = .white
     var prominent = false
     var onPreviewChanged: ((Double?) -> Void)? = nil

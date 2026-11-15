@@ -69,6 +69,8 @@ struct ExpandedMusic: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
                 ZStack(alignment: .leading) {
+                    // Bottom of the row: centered, it would sit under the
+                    // next lyric line like an underline.
                     MusicProgressHairline(progress: model.music.progress, accent: model.musicAccentColor)
                         .frame(maxHeight: .infinity, alignment: .bottom)
                         .opacity(showsControls ? 0 : 1)
@@ -301,7 +303,7 @@ private struct MusicControlRow: View {
                 .fixedSize()
             ProgressPill(
                 progress: model.music.progress,
-                width: 0,
+                width: nil,
                 accentColor: model.musicAccentColor,
                 onPreviewChanged: { progress in
                     model.setMusicScrubbing(progress != nil)
