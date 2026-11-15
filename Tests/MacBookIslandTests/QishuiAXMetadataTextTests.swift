@@ -22,3 +22,17 @@ func qishuiArtistCandidatesExcludeAdjacentLyricsColumn() {
     #expect(!reader.isInArtistColumn(CGRect(x: 660, y: 550, width: 350, height: 20), coverFrame: cover))
     #expect(!reader.isInArtistColumn(CGRect(x: 50, y: 550, width: 100, height: 20), coverFrame: cover))
 }
+
+@Test("汽水 AX 缓存重读不比完整扫描宽松：完整扫描没有可信时长时不给进度")
+func qishuiCachedProgressNeverLooserThanFreshScan() {
+    let pair = [["01:00 / 04:00"], ["01:00 / 04:00"]]
+    // Fresh scan rejected progress (no trusted duration): cache stays silent.
+    #expect(QishuiAXReader.cachedProgressRatio(candidateTexts: pair, trustedDuration: nil) == nil)
+    // Fresh scan trusted 240s: matching pairs are accepted.
+    #expect(QishuiAXReader.cachedProgressRatio(candidateTexts: pair, trustedDuration: 240) == 0.25)
+    // A pair whose duration disagrees with the trusted one is ignored.
+    #expect(QishuiAXReader.cachedProgressRatio(candidateTexts: [["01:00 / 03:00"]], trustedDuration: 240) == nil)
+    // Disagreeing candidates are rejected, as in the fresh scan.
+    #expect(QishuiAXReader.cachedProgressRatio(
+        candidateTexts: [["01:00 / 04:00"], ["02:00 / 04:00"]], trustedDuration: 240) == nil)
+}

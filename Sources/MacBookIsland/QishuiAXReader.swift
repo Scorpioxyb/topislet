@@ -273,7 +273,8 @@ final class QishuiAXReader {
                 title: title.node.element,
                 artists: artists.map { $0.node.element },
                 lyrics: lyrics.map { $0.node.element },
-                progressCandidates: progressNodes.map(\.element)
+                progressCandidates: progressNodes.map(\.element),
+                trustedProgressDuration: progress == nil ? nil : expectedDuration
             )
             if expectedTitle != nil, expectedArtist != nil {
                 cachedProfile = profile
@@ -346,7 +347,10 @@ final class QishuiAXReader {
         }
         let lyrics = uniqueTexts(cachedProfile.lyrics.map { text(from: $0) })
             .filter(isLikelyLyricText)
-        let progress = trustedCachedProgressRatio(from: cachedProfile.progressCandidates)
+        let progress = trustedCachedProgressRatio(
+            from: cachedProfile.progressCandidates,
+            trustedDuration: cachedProfile.trustedProgressDuration
+        )
 
         return QishuiDirectTrack(
             title: title,
@@ -472,7 +476,7 @@ final class QishuiAXReader {
         nodes.flatMap { node -> [ProgressCandidate] in
             let texts = uniqueTexts([node.value, node.title, node.description])
             return texts.compactMap { text in
-                guard let parsed = parseProgress(text, expectedDuration: expectedDuration) else { return nil }
+                guard let parsed = Self.parseProgress(text, expectedDuration: expectedDuration) else { return nil }
                 let frame = node.frame
                 let y = frame?.minY ?? 0
                 let bottomBarBias = y >= coverFrame.maxY + 120 ? 1_000.0 : 0
@@ -517,7 +521,7 @@ final class QishuiAXReader {
             guard let frame = node.frame,
                   frame.minY >= coverFrame.maxY + 80 else { return nil }
             return uniqueTexts([node.value, node.title, node.description])
-                .compactMap { parseProgress($0, expectedDuration: expectedDuration)?.ratio }
+                .compactMap { Self.parseProgress($0, expectedDuration: expectedDuration)?.ratio }
                 .first
         }
         guard let first = candidates.first,
@@ -525,14 +529,29 @@ final class QishuiAXReader {
         return first
     }
 
-    private func trustedCachedProgressRatio(from elements: [AXUIElement]) -> Double? {
-        let candidates = elements.compactMap { element -> Double? in
-            let texts = uniqueTexts([
-                stringAttribute(element, kAXValueAttribute as String),
-                stringAttribute(element, kAXTitleAttribute as String),
-                stringAttribute(element, kAXDescriptionAttribute as String)
-            ])
-            return texts.compactMap { parseProgress($0)?.ratio }.first
+    private func trustedCachedProgressRatio(
+        from elements: [AXUIElement],
+        trustedDuration: Double?
+    ) -> Double? {
+        Self.cachedProgressRatio(
+            candidateTexts: elements.map { element in
+                uniqueTexts([
+                    stringAttribute(element, kAXValueAttribute as String),
+                    stringAttribute(element, kAXTitleAttribute as String),
+                    stringAttribute(element, kAXDescriptionAttribute as String)
+                ])
+            },
+            trustedDuration: trustedDuration
+        )
+    }
+
+    /// A cached re-read may never be looser than the fresh scan that built the cache:
+    /// it reports progress only when that scan trusted a duration, and only for time
+    /// pairs that match it and agree with each other.
+    static func cachedProgressRatio(candidateTexts: [[String]], trustedDuration: Double?) -> Double? {
+        guard let trustedDuration, trustedDuration > 0 else { return nil }
+        let candidates = candidateTexts.compactMap { texts in
+            texts.compactMap { parseProgress($0, expectedDuration: trustedDuration)?.ratio }.first
         }
         guard let first = candidates.first,
               candidates.allSatisfy({ abs($0 - first) <= 0.01 }) else { return nil }
@@ -547,22 +566,6 @@ final class QishuiAXReader {
             return lhs.y > rhs.y
         }
         return lhs.order < rhs.order
-    }
-
-    private func cachedProgressRatio(from elements: [AXUIElement]) -> Double {
-        for element in elements {
-            let texts = uniqueTexts([
-                stringAttribute(element, kAXValueAttribute as String),
-                stringAttribute(element, kAXTitleAttribute as String),
-                stringAttribute(element, kAXDescriptionAttribute as String)
-            ])
-            for text in texts {
-                if let parsed = parseProgress(text) {
-                    return parsed.ratio
-                }
-            }
-        }
-        return 0
     }
 
     private func durationSeconds(from nodes: [AXNodeRecord], coverFrame: CGRect) -> Double? {
@@ -585,13 +588,13 @@ final class QishuiAXReader {
             let range = NSRange(item.text.startIndex..<item.text.endIndex, in: item.text)
             let matches = regex.matches(in: item.text, range: range)
             guard matches.count == 1,
-                  let parsed = parseProgress(item.text, expectedDuration: nil) else { continue }
+                  let parsed = Self.parseProgress(item.text, expectedDuration: nil) else { continue }
             return parsed.duration
         }
         return nil
     }
 
-    private func parseProgress(
+    static func parseProgress(
         _ text: String,
         expectedDuration: Double? = nil
     ) -> (ratio: Double, elapsed: Double, duration: Double)? {
@@ -895,4 +898,6 @@ private struct CachedTrackProfile {
     let artists: [AXUIElement]
     let lyrics: [AXUIElement]
     let progressCandidates: [AXUIElement]
+    /// Duration the fresh scan trusted for progress; nil when the fresh scan rejected progress.
+    let trustedProgressDuration: Double?
 }
