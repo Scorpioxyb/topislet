@@ -14,6 +14,10 @@ func cleanIslandLyricLines(_ lines: [String]) -> [String] {
 struct AlbumArt: View {
     let track: MusicTrack
     let size: CGFloat
+    var cornerRadius: CGFloat? = nil
+    var showsSourceBadge = true
+
+    private var radius: CGFloat { cornerRadius ?? size * 0.24 }
 
     var body: some View {
         ZStack {
@@ -38,9 +42,9 @@ struct AlbumArt: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
-            if size >= 60 {
+            if showsSourceBadge && size >= 60 {
                 MusicSourceBadge(bundleIdentifier: track.sourceBundleIdentifier, size: 18)
                     .offset(x: 3, y: 3)
             }
@@ -48,7 +52,7 @@ struct AlbumArt: View {
     }
 
     private var fallbackArtwork: some View {
-        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(
                 LinearGradient(
                     colors: track.hasArtwork ? track.palette : [Color.white.opacity(IslandTheme.Fill.artworkFallbackTop), Color.white.opacity(IslandTheme.Fill.artworkFallbackBottom)],
@@ -139,6 +143,7 @@ struct ControlButton: View {
     let icon: String
     var prominent = false
     var size: CGFloat = 30
+    var minimumProminentSize: CGFloat = 34
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -161,7 +166,10 @@ struct ControlButton: View {
                     .id(icon)
                     .transition(iconTransition)
             }
-            .frame(width: prominent ? max(size, 34) : size, height: prominent ? max(size, 34) : size)
+            .frame(
+                width: prominent ? max(size, minimumProminentSize) : size,
+                height: prominent ? max(size, minimumProminentSize) : size
+            )
         }
         .buttonStyle(IslandControlButtonStyle())
         .opacity(isEnabled ? 1 : IslandTheme.Ink.disabledControl)
@@ -488,6 +496,20 @@ func playbackPositionText(_ music: MusicState, progressOverride: Double? = nil) 
         ?? music.elapsedTime
         ?? (duration * min(max(music.progress, 0), 1))
     return "\(mediaTimeText(elapsed)) / \(mediaTimeText(duration))"
+}
+
+/// Elapsed on the left of the scrubber, remaining (with a minus) on the right.
+func playbackElapsedAndRemainingText(
+    _ music: MusicState,
+    progressOverride: Double? = nil
+) -> (elapsed: String, remaining: String) {
+    guard let duration = music.duration, duration > 0 else { return ("--:--", "--:--") }
+    let elapsed = min(max(
+        progressOverride.map { duration * min(max($0, 0), 1) }
+            ?? music.elapsedTime
+            ?? (duration * min(max(music.progress, 0), 1)),
+        0), duration)
+    return (mediaTimeText(elapsed), "-" + mediaTimeText(duration - elapsed))
 }
 
 func mediaTimeText(_ seconds: TimeInterval) -> String {

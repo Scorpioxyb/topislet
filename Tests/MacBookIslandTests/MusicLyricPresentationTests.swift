@@ -109,11 +109,26 @@ func compactMusicLayoutUsesStableWidthTiers() {
     #expect(MusicCompactLayout.lyricContentHeight + MusicCompactLayout.lyricVerticalSafeInset * 2 <= 33)
 }
 
-@Test("展开歌词栏到达后使用带歌词高度，空歌词不预留面板")
-func expandedMusicLayoutReservesLyricShelfOnlyForDisplayableLines() {
-    #expect(MusicExpandedLayout.bodyHeight(lines: ["当前句"]) == 144)
-    #expect(MusicExpandedLayout.bodyHeight(lines: ["纯音乐，请欣赏"]) == 116)
-    #expect(MusicExpandedLayout.bodyHeight(lines: [], heightAdjustment: -200) == 112)
+@Test("展开音乐高度固定，不随有没有歌词变化；布局微调有下限")
+func expandedMusicBodyHeightIsFixed() {
+    #expect(MusicExpandedLayout.bodyHeight() == 157)
+    #expect(MusicExpandedLayout.bodyHeight(heightAdjustment: 6) == 163)
+    #expect(MusicExpandedLayout.bodyHeight(heightAdjustment: -200) == 112)
+}
+
+@Test("进度两端：左边已播放，右边剩余；拖动预览优先；没有时长显示占位")
+func elapsedAndRemainingText() {
+    var music = MusicState(
+        track: MusicTrack(title: "A", artist: "B", palette: [], lyrics: [], hasArtwork: false,
+                          artworkData: nil, artworkURL: nil, sourceBundleIdentifier: nil),
+        isPlaying: true, progress: 0.42, lyricIndex: 0, elapsedTime: 96, duration: 228, hasCurrentTrack: true
+    )
+    #expect(playbackElapsedAndRemainingText(music) == ("1:36", "-2:12"))
+    #expect(playbackElapsedAndRemainingText(music, progressOverride: 0.5) == ("1:54", "-1:54"))
+    music.elapsedTime = 400
+    #expect(playbackElapsedAndRemainingText(music) == ("3:48", "-0:00"))
+    music.duration = nil
+    #expect(playbackElapsedAndRemainingText(music) == ("--:--", "--:--"))
 }
 
 @Test("歌词媒体发布节拍不慢于 AX 歌词读取节拍")

@@ -28,6 +28,11 @@ enum IslandTheme {
         /// Artwork-colored glow behind the cover on the black music surface.
         static let musicGlowOpacity: Double = 0.22
         static let musicGlowRadius: CGFloat = 260
+        /// Blurred cover spread from the panel's left edge (direction C).
+        static let musicWashOpacity: Double = 0.62
+        static let musicWashSize = CGSize(width: 440, height: 300)
+        static let musicWashOffset = CGSize(width: -70, height: -10)
+        static let musicCoverShadowOpacity: Double = 0.45
         static let strokeWidth: CGFloat = 0.65
         static let shadowRadius: CGFloat = 14
         static let shadowOffsetY: CGFloat = 8
@@ -45,7 +50,6 @@ enum IslandTheme {
         static let musicArtist = Level.secondary
         static let musicSource = Level.tertiary
         static let musicStatus = Level.tertiary
-        static let musicPlaceholderIcon = Level.tertiary
         static let timeReadout = Level.secondary
         static let compactSubtitle = Level.secondary
         static let headerIcon = Level.secondary
@@ -78,6 +82,7 @@ enum IslandTheme {
         static let timerRingTrack = Level.fillHover
         static let progressTrack = Level.fillHover
         static let progressTrackProminent = Level.fillHover
+        static let progressHairlineTrack: Double = 0.12
         static let toggleOn: Double = 0.16
         static let artworkFallbackTop: Double = 0.13
         static let artworkFallbackBottom: Double = 0.05
@@ -121,20 +126,20 @@ enum IslandTheme {
         static let compactTimerTime: Font = .system(size: 13, weight: .semibold, design: .rounded)
         static let compactBadge: Font = .system(size: 8, weight: .bold)
 
-        // Expanded music: left rail (cover, title, transport) beside a wide
-        // lyric column. The D2 three-row layout was tried in build 182 and
-        // rejected because it left the lyrics too little room, so these keep
-        // the earlier sizes.
+        // Expanded music, direction C (build 187): cover beside one reading
+        // column. Title and artist share one line above the lyrics; without
+        // lyrics they move up to the lyric sizes.
         static let musicTitle: Font = .system(size: 13, weight: .semibold)
-        static let musicArtist: Font = .system(size: 11, weight: .medium)
+        static let musicArtist: Font = .system(size: 13, weight: .regular)
+        static let musicStageTitle: Font = .system(size: 26, weight: .semibold)
+        static let musicStageArtist: Font = .system(size: 16, weight: .regular)
         static let musicSource = caption
-        static let musicPlaceholderIcon: Font = .system(size: 13, weight: .regular)
         static let musicStatus: Font = .system(size: 12, weight: .medium)
         static let recoveryLabel: Font = .system(size: 11, weight: .medium)
-        static let lyricCurrentSize: CGFloat = 23
+        static let lyricCurrentSize: CGFloat = 26
         static let lyricCurrent: Font = lyricCurrent(size: lyricCurrentSize)
         static func lyricCurrent(size: CGFloat) -> Font { .system(size: size, weight: .semibold) }
-        static let lyricTranslation: Font = .system(size: 14, weight: .regular)
+        static let lyricTranslation: Font = .system(size: 15, weight: .regular)
         static let lyricNext: Font = .system(size: 16, weight: .medium)
         static let timeReadout: Font = .system(size: 11, weight: .medium, design: .rounded)
 

@@ -193,10 +193,7 @@ final class IslandModel: ObservableObject {
         case .activityCenter:
             return max(notchWidth + 140, 420)
         case .music:
-            let lyricWidth = isMusicLyricsEnabled && hasCurrentDisplayableLyric
-                ? ExpandedMusicLayout.contentWidth + 32
-                : ExpandedMusicLayout.controlOnlyContentWidth + 32
-            return max(notchWidth + 160, lyricWidth)
+            return max(notchWidth + 160, ExpandedMusicLayout.panelWidth)
         case .timer, .notification:
             return max(notchWidth + 140, 420)
         }
@@ -269,12 +266,9 @@ final class IslandModel: ObservableObject {
             return max(112, (shouldPresentMusicControlRecovery ? 210 : 168)
                 + CGFloat(layout.expandedHeightAdjustment))
         case .music:
-            // Keep the height policy shared with the lyric-width/state
-            // transaction. When lyrics arrive after expansion, the AppKit
-            // observer uses this same value to grow the window before the
-            // shelf is painted, avoiding a clipped bottom edge.
+            // Fixed for every track and lyric state, so late lyrics never
+            // resize the window under the pointer.
             return topBandHeight + MusicExpandedLayout.bodyHeight(
-                lines: isMusicLyricsEnabled ? music.track.lyrics : [],
                 heightAdjustment: CGFloat(layout.expandedHeightAdjustment)
             )
         case .timer:

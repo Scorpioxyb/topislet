@@ -272,7 +272,8 @@ struct ExpandedIslandBodyPanel: View {
     @ObservedObject var model: IslandModel
     /// Expanded music shows its corner buttons only while the pointer is over
     /// the panel, so a resting panel is just artwork, title and lyrics.
-    @State private var isPointerOverBody = false
+    /// `--preview-pointer-over` renders the hover state in snapshots.
+    @State private var isPointerOverBody = CommandLine.arguments.contains("--preview-pointer-over")
 
     private var shellScaleX: CGFloat {
         guard model.mode != .expanded else { return 1 }
@@ -300,7 +301,11 @@ struct ExpandedIslandBodyPanel: View {
                 attachesToTop: model.activeFeature == .music
             ) {
                 if model.activeFeature == .music {
-                    MusicAmbientGlow(accent: model.musicAccentColor)
+                    MusicArtworkWash(
+                        track: model.music.track,
+                        accent: model.musicAccentColor,
+                        topBandHeight: model.topBandHeight
+                    )
                 } else {
                     Color.clear
                 }
@@ -317,11 +322,11 @@ struct ExpandedIslandBodyPanel: View {
                         .padding(.bottom, 12)
 
                 case .music:
-                    ExpandedMusic(model: model)
-                        .padding(.horizontal, 16)
-                        // Camera housing occupies the menu-bar band. Both
-                        // columns start below it, inside the same capsule.
+                    ExpandedMusic(model: model, isPointerOver: isPointerOverBody)
+                        // Camera housing occupies the menu-bar band; the
+                        // cover and the reading column start below it.
                         .padding(.top, model.topBandHeight)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
                 case .timer, .notification:
                     VStack(spacing: 8) {

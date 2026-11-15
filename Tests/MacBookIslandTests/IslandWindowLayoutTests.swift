@@ -277,28 +277,29 @@ func topEdgeBleedCoversWindowServerSeam() {
     #expect(frame.minY == screenFrame.maxY - size.height + 0.5)
 }
 
-@Test("展开音乐布局保持封面、时间轴和控制轨道对齐")
-func expandedMusicLayoutKeepsPrimaryContentAligned() {
+@Test("展开音乐：封面与阅读栏正好排满 660 宽，阅读栏不窄于原歌词栏")
+func expandedMusicLayoutFillsFixedPanel() {
     #expect(
-        ExpandedMusicLayout.contentWidth
-            == ExpandedMusicLayout.controlColumnWidth
-                + ExpandedMusicLayout.controlToLyricSpacing
-                + ExpandedMusicLayout.lyricColumnWidth
+        ExpandedMusicLayout.leadingInset
+            + ExpandedMusicLayout.artworkSize
+            + ExpandedMusicLayout.artworkToColumnSpacing
+            + ExpandedMusicLayout.columnWidth
+            + ExpandedMusicLayout.trailingInset
+            == ExpandedMusicLayout.panelWidth
     )
-    #expect(ExpandedMusicLayout.controlOnlyContentWidth < ExpandedMusicLayout.contentWidth)
-    #expect(
-        ExpandedMusicLayout.detailsWidth
-            == ExpandedMusicLayout.timelineWidth
-                + ExpandedMusicLayout.timelineToTimeSpacing
-                + ExpandedMusicLayout.timeWidth
-    )
-    #expect(ExpandedMusicLayout.controlRailWidth == ExpandedMusicLayout.timelineWidth)
-    #expect(
-        ExpandedMusicLayout.titleWidth
-            + ExpandedMusicLayout.titleToModeButtonsSpacing
-            + ExpandedMusicLayout.modeButtonsWidth
-            == ExpandedMusicLayout.detailsWidth
-    )
+    #expect(ExpandedMusicLayout.columnWidth >= 446)
+    #expect(ExpandedMusicLayout.artworkSize
+        <= MusicExpandedLayout.bodyHeight() - ExpandedMusicLayout.topInset - ExpandedMusicLayout.bottomInset)
+}
+
+@Test("展开音乐：控制行悬停时出现，需要恢复或开着旁白时一直显示")
+func expandedMusicControlsVisibility() {
+    #expect(!MusicExpandedChrome.showsControls(isPointerOver: false, needsRecovery: false, voiceOverEnabled: false))
+    #expect(MusicExpandedChrome.showsControls(isPointerOver: true, needsRecovery: false, voiceOverEnabled: false))
+    #expect(MusicExpandedChrome.showsControls(isPointerOver: false, needsRecovery: true, voiceOverEnabled: false))
+    #expect(MusicExpandedChrome.showsControls(isPointerOver: false, needsRecovery: false, voiceOverEnabled: true))
+    #expect(MusicExpandedChrome.sourceName(bundleIdentifier: "com.soda.music") == "汽水音乐")
+    #expect(MusicExpandedChrome.sourceName(bundleIdentifier: nil) == nil)
 }
 
 @Test("MacBook 机型矩阵使用系统刘海宽度和高度")

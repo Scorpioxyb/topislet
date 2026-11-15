@@ -168,39 +168,21 @@ enum IslandMotion {
 }
 
 enum ExpandedMusicLayout {
-    // The lyric mode gives the reading surface the larger share of the
-    // expanded island. Controls stay in a stable left rail so the lyric
-    // viewport can grow without reflowing the playback buttons.
-    static let controlContentWidth: CGFloat = 204
-    static let controlOnlyContentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + detailsWidth
-    static let controlSurfacePadding: CGFloat = 0
-    // The lyric state is intentionally wider than the control-only state.
-    // This keeps the cover/controls rail stable and gives the lyric viewport
-    // enough room to scroll long lines without shrinking the type.
-    static let contentWidth: CGFloat = controlContentWidth + controlToLyricSpacing + lyricColumnWidth
-    static let artworkSize: CGFloat = 76
-    static let artworkToDetailsSpacing: CGFloat = 10
-    static let detailsWidth: CGFloat = 248
-    static let lyricColumnWidth: CGFloat = 446
-    static let controlToLyricSpacing: CGFloat = 12
-    static let timelineWidth: CGFloat = 164
-    static let timelineToTimeSpacing: CGFloat = 10
-    static let timeWidth: CGFloat = 74
-    /// Leading inset of lyric text and the progress bar: accent bar (3) plus
-    /// its gap (9), so text and timeline start on one vertical line.
-    static let lyricTextInset: CGFloat = 12
-    static let lyricTimelineWidth: CGFloat =
-        lyricColumnWidth - lyricTextInset - timelineToTimeSpacing - timeWidth
-    static let controlRailWidth: CGFloat = timelineWidth
-    static let modeButtonsWidth: CGFloat = 56
-    static let titleToModeButtonsSpacing: CGFloat = 12
-    static let titleWidth: CGFloat = detailsWidth
-        - modeButtonsWidth
-        - titleToModeButtonsSpacing
-
-    static var controlColumnWidth: CGFloat {
-        controlContentWidth + controlSurfacePadding * 2
-    }
+    // Direction C (build 187): a fixed 660-wide panel. Cover on the left,
+    // one reading column on the right; the column holds title, lyrics and
+    // a bottom row that is a progress hairline at rest and the transport
+    // with a scrubber while the pointer is over the panel.
+    static let panelWidth: CGFloat = 660
+    static let leadingInset: CGFloat = 22
+    static let trailingInset: CGFloat = 26
+    static let topInset: CGFloat = 10
+    static let bottomInset: CGFloat = 20
+    static let artworkSize: CGFloat = 124
+    static let artworkCornerRadius: CGFloat = 14
+    static let artworkToColumnSpacing: CGFloat = 24
+    static let controlRowHeight: CGFloat = 30
+    static let columnWidth: CGFloat =
+        panelWidth - leadingInset - artworkSize - artworkToColumnSpacing - trailingInset
 }
 
 enum IslandDisplayRefreshPolicy {
