@@ -113,7 +113,7 @@ struct SeekCoordinatorTests {
     }
 
     @Test("续播最多按一次，且只在仍是当前跳转、协调器条件仍成立时")
-    func resumeStartsPlaybackOnceForCurrentSeek() async throws {
+    func resumeStartsPlaybackOnceForCurrentSeek() async {
         let seeks = SeekCoordinator(resumePollInterval: .milliseconds(5), resumePollLimit: 6)
         var samples = [snapshot(qishuiTrack(playing: nil)), snapshot(qishuiTrack(playing: false))]
         var pressed: [pid_t] = []
@@ -123,12 +123,12 @@ struct SeekCoordinatorTests {
             refresh: { samples.isEmpty ? nil : samples.removeFirst() },
             startPlayback: { pressed.append($0) }
         )
-        try await Task.sleep(for: .milliseconds(200))
+        await seeks.waitForResume()
         #expect(pressed == [1001])
     }
 
     @Test("新跳转取代旧跳转的续播；协调器条件失效时不按")
-    func resumeIsCancelledBySupersedingSeekOrInvalidation() async throws {
+    func resumeIsCancelledBySupersedingSeekOrInvalidation() async {
         let seeks = SeekCoordinator(resumePollInterval: .milliseconds(20), resumePollLimit: 3)
         var pressed = 0
         let first = seeks.begin()
@@ -153,7 +153,7 @@ struct SeekCoordinatorTests {
             refresh: { snapshot(qishuiTrack(playing: false)) },
             startPlayback: { _ in pressed += 1 }
         )
-        try await Task.sleep(for: .milliseconds(150))
+        await seeks.waitForResume()
         #expect(pressed == 0)
     }
 

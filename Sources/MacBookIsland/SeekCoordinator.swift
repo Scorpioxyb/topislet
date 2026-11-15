@@ -42,6 +42,12 @@ final class SeekCoordinator {
 
     var hasPendingResume: Bool { resumeTask != nil }
 
+    /// Waits for the scheduled resume, if any, to finish. Tests use this
+    /// instead of a fixed sleep, which is flaky on a busy CI runner.
+    func waitForResume() async {
+        await resumeTask?.value
+    }
+
     /// Starts a new seek. It supersedes the previous one, including any
     /// resume follow-up that seek scheduled.
     @discardableResult
