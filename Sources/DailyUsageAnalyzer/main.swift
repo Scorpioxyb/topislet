@@ -153,6 +153,18 @@ private func run() throws {
             + (missing.isEmpty ? "" : "；无歌词：\(missing)")
         )
     }
+    let early = report.qishuiEarlyCandidates
+    if early.newTrackCount + early.sameTrackCount > 0 {
+        let rate = early.falsePositiveRate.map { String(format: "%.1f%%", $0 * 100) } ?? "无"
+        print(
+            "汽水早期候选：新曲目 \(early.newTrackCount) 个，"
+            + "确认 \(early.confirmedCount)、换成别的 \(early.changedToOtherCount)、"
+            + "\(Int(MusicUsageEarlyCandidateSummary.windowSeconds)) 秒内未切歌 \(early.unconfirmedCount)"
+            + "（误报率 \(rate)），提前 P50=\(early.leadTime.p50Milliseconds.map { "\($0)ms" } ?? "无")；"
+            + "同曲目预兆 \(early.sameTrackCount) 个，随后切歌 \(early.sameTrackFollowedByChangeCount)，"
+            + "提前 P50=\(early.sameTrackLeadTime.p50Milliseconds.map { "\($0)ms" } ?? "无")"
+        )
+    }
     if !report.sampleCoverage.missingSampleKinds.isEmpty {
         print("缺少样本：\(report.sampleCoverage.missingSampleKinds.joined(separator: ", "))")
     }

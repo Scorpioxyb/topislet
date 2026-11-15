@@ -175,7 +175,7 @@ func dailyAnalyzerSummarizesQishuiTransitionStagesWithoutMetadata() {
         records,
         generatedAt: start.addingTimeInterval(2)
     )
-    #expect(summary.schemaVersion == 7)
+    #expect(summary.schemaVersion == 8)
     #expect(summary.qishuiTrackTransitions.total == 2)
     #expect(summary.qishuiTrackTransitions.deferredCount == 2)
     #expect(summary.qishuiTrackTransitions.firstCandidateCount == 2)
@@ -356,7 +356,7 @@ func dailyAnalyzerDoesNotTreatMissingUsageAsPassingCoverage() {
         records,
         generatedAt: start.addingTimeInterval(16 * 60)
     )
-    #expect(summary.schemaVersion == 7)
+    #expect(summary.schemaVersion == 8)
     #expect(summary.sampleCoverage.status == "no_media_activity")
     #expect(summary.sampleCoverage.observationHeartbeatCount == 1)
     #expect(summary.sampleCoverage.mediaPresenceHeartbeatCount == 0)
@@ -483,7 +483,7 @@ func dailyAnalyzerTreatsCancelledSeeksAsTerminalCoverage() {
         records,
         generatedAt: start.addingTimeInterval(1)
     )
-    #expect(summary.schemaVersion == 7)
+    #expect(summary.schemaVersion == 8)
     #expect(summary.seekCancellationCount == 2)
     #expect(summary.seekCancellationReasons == [
         "superseded": 1,
@@ -532,4 +532,45 @@ func dailyAnalyzerKeepsAcceptedSeekWithoutTerminalPartial() {
     #expect(summary.seekCancellationReasons.isEmpty)
     #expect(summary.sampleCoverage.status == "partial")
     #expect(summary.sampleCoverage.missingSampleKinds == ["seek_confirmation"])
+}
+
+@Test("早期候选：确认、换成别的、10 秒内未切歌与同曲目预兆分别计数")
+func earlyCandidateFalsePositiveRate() {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    func at(_ seconds: Double, _ name: String, _ fields: [String: String]) -> TimestampedMusicUsageEvent {
+        TimestampedMusicUsageEvent(
+            timestamp: start.addingTimeInterval(seconds),
+            event: MusicUsageEvent(name: name, fields: fields.merging(["source": "qishui"]) { $1 })
+        )
+    }
+    let records = [
+        at(0, "track_changed", ["track": "a"]),
+        // End-of-track signal on the published identity, then a confirmed new candidate.
+        at(10, "media_identity_candidate", ["track": "a", "deferred": "1"]),
+        at(12.9, "media_identity_candidate", ["track": "b", "deferred": "1"]),
+        at(12.95, "media_identity_candidate", ["track": "b", "deferred": "0"]),
+        at(13, "track_changed", ["track": "b"]),
+        // Candidate for c, but the change lands on d.
+        at(20, "media_identity_candidate", ["track": "c", "deferred": "1"]),
+        at(21, "track_changed", ["track": "d"]),
+        // Candidate for e with no change: a false positive.
+        at(30, "media_identity_candidate", ["track": "e", "deferred": "1"]),
+        // Same-track signal with no change (expires before the end).
+        at(45, "media_identity_candidate", ["track": "d", "deferred": "1"]),
+        // Candidate whose window is still open at the end.
+        at(60, "media_identity_candidate", ["track": "f", "deferred": "1"]),
+        at(62, "observation_heartbeat", [:])
+    ]
+    let summary = MusicUsageDailyAnalyzer.analyze(records).qishuiEarlyCandidates
+    #expect(summary.newTrackCount == 4)
+    #expect(summary.confirmedCount == 1)
+    #expect(summary.changedToOtherCount == 1)
+    #expect(summary.unconfirmedCount == 1)
+    #expect(summary.pendingCount == 1)
+    #expect(summary.leadTime.p50Milliseconds == 100)
+    #expect(summary.falsePositiveRate == 1.0 / 3.0)
+    #expect(summary.sameTrackCount == 2)
+    #expect(summary.sameTrackFollowedByChangeCount == 1)
+    #expect(summary.sameTrackUnconfirmedCount == 1)
+    #expect(summary.sameTrackLeadTime.p50Milliseconds == 3_000)
 }

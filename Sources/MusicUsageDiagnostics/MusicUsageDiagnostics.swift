@@ -173,6 +173,35 @@ public struct MusicUsageQishuiTransitionSummary: Codable, Equatable, Sendable {
     public let uiPublishedLatency: MusicUsageLatencySummary
 }
 
+/// Qishui early identity candidates (`media_identity_candidate` with `deferred=1`), used to
+/// decide whether a "changing track" transition can be shown before the atomic publish.
+public struct MusicUsageEarlyCandidateSummary: Codable, Equatable, Sendable {
+    public static let windowSeconds: TimeInterval = 10
+
+    /// Deferred candidates whose identity differs from the published track.
+    public let newTrackCount: Int
+    /// A track change to the same identity followed within the window.
+    public let confirmedCount: Int
+    /// A track change followed, but to a different identity.
+    public let changedToOtherCount: Int
+    /// No track change within the window: a false positive for transition feedback.
+    public let unconfirmedCount: Int
+    /// Window still open when the records end; excluded from the rate.
+    public let pendingCount: Int
+    public let leadTime: MusicUsageLatencySummary
+    /// Deferred candidates that repeat the published identity (an end-of-track signal).
+    public let sameTrackCount: Int
+    public let sameTrackFollowedByChangeCount: Int
+    public let sameTrackUnconfirmedCount: Int
+    public let sameTrackLeadTime: MusicUsageLatencySummary
+
+    /// Share of decided new-track candidates with no track change in the window.
+    public var falsePositiveRate: Double? {
+        let decided = confirmedCount + changedToOtherCount + unconfirmedCount
+        return decided == 0 ? nil : Double(unconfirmedCount) / Double(decided)
+    }
+}
+
 public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let generatedAt: Date
@@ -192,6 +221,7 @@ public struct MusicUsageDailySummary: Codable, Equatable, Sendable {
     public let controls: MusicUsageOutcomeSummary
     public let seeks: MusicUsageOutcomeSummary
     public let qishuiTrackTransitions: MusicUsageQishuiTransitionSummary
+    public let qishuiEarlyCandidates: MusicUsageEarlyCandidateSummary
     public let controlToTrackLatency: MusicUsageLatencySummary
     public let controlToPlaybackUILatency: MusicUsageLatencySummary
     public let playbackConfirmationLatency: MusicUsageLatencySummary
@@ -634,7 +664,7 @@ public enum MusicUsageDailyAnalyzer {
         }
 
         return MusicUsageDailySummary(
-            schemaVersion: 7,
+            schemaVersion: 8,
             generatedAt: generatedAt,
             periodStart: records.first?.timestamp,
             periodEnd: records.last?.timestamp,
@@ -660,6 +690,7 @@ public enum MusicUsageDailyAnalyzer {
                 latencies: seekLatencies
             ),
             qishuiTrackTransitions: qishuiTransitionSummary,
+            qishuiEarlyCandidates: earlyCandidateSummary(records),
             controlToTrackLatency: latencySummary(controlToTrackLatencies),
             controlToPlaybackUILatency: latencySummary(controlToPlaybackUILatencies),
             playbackConfirmationLatency: latencySummary(playbackConfirmationLatencies),
@@ -711,6 +742,82 @@ public enum MusicUsageDailyAnalyzer {
             accepted: accepted,
             rejected: rejected,
             latency: latencySummary(latencies)
+        )
+    }
+
+    static func earlyCandidateSummary(
+        _ records: [TimestampedMusicUsageEvent]
+    ) -> MusicUsageEarlyCandidateSummary {
+        struct Open { let track: String; let at: Date }
+        let window = MusicUsageEarlyCandidateSummary.windowSeconds
+        var published: String?
+        var openNew: [Open] = []
+        var openSame: Open?
+        var confirmed = 0, other = 0, unconfirmed = 0
+        var sameFollowed = 0, sameUnconfirmed = 0
+        var newTotal = 0, sameTotal = 0
+        var lead: [Int] = [], sameLead: [Int] = []
+
+        func expire(before now: Date) {
+            let expired = openNew.filter { now.timeIntervalSince($0.at) > window }
+            unconfirmed += expired.count
+            openNew.removeAll { now.timeIntervalSince($0.at) > window }
+            if let same = openSame, now.timeIntervalSince(same.at) > window {
+                sameUnconfirmed += 1
+                openSame = nil
+            }
+        }
+
+        for record in records where record.event.fields["source"] == "qishui" {
+            let event = record.event
+            expire(before: record.timestamp)
+            switch event.name {
+            case "media_identity_candidate":
+                guard event.fields["deferred"] == "1",
+                      let track = event.fields["track"] else { break }
+                if track == published {
+                    if openSame == nil {
+                        sameTotal += 1
+                        openSame = Open(track: track, at: record.timestamp)
+                    }
+                } else if !openNew.contains(where: { $0.track == track }) {
+                    newTotal += 1
+                    openNew.append(Open(track: track, at: record.timestamp))
+                }
+            case "track_changed":
+                guard let track = event.fields["track"] else { break }
+                for candidate in openNew {
+                    if candidate.track == track {
+                        confirmed += 1
+                        lead.append(milliseconds(from: candidate.at, to: record.timestamp))
+                    } else {
+                        other += 1
+                    }
+                }
+                openNew.removeAll()
+                if let same = openSame, same.track != track {
+                    sameFollowed += 1
+                    sameLead.append(milliseconds(from: same.at, to: record.timestamp))
+                    openSame = nil
+                }
+                published = track
+            default:
+                break
+            }
+        }
+        if let end = records.last?.timestamp { expire(before: end) }
+
+        return MusicUsageEarlyCandidateSummary(
+            newTrackCount: newTotal,
+            confirmedCount: confirmed,
+            changedToOtherCount: other,
+            unconfirmedCount: unconfirmed,
+            pendingCount: openNew.count,
+            leadTime: latencySummary(lead),
+            sameTrackCount: sameTotal,
+            sameTrackFollowedByChangeCount: sameFollowed,
+            sameTrackUnconfirmedCount: sameUnconfirmed,
+            sameTrackLeadTime: latencySummary(sameLead)
         )
     }
 

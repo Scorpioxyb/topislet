@@ -133,5 +133,5 @@ func dailyReportSummarizesLyricOutcomes() {
     #expect(lyrics.windowStates == ["open": 1, "minimized": 2])
     #expect(lyrics.missingByWindowState == ["none_window_unavailable@minimized": 1,
                                             "none_network_failed@minimized": 1])
-    #expect(summary.schemaVersion == 7)
+    #expect(summary.schemaVersion == 8)
 }
