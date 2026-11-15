@@ -1,6 +1,6 @@
 # 变更记录
 
-## v0.1.4-alpha.1 — 待发布
+## v0.1.4-alpha.1 — 2026-11-15
 
 对应应用版本 **0.1.4 build 189**，Apple Silicon / macOS 26+ 开发者预览；ad-hoc 签名，未完成 Apple 公证。详情见[更新页](updates/2026-11-15-build189-immersive-panel.md)。
 

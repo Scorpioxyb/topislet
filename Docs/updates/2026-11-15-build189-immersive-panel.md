@@ -1,6 +1,6 @@
 # build 189：沉浸音乐面板
 
-应用版本为 **0.1.4 build 189**，计划作为 v0.1.4-alpha.1 预发布，仍是 Alpha 开发预览。历史 v0.1.3-alpha.2 / build 180 保留。
+应用版本为 **0.1.4 build 189**，已于 2026-11-15 作为 [v0.1.4-alpha.1](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.4-alpha.1) 预发布，仍是 Alpha 开发预览。历史 v0.1.3-alpha.2 / build 180 保留。
 
 ## 新的展开音乐面板
 

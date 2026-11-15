@@ -36,18 +36,18 @@
 
 </details>
 
-> 演示素材录制于 build 137；公开下载包与本次源码均为 build 180。录屏只证明其中展示的操作与画面，不代表最新代码、所有曲目或后台场景均已通过验证。
+> 演示素材录制于 build 137，展开面板仍是旧设计；公开下载包与本次源码均为 build 189。录屏只证明其中展示的操作与画面，不代表最新代码、所有曲目或后台场景均已通过验证。
 
 ## 发布状态
 
 | 版本范围 | 当前状态 |
 | --- | --- |
-| 公开下载 | [v0.1.3-alpha.2 · build 180](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.2)，Apple Silicon 开发者预览版 |
-| 源码开发预览 | **0.1.3 build 180**，音乐展开方式、歌词快捷切换及播放状态一致性改进；不是稳定版 |
-| 演示素材 | **build 137** 实机录屏，保留用于展示布局与交互；不代表最新版本已完成全部验收 |
-| 本次 GitHub 更新 | [build 180 开发更新](Docs/updates/2026-10-14-build180-music-interaction.md)：展开方式、歌词切换与验证边界；同步发布 build 180 预发布包 |
+| 公开下载 | [v0.1.4-alpha.1 · build 189](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.4-alpha.1)，Apple Silicon 开发者预览版 |
+| 源码开发预览 | **0.1.4 build 189**，新的“沉浸”展开音乐面板与悬停收起修复；不是稳定版 |
+| 演示素材 | **build 137** 实机录屏，展开面板为旧设计，重录推迟到 v0.2.0；不代表最新版本已完成全部验收 |
+| 本次 GitHub 更新 | [build 189 开发更新](Docs/updates/2026-11-15-build189-immersive-panel.md)：沉浸音乐面板、修复与验证边界；同步发布 build 189 预发布包 |
 
-v0.1.3-alpha.2 对应源码与安装包 **0.1.3 build 180**，仅支持 Apple Silicon 与 macOS 26.0 或更高版本。安装包为本地 ad-hoc 签名，尚未完成 Developer ID 签名和 Apple 公证。历史 v0.1.3-alpha.1 / build 148 与更早 Release 仍保留；上方演示素材仍是 build 137。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
+v0.1.4-alpha.1 对应源码与安装包 **0.1.4 build 189**，仅支持 Apple Silicon 与 macOS 26.0 或更高版本。安装包为本地 ad-hoc 签名，尚未完成 Developer ID 签名和 Apple 公证。历史 v0.1.3-alpha.2 / build 180 与更早 Release 仍保留；上方演示素材仍是 build 137。顶屿不是 Apple、汽水音乐或网易云音乐的官方产品，也暂不适合 App Store 分发。
 
 项目代码采用 `GPL-3.0-only`，正式 Bundle ID 为 `io.github.scorpioxyb.topislet`。首个 GitHub Release 按 **ad-hoc 签名、未公证的 Alpha 开发者预览版**发布；Developer ID 与 Apple 公证暂缓，不把本版本描述为稳定版或免警告安装包。当前状态见 [路线图](Docs/ROADMAP.md)。
 
@@ -78,7 +78,7 @@ Developer ID 与 Apple 公证接入见 [签名与公证说明](Docs/engineering/
 
 第三方歌词接口可能变化或不可用；纯音乐和未提供歌词的曲目也可能没有歌词。窗口与桌面歌词读取仍受汽水辅助功能树是否可用影响。点击或拖动进度表达播放意图，暂停时跳转后会尝试开始播放，而不是恢复旧暂停状态；操作仍须通过当前来源、PID 与曲目核验。
 
-build 180 改进了等待元数据期间的播放状态一致性，但快速连续切歌中曾出现的短暂未知播放状态和时长缺失仍未完成最终实机复验。后台歌词、物理键盘延迟及长时间运行表现仍有验证边界，详见本次开发更新。
+build 189 的汽水三键控制、进度拖动与暂停中拖动续播已做短实机；Apple Music、网易云音乐与日程这一版未改动，也未重新实测。后台 / 最小化时的歌词可用性仍在取证，详见本次开发更新与 [v0.1.4 门禁表](Docs/acceptance/GATES_v0.1.4.md)。
 
 ### 设备与工具链
 
@@ -95,7 +95,7 @@ build 180 改进了等待元数据期间的播放状态一致性，但快速连�
 
 ### GitHub Release
 
-从 [v0.1.3-alpha.2 · build 180 预发布页](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.3-alpha.2)下载 `.dmg` 和对应的 `.sha256` 校验文件：
+从 [v0.1.4-alpha.1 · build 189 预发布页](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.4-alpha.1)下载 `.dmg` 和对应的 `.sha256` 校验文件：
 
 1. 打开 `TopIslet-….dmg`。
 2. 将“顶屿.app”拖到右侧“Applications”快捷入口。
@@ -125,7 +125,7 @@ open "/Applications/顶屿.app"
 ```bash
 python3 -m venv .build/dmg-tools
 .build/dmg-tools/bin/python3 -m pip install -r Scripts/dmg-layout-requirements.txt
-VERSION="0.1.3" bash Scripts/build-release.sh
+VERSION="0.1.4" bash Scripts/build-release.sh
 ```
 
 脚本会生成包含“顶屿.app”和“Applications”快捷入口的 arm64 DMG，以及对应的 SHA-256 校验和，不会自动发布到 GitHub。

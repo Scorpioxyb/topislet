@@ -1,6 +1,6 @@
 # v0.1.4 版本门禁表
 
-候选：`0.1.4 build 189`（2026-11-15）。目标发布：**v0.1.4-alpha.1**，ad-hoc 签名开发者预览版。依据 [版本计划](../product/VERSION_PLAN_2026-11.md)（2026-11-15 确认），接替 [GATES_v0.1.3](GATES_v0.1.3.md)；v0.1.3 未单独发布，其开放项“后台歌词”转入 [GATES_v0.2.0](GATES_v0.2.0.md)。
+候选：`0.1.4 build 189`（2026-11-15）。**已发布为 [v0.1.4-alpha.1](https://github.com/Scorpioxyb/topislet/releases/tag/v0.1.4-alpha.1)（2026-11-15）**，ad-hoc 签名开发者预览版。依据 [版本计划](../product/VERSION_PLAN_2026-11.md)（2026-11-15 确认），接替 [GATES_v0.1.3](GATES_v0.1.3.md)；v0.1.3 未单独发布，其开放项“后台歌词”转入 [GATES_v0.2.0](GATES_v0.2.0.md)。
 
 规则：自动化结果和实机结果分开写；未做的写“未做”。不继承 build 180–188 的实机证据。
 
@@ -56,24 +56,24 @@
 
 ### 2. 构建
 
-- [ ] 工作区干净，版本号与 build 号已提交；在该提交上打 tag `v0.1.4-alpha.1`。
+- [x] 工作区干净，版本号与 build 号已提交；在该提交上打 tag `v0.1.4-alpha.1`。——tag 在 `b259d75`。
 - [x] 通过 GitHub Actions `release.yml` 或本机 `VERSION="0.1.4" BUILD_NUMBER="189" bash Scripts/build-release.sh` 构建。——本机，提交 `b259d75`。
 - [x] 产物写入 `LocalData/release-artifacts/`。
 - [x] `verify-release-dmg.sh` 通过。
 
 ### 3. 签名
 
-- [ ] Release 页写明“ad-hoc 签名开发者预览版，未公证”，并说明 Gatekeeper 提示与可能需要重新授予辅助功能。
+- [x] Release 页写明“ad-hoc 签名开发者预览版，未公证”，并说明 Gatekeeper 提示与可能需要重新授予辅助功能。
 
 ### 4. 发布材料
 
-- [ ] Release 页包含 SHA-256、已知限制、权限说明、第三方声明链接。
-- [ ] README、截图和演示素材与 build 189 一致；不出现权属不明的第三方专辑封面。——演示素材豁免至 v0.2.0；README 文字仍需更新到 build 189。
-- [ ] `Docs/CHANGELOG.md`、`Docs/ROADMAP.md` 顶部、[更新页](../updates/2026-11-15-build189-immersive-panel.md) 已更新。
-- [ ] 原始采样与日报留在 `LocalData/qa/`。
+- [x] Release 页包含 SHA-256、已知限制、权限说明、第三方声明链接。
+- [ ] README、截图和演示素材与 build 189 一致；不出现权属不明的第三方专辑封面。——演示素材豁免至 v0.2.0；README 文字已更新到 build 189。
+- [x] `Docs/CHANGELOG.md`、`Docs/ROADMAP.md` 顶部、[更新页](../updates/2026-11-15-build189-immersive-panel.md) 已更新。
+- [x] 原始采样与日报留在 `LocalData/qa/`。
 
 ### 5. 发布后验收
 
-- [ ] 从 Release 页重新下载 DMG，校验 SHA-256，安装。
-- [ ] 首次启动、权限授予、汽水三键控制、歌词开关和设置页各一次短实机。
-- [ ] 写 `Docs/acceptance/<日期>-v0.1.4-alpha.1-post-release.md`，重建验收索引。
+- [x] 从 Release 页重新下载 DMG，校验 SHA-256，安装。
+- [ ] 首次启动、权限授予、汽水三键控制、歌词开关和设置页各一次短实机。——启动与授权保留已验证；三键、歌词开关、设置页待手动操作。
+- [x] 写 [`2026-11-15-v0.1.4-alpha.1-post-release.md`](2026-11-15-v0.1.4-alpha.1-post-release.md)，重建验收索引。
