@@ -15,7 +15,7 @@ enum MusicExpansionMode: String, CaseIterable, Identifiable {
 
     var explanation: String {
         switch self {
-        case .hover: "鼠标移入音乐岛时展开，移开后收起；操作播放控件后保留面板。"
+        case .hover: "鼠标移入音乐岛时展开，移开后收起；在面板里点按后移开也会收起。"
         case .click: "鼠标经过时保持原样，点击音乐岛即可展开。"
         case .pinned: "音乐出现时展开，移开鼠标或点击其他窗口仍保持；可随时手动收起。"
         }
@@ -25,6 +25,14 @@ enum MusicExpansionMode: String, CaseIterable, Identifiable {
 enum MusicInteractionPolicy {
     static func allowsHover(feature: IslandFeature, expansion: MusicExpansionMode) -> Bool {
         feature != .music || expansion == .hover
+    }
+
+    /// Whether a click or control press inside a hover-expanded panel ends
+    /// the hover presentation (the panel then stays until an outside click or
+    /// a manual collapse). Music in hover mode keeps following the pointer:
+    /// pressing play and then moving away still collapses it.
+    static func interactionEndsHoverPresentation(feature: IslandFeature, expansion: MusicExpansionMode) -> Bool {
+        !(feature == .music && expansion == .hover)
     }
 
     static func allowsOutsideCollapse(feature: IslandFeature, expansion: MusicExpansionMode) -> Bool {

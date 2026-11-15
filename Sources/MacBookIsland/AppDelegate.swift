@@ -300,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
         model.presentationInteraction
-            .sink { [weak self] in self?.cancelHoverPresentation() }
+            .sink { [weak self] in self?.handlePresentationInteraction() }
             .store(in: &cancellables)
         model.$mode
             .sink { [weak self] mode in
@@ -720,6 +720,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hoverExpectedModeChange = nil
         cancelHoverPresentation()
+    }
+
+    private func handlePresentationInteraction() {
+        guard !MusicInteractionPolicy.interactionEndsHoverPresentation(
+            feature: model.activeFeature, expansion: model.appSettings.musicExpansionMode
+        ) else {
+            cancelHoverPresentation()
+            return
+        }
+        // Hover-expanded music stays hover-owned after a click: drop a leave
+        // already in flight, and treat the pointer as on the panel (it just
+        // clicked there) so the next move off it collapses as usual, even if
+        // the click resized the panel out from under the pointer.
+        guard didExpandFromHover else { return }
+        hoverGeneration += 1
+        hoverExitTask?.cancel()
+        hoverExitTask = nil
+        isPointerInsideHoverZone = true
     }
 
     private func cancelHoverPresentation() {

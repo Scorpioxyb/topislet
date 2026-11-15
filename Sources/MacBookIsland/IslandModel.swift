@@ -11,7 +11,8 @@ import SwiftUI
 final class IslandModel: ObservableObject {
     let isPreviewPresentation: Bool
     // Interaction ownership is independent of mode changes: pressing a control
-    // in a hover-expanded panel must also cancel the pending hover return.
+    // in a hover-expanded panel cancels a pending hover return. Whether it
+    // also ends the hover presentation is MusicInteractionPolicy's call.
     let presentationInteraction = PassthroughSubject<Void, Never>()
     @Published var mode: IslandMode = .collapsed
     @Published var activeFeature: IslandFeature = .activityCenter

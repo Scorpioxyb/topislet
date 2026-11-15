@@ -59,3 +59,11 @@ func musicExpansionIsScopedAndRespectsExplicitCollapse() {
     #expect(MusicInteractionPolicy.shouldOpenOnPreferenceChange(
         feature: .music, hasTrack: true, expansion: .pinned))
 }
+
+@Test("悬停展开的音乐面板里点按后，移开鼠标仍然收起；其他方式与其他功能照旧")
+func hoverMusicStaysPointerOwnedAfterClick() {
+    #expect(!MusicInteractionPolicy.interactionEndsHoverPresentation(feature: .music, expansion: .hover))
+    #expect(MusicInteractionPolicy.interactionEndsHoverPresentation(feature: .music, expansion: .click))
+    #expect(MusicInteractionPolicy.interactionEndsHoverPresentation(feature: .music, expansion: .pinned))
+    #expect(MusicInteractionPolicy.interactionEndsHoverPresentation(feature: .activityCenter, expansion: .hover))
+}
