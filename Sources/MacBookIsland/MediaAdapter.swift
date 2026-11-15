@@ -524,9 +524,7 @@ final class MusicAdapterCoordinator {
     private var qishuiControlAvailabilityRetryTask: Task<Void, Never>?
     private var lastTrackControlStartedAt: Date?
     private let playback = PlaybackOperationTracker()
-    private var previousQishuiProgress: QishuiProgressSample?
-    private var qishuiStationarySince: Date?
-    private var inferredQishuiIsPlaying: Bool?
+    private var qishuiInference = QishuiPlaybackInference()
     private var realtimeRefreshInFlight = false
     private var realtimeRefreshQueued = false
     private var playbackPositionRefreshInFlight = false
@@ -2011,12 +2009,12 @@ final class MusicAdapterCoordinator {
         }
 
         if let track = snapshot.currentTrack {
-            updateQishuiPlaybackInference(track: track, checkedAt: snapshot.checkedAt)
+            qishuiInference.update(track: track, checkedAt: snapshot.checkedAt)
             if !playback.hasPendingOperation
                 || updatePendingPlaybackConfirmation(checkedAt: snapshot.checkedAt) {
                 playback.updateCachedOverride(
                     fromDirect: track,
-                    inferredIsPlaying: inferredQishuiIsPlaying,
+                    inferredIsPlaying: qishuiInference.inferredIsPlaying,
                     mediaSnapshot: latestMediaRemoteSnapshot,
                     checkedAt: snapshot.checkedAt
                 )
@@ -2025,7 +2023,7 @@ final class MusicAdapterCoordinator {
                 sourceName: "汽水直接适配",
                 availability: .qishuiDetectedAXLimited,
                 headline: "已读取汽水实时播放",
-                detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。播放态：\(qishuiPlaybackLabel(track))。",
+                detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。播放态：\(qishuiInference.label(for: track))。",
                 checkedAt: snapshot.checkedAt
             )
             return cachedStatus
@@ -2406,9 +2404,7 @@ final class MusicAdapterCoordinator {
         lastPlaybackPositionRefreshAt = nil
         lastTrackControlStartedAt = nil
         playback.reset(clearTimelineFloor: true)
-        previousQishuiProgress = nil
-        qishuiStationarySince = nil
-        inferredQishuiIsPlaying = nil
+        qishuiInference.reset()
     }
 
     private func applyQishuiWindowAvailability(
@@ -2992,7 +2988,7 @@ final class MusicAdapterCoordinator {
         let hasTrack = mediaRemoteTrack != nil || directTrack != nil
         let isPlaying = mediaRemoteTrack?.isPlaying
             ?? directTrack?.isPlaying
-            ?? inferredQishuiIsPlaying
+            ?? qishuiInference.inferredIsPlaying
         let playback: MusicSourcePlaybackLevel
         if isPlaying == true {
             playback = .playing
@@ -3820,7 +3816,7 @@ final class MusicAdapterCoordinator {
                 artist: directTrack.artist
             )
                 ?? directTrack.isPlaying
-                ?? self.inferredQishuiIsPlaying
+                ?? self.qishuiInference.inferredIsPlaying
                 ?? false
             return MusicState(
                 track: self.realTrack(from: directTrack, statusLine: statusLine),
@@ -3842,7 +3838,7 @@ final class MusicAdapterCoordinator {
                     artist: directTrack.artist
                 ) != nil
                     || directTrack.isPlaying != nil
-                    || self.inferredQishuiIsPlaying != nil
+                    || self.qishuiInference.inferredIsPlaying != nil
             )
         }
         if let snapshot = latestMediaRemoteSnapshot,
@@ -4025,53 +4021,13 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    private func updateQishuiPlaybackInference(track: QishuiDirectTrack, checkedAt: Date) {
-        let signature = qishuiSignature(track)
-        if let isPlaying = track.isPlaying {
-            inferredQishuiIsPlaying = isPlaying
-            qishuiStationarySince = isPlaying ? nil : checkedAt
-        } else if let previous = previousQishuiProgress,
-                  previous.signature == signature,
-                  let currentProgress = track.progress,
-                  checkedAt.timeIntervalSince(previous.checkedAt) >= 0.15 {
-            let progressDelta = currentProgress - previous.progress
-            if progressDelta > 0.0005 {
-                inferredQishuiIsPlaying = true
-                qishuiStationarySince = nil
-            } else if progressDelta < -0.01 {
-                qishuiStationarySince = nil
-            } else if abs(progressDelta) <= 0.0002,
-                      currentProgress > 0,
-                      currentProgress < 0.995 {
-                let stationarySince = qishuiStationarySince ?? previous.checkedAt
-                qishuiStationarySince = stationarySince
-                if checkedAt.timeIntervalSince(stationarySince) >= 1.35 {
-                    inferredQishuiIsPlaying = false
-                }
-            } else {
-                qishuiStationarySince = nil
-            }
-        } else {
-            qishuiStationarySince = nil
-            inferredQishuiIsPlaying = nil
-        }
-
-        if let progress = track.progress {
-            previousQishuiProgress = QishuiProgressSample(
-                signature: signature,
-                progress: progress,
-                checkedAt: checkedAt
-            )
-        }
-    }
-
     private func updatePendingPlaybackConfirmation(checkedAt: Date) -> Bool {
         let directTrack = latestQishuiSnapshot?.currentTrack.map {
             PlaybackTrackIdentity(title: $0.title, artist: $0.artist)
         }
         guard let confirmed = playback.confirmFromInferredPlayback(
             directTrack: directTrack,
-            inferredIsPlaying: inferredQishuiIsPlaying,
+            inferredIsPlaying: qishuiInference.inferredIsPlaying,
             checkedAt: checkedAt
         ) else { return false }
         recordPlaybackConfirmed(confirmed, evidence: "ax_progress", confirmedAt: checkedAt)
@@ -4145,25 +4101,8 @@ final class MusicAdapterCoordinator {
         publishCurrentState()
     }
 
-    private func qishuiPlaybackLabel(_ track: QishuiDirectTrack) -> String {
-        if let isPlaying = track.isPlaying ?? inferredQishuiIsPlaying {
-            return isPlaying ? "播放中" : "已暂停"
-        }
-        return "等待进度变化确认"
-    }
-
-    private func qishuiSignature(_ track: QishuiDirectTrack) -> String {
-        "\(track.title)\u{1f}\(track.artist)"
-    }
-
     private func formatTime(_ time: TimeInterval) -> String {
         let totalSeconds = max(Int(time.rounded()), 0)
         return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
     }
-}
-
-private struct QishuiProgressSample {
-    let signature: String
-    let progress: Double
-    let checkedAt: Date
 }
