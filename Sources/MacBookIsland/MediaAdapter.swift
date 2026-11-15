@@ -435,8 +435,7 @@ final class MusicAdapterCoordinator {
     private var timedLyricCache = QishuiTimedLyricCache()
     private var timedLyricsEnabled = false
     private var timedLyricTask: Task<Void, Never>?
-    private var qishuiSeekGeneration: UInt64 = 0
-    private var qishuiSeekPlaybackTask: Task<Void, Never>?
+    private let seeks = SeekCoordinator()
 
     func setQishuiTimedLyricsEnabled(_ enabled: Bool) {
         timedLyricsEnabled = enabled
@@ -614,8 +613,7 @@ final class MusicAdapterCoordinator {
         usage.observationStopped(at: Date())
         isRealtimeObservationRunning = false
         mediaRemoteAdapterStreamSource.setIdentityObservationHandler(nil)
-        qishuiSeekPlaybackTask?.cancel()
-        qishuiSeekPlaybackTask = nil
+        seeks.cancelResume()
         qishuiIdentityRefreshGeneration &+= 1
         qishuiIdentityRefreshInFlight = false
         lastQishuiIdentityRefreshAt = .distantPast
@@ -1463,21 +1461,12 @@ final class MusicAdapterCoordinator {
         targetProgress: Double,
         observedProgress: Double
     ) {
-        recordUsage("seek_confirmed", fields: [
-            "latency_ms": String(max(
-                Int(Date().timeIntervalSince(requestedAt) * 1_000),
-                0
-            )),
-            "observed_permille": String(Int(
-                (min(max(observedProgress, 0), 1) * 1_000).rounded()
-            )),
-            "source": MusicUsageEmitter.sourceLabel(MusicSourceID(
-                bundleIdentifier: sourceBundleIdentifier
-            )),
-            "target_permille": String(Int(
-                (min(max(targetProgress, 0), 1) * 1_000).rounded()
-            ))
-        ])
+        recordUsage("seek_confirmed", fields: SeekCoordinator.UsageFields.confirmed(
+            sourceBundleIdentifier: sourceBundleIdentifier,
+            requestedAt: requestedAt,
+            targetProgress: targetProgress,
+            observedProgress: observedProgress
+        ))
     }
 
     func noteSeekConfirmationTimeout(
@@ -1485,18 +1474,11 @@ final class MusicAdapterCoordinator {
         requestedAt: Date,
         targetProgress: Double
     ) {
-        recordUsage("seek_confirmation_timeout", fields: [
-            "latency_ms": String(max(
-                Int(Date().timeIntervalSince(requestedAt) * 1_000),
-                0
-            )),
-            "source": MusicUsageEmitter.sourceLabel(MusicSourceID(
-                bundleIdentifier: sourceBundleIdentifier
-            )),
-            "target_permille": String(Int(
-                (min(max(targetProgress, 0), 1) * 1_000).rounded()
-            ))
-        ])
+        recordUsage("seek_confirmation_timeout", fields: SeekCoordinator.UsageFields.confirmationTimeout(
+            sourceBundleIdentifier: sourceBundleIdentifier,
+            requestedAt: requestedAt,
+            targetProgress: targetProgress
+        ))
     }
 
     func noteSeekCancelled(
@@ -1505,19 +1487,12 @@ final class MusicAdapterCoordinator {
         targetProgress: Double,
         reason: MusicSeekCancellationReason
     ) {
-        recordUsage("seek_cancelled", fields: [
-            "latency_ms": String(max(
-                Int(Date().timeIntervalSince(requestedAt) * 1_000),
-                0
-            )),
-            "reason": reason.rawValue,
-            "source": MusicUsageEmitter.sourceLabel(MusicSourceID(
-                bundleIdentifier: sourceBundleIdentifier
-            )),
-            "target_permille": String(Int(
-                (min(max(targetProgress, 0), 1) * 1_000).rounded()
-            ))
-        ])
+        recordUsage("seek_cancelled", fields: SeekCoordinator.UsageFields.cancelled(
+            sourceBundleIdentifier: sourceBundleIdentifier,
+            requestedAt: requestedAt,
+            targetProgress: targetProgress,
+            reason: reason
+        ))
     }
 
     func refreshPlaybackPositionNow() -> (music: MusicState, status: MusicSourceStatus) {
@@ -1560,27 +1535,18 @@ final class MusicAdapterCoordinator {
             bundleIdentifier: displayedSourceBundleIdentifier
         ))
         let startedAt = Date()
-        recordUsage("seek_issued", fields: [
-            "interaction": Self.seekInteractionLabel(interaction),
-            "request": String(requestID),
-            "source": source,
-            "target_permille": String(Int((min(max(progress, 0), 1) * 1_000).rounded()))
-        ])
+        recordUsage("seek_issued", fields: SeekCoordinator.UsageFields.issued(
+            interaction: interaction, requestID: requestID, source: source, progress: progress
+        ))
         let result = await performSeek(
             to: progress,
             interaction: interaction,
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
         )
-        let accepted = result.status.availability == .qishuiControlSent
-            || result.status.availability == .appleMusicControlSent
-        recordUsage("seek_result", fields: [
-            "interaction": Self.seekInteractionLabel(interaction),
-            "latency_ms": String(max(Int(Date().timeIntervalSince(startedAt) * 1_000), 0)),
-            "outcome": accepted ? "accepted" : "rejected",
-            "request": String(requestID),
-            "status": result.status.availability.rawValue,
-            "source": source
-        ])
+        recordUsage("seek_result", fields: SeekCoordinator.UsageFields.result(
+            interaction: interaction, requestID: requestID, source: source,
+            startedAt: startedAt, availability: result.status.availability
+        ))
         return result
     }
 
@@ -1589,39 +1555,17 @@ final class MusicAdapterCoordinator {
         interaction: MusicSeekInteraction,
         displayedSourceBundleIdentifier: String?
     ) async -> (music: MusicState, status: MusicSourceStatus) {
-        qishuiSeekGeneration &+= 1
-        let seekGeneration = qishuiSeekGeneration
-        qishuiSeekPlaybackTask?.cancel()
-        qishuiSeekPlaybackTask = nil
-        let binding = DisplayedMusicControlBinding(
+        let seekGeneration = seeks.begin()
+        guard let binding = DisplayedMusicControlBinding(
             displayedSourceBundleIdentifier: displayedSourceBundleIdentifier
-        )
-        guard let binding else {
-            return (
-                selectedMusicState(),
-                MusicSourceStatus(
-                    sourceName: "顶屿",
-                    availability: .systemNowPlayingUnavailable,
-                    headline: "未执行进度跳转",
-                    detail: "岛当前显示的音乐来源不可识别；为避免控制其他应用，本次操作已取消。",
-                    checkedAt: Date()
-                )
-            )
+        ) else {
+            return (selectedMusicState(), SeekCoordinator.Status.unrecognizedSource())
         }
         guard let authorization = MusicControlAuthorization(
             binding: binding,
             selection: selectedMusicSelection()
         ) else {
-            return (
-                selectedMusicState(),
-                MusicSourceStatus(
-                    sourceName: "顶屿",
-                    availability: .systemNowPlayingUnavailable,
-                    headline: "已取消进度跳转",
-                    detail: "音乐来源已切换；旧进度跳转请求已取消。",
-                    checkedAt: Date()
-                )
-            )
+            return (selectedMusicState(), SeekCoordinator.Status.sourceSwitched())
         }
         if binding.source == .appleMusic {
             return await seekAppleMusic(
@@ -1631,117 +1575,52 @@ final class MusicAdapterCoordinator {
             )
         }
         if binding.source == .neteaseMusic {
-            let status = MusicSourceStatus(
-                sourceName: "网易云音乐",
-                availability: .neteaseMusicSynced,
-                headline: "当前不能拖动进度",
-                detail: "网易云音乐 Alpha 尚未暴露 PID 定向进度跳转；顶屿不会使用可能误控其他媒体的全局跳转。",
-                checkedAt: Date()
-            )
-            return (neteaseMusicState(), status)
+            return (neteaseMusicState(), SeekCoordinator.Status.neteaseUnsupported())
         }
 
         let refreshedSnapshot = await mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-        if let refreshedTrack = refreshedSnapshot?.currentTrack,
-           let displayedTrack = latestMediaRemoteSnapshot?.currentTrack,
-           !QishuiTrackCoherencePolicy.matches(
-               mediaTitle: displayedTrack.title,
-               mediaArtist: displayedTrack.artist,
-               directTitle: refreshedTrack.title,
-               directArtist: refreshedTrack.artist
-           ) {
-            return (currentQishuiMusicState(), MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .qishuiMediaRemoteSynced,
-                headline: "已取消进度跳转",
-                detail: "拖动过程中歌曲已经切换；没有把旧歌曲的时间应用到新歌曲。",
-                checkedAt: Date()
-            ))
+        if let status = SeekCoordinator.trackChangeRejection(
+            displayed: latestMediaRemoteSnapshot?.currentTrack,
+            refreshed: refreshedSnapshot?.currentTrack
+        ) {
+            return (currentQishuiMusicState(), status)
         }
         if let refreshedSnapshot, refreshedSnapshot.isVerifiedQishuiSource {
             latestMediaRemoteSnapshot = refreshedSnapshot
         }
-        guard progress.isFinite,
-              (0...1).contains(progress),
-              let snapshot = latestMediaRemoteSnapshot,
-              snapshot.isVerifiedQishuiSource,
-              let track = snapshot.currentTrack,
-              let duration = track.duration,
-              duration > 0 else {
-            let status = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .qishuiMediaRemoteSynced,
-                headline: "当前不能拖动进度",
-                detail: "汽水当前没有暴露可验证的歌曲时长或专属播放状态，进度条保持只读。",
-                checkedAt: Date()
-            )
+        let track: MediaRemoteNowPlayingTrack
+        let duration: TimeInterval
+        let targetProgress: Double
+        let targetElapsed: TimeInterval
+        switch SeekCoordinator.qishuiAdmission(
+            progress: progress,
+            snapshot: latestMediaRemoteSnapshot,
+            refreshFailedWhileCached: refreshedSnapshot == nil
+                && cachedStatus.availability == .qishuiMediaRemoteCached,
+            hasCompetingPlayback: { hasCompetingMusicPlayback(excluding: .qishui) }
+        ) {
+        case let .rejected(status):
             return (currentQishuiMusicState(), status)
-        }
-
-        let isCached = snapshot.sampleOrigin == .cached
-            || (refreshedSnapshot == nil && cachedStatus.availability == .qishuiMediaRemoteCached)
-        let hasCompetingPlayback = hasCompetingMusicPlayback(excluding: .qishui)
-        guard QishuiSeekSafety.allowsGuardedSeek(
-            hasVerifiedQishuiSource: snapshot.isVerifiedQishuiSource,
-            hasCurrentTrack: true,
-            hasDuration: true,
-            isCached: isCached,
-            hasCompetingPlayback: hasCompetingPlayback
-        ) else {
-            let detail = hasCompetingPlayback
-                ? "检测到其他已适配音乐源同时播放；为避免系统焦点跳转到错误播放器，进度条暂时保持只读。"
-                : "汽水当前处于缓存或未确认状态；为避免误控其他播放器，进度条暂时保持只读。"
-            let status = MusicSourceStatus(
-                sourceName: "汽水实时适配器",
-                availability: .qishuiMediaRemoteCached,
-                headline: "当前不能拖动进度",
-                detail: detail,
-                checkedAt: Date()
-            )
-            return (currentQishuiMusicState(), status)
+        case let .admitted(admittedTrack, admittedDuration, admittedProgress, admittedElapsed):
+            track = admittedTrack
+            duration = admittedDuration
+            targetProgress = admittedProgress
+            targetElapsed = admittedElapsed
         }
 
         guard authorization.isValid(for: selectedMusicSelection()) else {
-            return (
-                selectedMusicState(),
-                MusicSourceStatus(
-                    sourceName: "顶屿",
-                    availability: .systemNowPlayingUnavailable,
-                    headline: "已取消进度跳转",
-                    detail: "进度跳转发送前音乐来源已经切换；本次操作未执行。",
-                    checkedAt: Date()
-                )
-            )
+            return (selectedMusicState(), SeekCoordinator.Status.sourceSwitchedBeforeSend())
         }
 
-        let targetProgress = min(max(progress, 0), 1)
-        let targetElapsed = duration * targetProgress
         let seekControlGeneration = controlGeneration
         let didSeek = await mediaRemoteAdapterStreamSource.seek(
             to: targetElapsed,
             coalescingDelayNanoseconds: interaction.coalescingDelayNanoseconds
         )
         guard authorization.isValid(for: selectedMusicSelection()) else {
-            return (
-                selectedMusicState(),
-                MusicSourceStatus(
-                    sourceName: "顶屿",
-                    availability: .systemNowPlayingUnavailable,
-                    headline: "已取消进度跳转",
-                    detail: "进度跳转完成前音乐来源已经切换；本次操作结果不进入当前岛。",
-                    checkedAt: Date()
-                )
-            )
+            return (selectedMusicState(), SeekCoordinator.Status.sourceSwitchedBeforeResult())
         }
-        let status = MusicSourceStatus(
-            sourceName: "汽水实时适配器",
-            availability: didSeek ? .qishuiControlSent : .qishuiMediaRemoteSynced,
-            headline: didSeek ? "已跳转播放进度" : "未跳转播放进度",
-            detail: didSeek
-                ? "已在汽水仍占用系统媒体焦点时发送跳转请求，等待实时状态确认。"
-                : "汽水系统媒体焦点校验未通过，未发送进度跳转。",
-            checkedAt: Date()
-        )
+        let status = SeekCoordinator.Status.qishuiSent(didSeek)
         guard didSeek else {
             return (currentQishuiMusicState(), status)
         }
@@ -1753,58 +1632,27 @@ final class MusicAdapterCoordinator {
         optimisticMusic.duration = duration
         cachedStatus = status
         if let processIdentifier = track.sourceProcessIdentifier {
-            schedulePlaybackAfterSeek(
+            seeks.scheduleResumeIfPaused(
                 identity: .init(processIdentifier: processIdentifier, title: track.title, artist: track.artist),
-                seekGeneration: seekGeneration,
-                expectedControlGeneration: seekControlGeneration
+                generation: seekGeneration,
+                isStillValid: { [weak self] in
+                    guard let self else { return false }
+                    return self.isRealtimeObservationRunning
+                        && self.controlGeneration == seekControlGeneration
+                        && self.selectedMusicSource() == .qishui
+                },
+                refresh: { [weak self] in
+                    await self?.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+                },
+                startPlayback: { [weak self] processIdentifier in
+                    guard let self else { return }
+                    let result = await self.pressSemanticControl(.playPause, processIdentifier: processIdentifier)
+                    self.recordUsage("seek_start_playback", fields: ["outcome": result.didPress ? "sent" : "unavailable"])
+                    self.schedulePlaybackPositionRefresh()
+                }
             )
         }
         return (optimisticMusic, status)
-    }
-
-    private func schedulePlaybackAfterSeek(
-        identity: QishuiLyricIdentity,
-        seekGeneration: UInt64,
-        expectedControlGeneration: Int
-    ) {
-        guard seekGeneration == qishuiSeekGeneration else { return }
-        qishuiSeekPlaybackTask = Task { @MainActor [weak self] in
-            for _ in 0..<12 {
-                do { try await Task.sleep(for: .milliseconds(250)) }
-                catch { return }
-                guard let self, !Task.isCancelled,
-                      self.isRealtimeObservationRunning,
-                      self.qishuiSeekGeneration == seekGeneration,
-                      self.controlGeneration == expectedControlGeneration,
-                      self.selectedMusicSource() == .qishui else { return }
-                let snapshot = await self.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-                guard !Task.isCancelled,
-                      self.qishuiSeekGeneration == seekGeneration,
-                      self.controlGeneration == expectedControlGeneration,
-                      self.selectedMusicSource() == .qishui else { return }
-                guard let snapshot, snapshot.isVerifiedQishuiSource,
-                      snapshot.sampleOrigin != .cached,
-                      let track = snapshot.currentTrack else { continue }
-                let sameTrack = track.sourceProcessIdentifier == identity.processIdentifier
-                    && QishuiTrackCoherencePolicy.matches(
-                        mediaTitle: identity.title, mediaArtist: identity.artist,
-                        directTitle: track.title, directArtist: track.artist
-                    )
-                guard sameTrack else { return }
-                // Seeking expresses play intent. Never toggle a source that
-                // already resumed, or one whose playback state is unknown.
-                if track.isPlaying == true { return }
-                if QishuiSeekPlaybackPolicy.shouldStartPlayback(
-                    observedIsPlaying: track.isPlaying,
-                    sameTrack: sameTrack, operationIsCurrent: true
-                ) {
-                    let result = await self.pressSemanticControl(.playPause, processIdentifier: identity.processIdentifier)
-                    self.recordUsage("seek_start_playback", fields: ["outcome": result.didPress ? "sent" : "unavailable"])
-                    self.schedulePlaybackPositionRefresh()
-                    return
-                }
-            }
-        }
     }
 
     private func seekAppleMusic(
@@ -2240,7 +2088,7 @@ final class MusicAdapterCoordinator {
         let expectedArtist = latestMediaRemoteSnapshot?.currentTrack?.artist
         let requestedIdentity = qishuiMediaIdentity()
         let requestedControlGeneration = controlGeneration
-        let requestedSeekGeneration = qishuiSeekGeneration
+        let requestedSeekGeneration = seeks.generation
         let queues = qishuiWorkQueues
         let snapshot = await withCheckedContinuation { continuation in
             queues.metadata.async {
@@ -2253,7 +2101,7 @@ final class MusicAdapterCoordinator {
         }
         guard !Task.isCancelled, isRealtimeObservationRunning,
               requestedControlGeneration == controlGeneration,
-              requestedSeekGeneration == qishuiSeekGeneration,
+              seeks.isCurrent(requestedSeekGeneration),
               snapshot.processIdentifier == processIdentifier,
               QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
               QishuiIdentityRefreshPolicy.accepts(
@@ -3028,17 +2876,6 @@ final class MusicAdapterCoordinator {
         }
     }
 
-    nonisolated private static func seekInteractionLabel(
-        _ interaction: MusicSeekInteraction
-    ) -> String {
-        switch interaction {
-        case .click:
-            return "click"
-        case .drag:
-            return "drag"
-        }
-    }
-
     private func recordUsage(_ name: String, fields: [String: String] = [:]) {
         usage.record(name, fields: fields)
     }
@@ -3650,7 +3487,7 @@ final class MusicAdapterCoordinator {
         qishuiIdentityRefreshGeneration &+= 1
         let generation = qishuiIdentityRefreshGeneration
         let requestedControlGeneration = controlGeneration
-        let requestedSeekGeneration = qishuiSeekGeneration
+        let requestedSeekGeneration = seeks.generation
         lastQishuiIdentityRefreshAt = Date()
         let requestedIdentity = qishuiMediaIdentity()
         let expectedTitle = latestMediaRemoteSnapshot?.currentTrack?.title
@@ -3668,7 +3505,7 @@ final class MusicAdapterCoordinator {
                 guard self.isRealtimeObservationRunning,
                       self.selectedMusicSource() == .qishui,
                       requestedControlGeneration == self.controlGeneration,
-                      requestedSeekGeneration == self.qishuiSeekGeneration,
+                      self.seeks.isCurrent(requestedSeekGeneration),
                       QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
                       snapshot.processIdentifier == processIdentifier,
                       QishuiIdentityRefreshPolicy.accepts(

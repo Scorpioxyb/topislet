@@ -37,4 +37,16 @@ for condition in '&& hasVerifiedQishuiSource' '&& hasCurrentTrack' '&& hasDurati
   fi
 done
 
+# The seek admission moved to SeekCoordinator (coordinator split step 3); it
+# must still go through QishuiSeekSafety before a seek is sent.
+SEEK_COORDINATOR="$ROOT/Sources/MacBookIsland/SeekCoordinator.swift"
+if ! grep -qF 'QishuiSeekSafety.allowsGuardedSeek(' "$SEEK_COORDINATOR"; then
+  echo "error: SeekCoordinator admission no longer checks QishuiSeekSafety.allowsGuardedSeek" >&2
+  exit 1
+fi
+if ! grep -qF 'SeekCoordinator.qishuiAdmission(' "$MEDIA_ADAPTER"; then
+  echo "error: the Qishui seek path no longer goes through SeekCoordinator.qishuiAdmission" >&2
+  exit 1
+fi
+
 echo "Qishui control safety verification passed"
