@@ -18,7 +18,7 @@ v0.2.0“稳定日用版”的门禁，行项目来自 [2026-11 全局规划](..
 | 后台歌词（4.4 第 2 步） | 依据数据给出“已改善”或“上游受限，保持不显示”的明确结论 | 分类埋点已随 build 181 上线 | 数据采集中 | `swift run DailyUsageAnalyzer --last 7d` |
 | 网易云、Apple Music 升 Beta | `MUSIC_ADAPTER_INTAKE.md` 缺口样本补齐；三应用交叉实测通过 | — | 未做 | — |
 | 日历与提醒事项验收 | 授权、撤权、关闭开关、大日历库各一轮 | — | 未做 | — |
-| 签名公证（决策 3） | `spctl` 与 `stapler validate` 通过 | — | 未做：尚未加入 Apple Developer Program | — |
+| 签名公证（决策 3） | `spctl` 与 `stapler validate` 通过 | — | **移出本版本**（负责人 2026-11-15 决定暂不加入 Apple Developer Program，v0.2.0 仍为 ad-hoc 预发布） | [版本计划决定 4](../product/VERSION_PLAN_2026-11.md#决定2026-11-15) |
 
 ## 开发过程中的记录
 
