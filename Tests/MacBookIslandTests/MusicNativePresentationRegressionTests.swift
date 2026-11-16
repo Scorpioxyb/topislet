@@ -52,9 +52,9 @@ func timedCreditsKeepSourceTiming() {
 @Test("实时主线程发布不得同步扫描汽水 AX；主界面不显示同步文案")
 func realtimePublicationAvoidsSynchronousAXAndTechnicalCopy() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    let adapter = try String(contentsOf: root.appendingPathComponent("Sources/MacBookIsland/MediaAdapter.swift"), encoding: .utf8)
+    let adapter = try String(contentsOf: root.appendingPathComponent("Sources/MacBookIsland/QishuiMusicAdapter.swift"), encoding: .utf8)
     let start = try #require(adapter.range(of: "    func refreshSourceStatus("))
-    let end = try #require(adapter.range(of: "    private func applyQishuiDirectSnapshot(", range: start.upperBound..<adapter.endIndex))
+    let end = try #require(adapter.range(of: "    func applyQishuiDirectSnapshot(", range: start.upperBound..<adapter.endIndex))
     #expect(!adapter[start.lowerBound..<end.lowerBound].contains("qishuiAdapter.snapshot("))
     let ui = try String(contentsOf: root.appendingPathComponent("Sources/MacBookIsland/main.swift"), encoding: .utf8)
     #expect(!ui.contains("Text(\"状态同步中\")"))

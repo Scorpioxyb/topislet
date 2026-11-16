@@ -1,10 +1,29 @@
 import AppKit
 import Foundation
+import MusicUsageDiagnostics
+import SwiftUI
 
-/// Qishui (汽水音乐) state and collaborators owned apart from the coordinator.
+/// Callbacks from the Qishui adapter into the coordinator. The adapter holds the
+/// host weakly; the coordinator owns the adapter.
+@MainActor
+protocol QishuiMusicAdapterHost: AnyObject {
+    var qishuiForegroundSource: MusicSourceID? { get }
+    var qishuiUsage: MusicUsageEmitter { get }
+    var lyricPipeline: QishuiLyricPipeline { get }
+    func qishuiHasCompetingPlayback(excluding source: MusicSourceID) -> Bool
+    func qishuiPublish()
+    func qishuiRecord(_ name: String, fields: [String: String])
+    func qishuiScheduleTransitionIdentityReconciliation()
+    func qishuiScheduleIdentityRefresh(force: Bool)
+    func qishuiCancelControlAvailabilityScheduling()
+}
+
+/// Qishui (汽水音乐) state, status ingestion and state building, owned apart from the coordinator.
 ///
-/// Coordinator split step 4.3 moves only the stored properties here; the coordinator
-/// still runs all logic and reads them as `qishui.x`. Later steps move the logic.
+/// Step 4.3 moved the stored properties here. Step 4.4 moved stream and snapshot
+/// ingestion, status text, state building and pending playback confirmation; the
+/// coordinator forwards `refreshSourceStatus` and calls back through `host`.
+/// Later steps move identity refresh, lifecycle hooks and controls.
 /// See Docs/engineering/COORDINATOR_SPLIT_STEP4.md.
 @MainActor
 final class QishuiMusicAdapter {
@@ -36,4 +55,620 @@ final class QishuiMusicAdapter {
     var qishuiInference = QishuiPlaybackInference()
     var playbackPositionRefreshInFlight = false
     var qishuiLifecycleObservers: [NSObjectProtocol] = []
+    var cachedStatus = MusicSourceStatus(
+        sourceName: "汽水音乐",
+        availability: .preview,
+        headline: "等待汽水音乐真实数据",
+        detail: "当前不显示假歌曲；主线正在读取汽水音乐本地状态和可发现 IPC。",
+        checkedAt: Date()
+    )
+    weak var host: QishuiMusicAdapterHost?
+    private let automaticRefreshInterval: TimeInterval = 5.0
+    private let playbackPositionRefreshInterval: TimeInterval = 2.0
+
+    func refreshSourceStatus(
+        promptForPermission: Bool = false,
+        allowSynchronousRefresh: Bool = false
+    ) -> MusicSourceStatus {
+        _ = promptForPermission
+        guard qishuiAdapter.isRunning() else {
+            markQishuiNotRunning()
+            return cachedStatus
+        }
+
+        let canRefreshAdapterInBackground = mediaRemoteAdapterStreamSource.hasAdapterResources()
+        if allowSynchronousRefresh, canRefreshAdapterInBackground {
+            schedulePlaybackPositionRefresh()
+        }
+        let adapterSnapshot = mediaRemoteAdapterStreamSource.snapshot()
+
+        if let adapterSnapshot,
+           let track = adapterSnapshot.currentTrack,
+           QishuiPlaybackInstancePolicy.acceptsSnapshot(
+               snapshotProcessIdentifier: track.sourceProcessIdentifier,
+               runningProcessIdentifiers: Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
+           ) {
+            latestMediaRemoteSnapshot = adapterSnapshot
+            lastSourceRefreshAt = adapterSnapshot.checkedAt
+            host?.qishuiScheduleTransitionIdentityReconciliation()
+            let hasVerifiedClientState = mediaRemoteAdapterStreamSource.hasVerifiedQishuiClientState()
+            if hasVerifiedClientState {
+                if !playback.hasPendingOperation {
+                    playback.updateCachedOverride(from: track, checkedAt: adapterSnapshot.checkedAt)
+                }
+                updateMediaRemotePlaybackConfirmation(snapshot: adapterSnapshot)
+            } else if playback.shouldRefreshCachedOverride {
+                playback.noteCachedOverrideRefreshAttempt()
+                host?.qishuiScheduleIdentityRefresh(force: true)
+            }
+            cachedStatus = MusicSourceStatus(
+                sourceName: "汽水实时适配器",
+                availability: hasVerifiedClientState ? .qishuiMediaRemoteSynced : .qishuiMediaRemoteCached,
+                headline: hasVerifiedClientState ? "已接入汽水实时播放" : "保持汽水音乐显示",
+                detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。\(adapterSnapshot.diagnostic)",
+                checkedAt: adapterSnapshot.checkedAt
+            )
+            return cachedStatus
+        }
+
+        guard allowSynchronousRefresh else {
+            lastSourceRefreshAt = Date()
+            return cachedStatus
+        }
+
+        // Startup and explicit position refreshes must not run a helper process on the UI actor.
+        // The stream and the one in-flight detached refresh will publish the authoritative state.
+        if canRefreshAdapterInBackground,
+           adapterSnapshot == nil || adapterSnapshot?.isAvailable == true {
+            lastSourceRefreshAt = Date()
+            return cachedStatus
+        }
+
+        host?.qishuiScheduleIdentityRefresh(force: true)
+        return cachedStatus
+    }
+
+    func applyQishuiDirectSnapshot(
+        _ snapshot: QishuiDirectSnapshot
+    ) -> MusicSourceStatus {
+        let runningIdentifiers = Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
+        if snapshot.isRunning || !runningIdentifiers.isEmpty {
+            guard QishuiPlaybackInstancePolicy.acceptsSnapshot(
+                snapshotProcessIdentifier: snapshot.processIdentifier,
+                runningProcessIdentifiers: runningIdentifiers
+            ) else { return cachedStatus }
+        }
+        let directFingerprint = snapshot.currentTrack.map {
+            MusicUsageTrackFingerprint.make(source: "qishui", title: $0.title, artist: $0.artist)
+        } ?? "none"
+        host?.qishuiUsage.recordDirectIdentityIfChanged(
+            fingerprint: directFingerprint,
+            hasTrack: snapshot.currentTrack != nil,
+            hasProgress: snapshot.currentTrack?.progress != nil
+        )
+        latestQishuiSnapshot = snapshot
+        applyQishuiWindowAvailability(snapshot.windowAvailability)
+        lastSourceRefreshAt = snapshot.checkedAt
+
+        guard snapshot.isRunning else {
+            markQishuiNotRunning(checkedAt: snapshot.checkedAt, reason: "metadata_inventory")
+            return cachedStatus
+        }
+
+        if let track = snapshot.currentTrack {
+            qishuiInference.update(track: track, checkedAt: snapshot.checkedAt)
+            if !playback.hasPendingOperation
+                || updatePendingPlaybackConfirmation(checkedAt: snapshot.checkedAt) {
+                playback.updateCachedOverride(
+                    fromDirect: track,
+                    inferredIsPlaying: qishuiInference.inferredIsPlaying,
+                    mediaSnapshot: latestMediaRemoteSnapshot,
+                    checkedAt: snapshot.checkedAt
+                )
+            }
+            cachedStatus = MusicSourceStatus(
+                sourceName: "汽水直接适配",
+                availability: .qishuiDetectedAXLimited,
+                headline: "已读取汽水实时播放",
+                detail: "\(track.title) - \(track.artist)。来源：\(track.sourceName)。播放态：\(qishuiInference.label(for: track))。",
+                checkedAt: snapshot.checkedAt
+            )
+            return cachedStatus
+        }
+
+        let queueDetail: String
+        if snapshot.queueCacheTrackCount > 0 {
+            let examples = snapshot.queueExamples.prefix(2).joined(separator: "；")
+            queueDetail = "已读到队列缓存 \(snapshot.queueCacheTrackCount) 首\(examples.isEmpty ? "" : "，例如：\(examples)")。"
+        } else {
+            queueDetail = "暂未在本地状态文件中读到可用队列。"
+        }
+
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水直接适配",
+            availability: .qishuiDetectedAXLimited,
+            headline: "汽水音乐已运行",
+            detail: "PID \(snapshot.processIdentifier.map(String.init) ?? "unknown")。\(queueDetail)\(snapshot.diagnostic)",
+            checkedAt: snapshot.checkedAt
+        )
+        return cachedStatus
+    }
+
+    func markQishuiNotRunning(checkedAt: Date = Date(), reason: String = "inventory") {
+        host?.qishuiRecord("source_unavailable", fields: [
+            "source": "qishui", "reason": reason,
+            "had_media": latestMediaRemoteSnapshot?.currentTrack == nil ? "0" : "1",
+            "had_direct": latestQishuiSnapshot?.currentTrack == nil ? "0" : "1"
+        ])
+        controlGeneration += 1
+        host?.qishuiCancelControlAvailabilityScheduling()
+        clearQishuiPlaybackState()
+        latestQishuiControlAvailability = .notRunning
+        lastSourceRefreshAt = checkedAt
+        qishuiAdapter.invalidateAXCache()
+        qishuiSemanticAXController.invalidateCache()
+        mediaRemoteAdapterStreamSource.invalidateQishuiSession()
+        cachedStatus = MusicSourceStatus(
+            sourceName: "汽水音乐",
+            availability: .qishuiNotRunning,
+            headline: "未检测到汽水音乐",
+            detail: "当前不显示播放数据；重新打开汽水音乐后，顶屿会在检测到可信状态时恢复显示。",
+            checkedAt: checkedAt
+        )
+    }
+
+    func clearQishuiPlaybackState() {
+        lastQishuiTransitionIdentityRequested = nil
+        host?.lyricPipeline.invalidate()
+        qishuiLifecycleMetadataTask?.cancel()
+        qishuiLifecycleMetadataTask = nil
+        latestMediaRemoteSnapshot = nil
+        latestQishuiSnapshot = nil
+        lastPlaybackPositionRefreshAt = nil
+        lastTrackControlStartedAt = nil
+        playback.reset(clearTimelineFloor: true)
+        qishuiInference.reset()
+    }
+
+    private func applyQishuiWindowAvailability(
+        _ windowAvailability: QishuiControlAvailability
+    ) {
+        switch windowAvailability {
+        case .available:
+            break
+        case .windowClosed,
+             .controlTreeUnavailable,
+             .accessibilityRequired,
+             .notRunning,
+             .unknown:
+            latestQishuiControlAvailability = windowAvailability
+        }
+    }
+
+    func refreshSourceStatusIfNeeded() -> MusicSourceStatus? {
+        let now = Date()
+        if let lastSourceRefreshAt = lastSourceRefreshAt,
+           now.timeIntervalSince(lastSourceRefreshAt) < automaticRefreshInterval {
+            return nil
+        }
+        return refreshSourceStatus()
+    }
+
+    func shouldRefreshPlaybackPosition(_ state: MusicState) -> Bool {
+        guard state.isPlaying,
+              state.duration != nil,
+              state.elapsedTime != nil else { return false }
+
+        let now = Date()
+        guard lastPlaybackPositionRefreshAt.map({ now.timeIntervalSince($0) >= playbackPositionRefreshInterval }) ?? true else {
+            return false
+        }
+        return true
+    }
+
+    func shouldRefreshCachedPlaybackState() -> Bool {
+        guard cachedStatus.availability == .qishuiMediaRemoteCached else { return false }
+        return playback.cachedOverrideRefreshIsDue
+    }
+
+    func refreshPlaybackPositionStatus() -> MusicSourceStatus {
+        lastPlaybackPositionRefreshAt = Date()
+        schedulePlaybackPositionRefresh()
+        return refreshSourceStatus()
+    }
+
+    func schedulePlaybackPositionRefresh() {
+        guard !playbackPositionRefreshInFlight else { return }
+        playbackPositionRefreshInFlight = true
+        lastPlaybackPositionRefreshAt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
+            _ = self.refreshSourceStatus()
+            self.playbackPositionRefreshInFlight = false
+            self.host?.qishuiPublish()
+        }
+    }
+
+    func qishuiSourceCandidate() -> MusicSourceCandidate {
+        let mediaRemoteTrack = latestMediaRemoteSnapshot?.currentTrack
+        let directTrack = latestQishuiSnapshot?.currentTrack
+        let hasTrack = mediaRemoteTrack != nil || directTrack != nil
+        let isPlaying = mediaRemoteTrack?.isPlaying
+            ?? directTrack?.isPlaying
+            ?? qishuiInference.inferredIsPlaying
+        let playback: MusicSourcePlaybackLevel
+        if isPlaying == true {
+            playback = .playing
+        } else if hasTrack {
+            playback = .paused
+        } else {
+            playback = .unknown
+        }
+        let isRunning = qishuiAdapter.isRunning()
+        return MusicSourceCandidate(
+            source: .qishui,
+            isAvailable: isRunning
+                && (host?.qishuiForegroundSource == .qishui
+                    || cachedStatus.availability != .qishuiNotRunning),
+            hasTrack: hasTrack,
+            playback: playback,
+            isCached: cachedStatus.availability == .qishuiMediaRemoteCached
+        )
+    }
+
+    func applyNowPlayingSnapshot(_ snapshot: NowPlayingAXSnapshot) {
+        switch snapshot.availability {
+        case let .recognized(track):
+            cachedStatus = MusicSourceStatus(
+                sourceName: "macOS 播放中",
+                availability: .systemNowPlayingRecognized,
+                headline: "已完成手动系统诊断",
+                detail: "来自 macOS 控制中心“播放中”面板：\(track.rawLine)。该结果只用于诊断，不作为汽水直接适配主线。",
+                checkedAt: snapshot.checkedAt
+            )
+        case .accessibilityRequired:
+            cachedStatus = MusicSourceStatus(
+                sourceName: "macOS 播放中",
+                availability: .accessibilityRequired,
+                headline: "需要辅助功能权限",
+                detail: "读取系统“播放中”面板需要辅助功能权限。该入口仅用于手动诊断。",
+                checkedAt: snapshot.checkedAt
+            )
+        case .controlCenterUnavailable:
+            cachedStatus = MusicSourceStatus(
+                sourceName: "macOS 播放中",
+                availability: .systemNowPlayingUnavailable,
+                headline: "未找到控制中心",
+                detail: "无法读取系统“播放中”面板；该入口只用于手动诊断，不影响汽水直接适配主线。",
+                checkedAt: snapshot.checkedAt
+            )
+        case .nowPlayingUnavailable:
+            cachedStatus = MusicSourceStatus(
+                sourceName: "macOS 播放中",
+                availability: .systemNowPlayingUnavailable,
+                headline: "系统播放信息不可用",
+                detail: "控制中心当前没有暴露可读取的“播放中”内容；不会用假歌名替代。",
+                checkedAt: snapshot.checkedAt
+            )
+        case let .failed(message):
+            cachedStatus = MusicSourceStatus(
+                sourceName: "macOS 播放中",
+                availability: .systemNowPlayingUnavailable,
+                headline: "系统播放信息读取失败",
+                detail: message,
+                checkedAt: snapshot.checkedAt
+            )
+        }
+    }
+
+    func currentQishuiMusicState() -> MusicState {
+        let runningIdentifiers = Set(QishuiProcessLocator.runningApplications().map(\.processIdentifier))
+        let statusLine = fallbackStatusLine(for: cachedStatus.availability)
+        let controlsAvailable = latestQishuiControlAvailability.allowsControl
+        let controlUnavailableReason = latestQishuiControlAvailability.unavailableReason
+        let controlRecoveryAction = MusicControlRecoveryPolicy.action(
+            sourceBundleIdentifier: QishuiProcessLocator.bundleIdentifier,
+            qishuiAvailability: latestQishuiControlAvailability
+        )
+        if let snapshot = latestMediaRemoteSnapshot, let track = snapshot.currentTrack {
+            let evidence = mediaRemoteAdapterStreamSource.processPlaybackEvidenceStatus(
+                maxAge: QishuiMediaRemoteAdmissionPolicy.maximumPlaybackEvidenceAge,
+                expectedSampleID: snapshot.sampleID,
+                expectedProcessIdentifier: track.sourceProcessIdentifier)
+            let directEvidence = latestQishuiSnapshot?.currentTrack.map {
+                $0.isPlaying != nil || $0.progress != nil
+            } ?? false
+            host?.qishuiUsage.recordAdmissionEvidenceIfChanged(
+                evidence: evidence,
+                directPlayback: directEvidence,
+                origin: String(describing: snapshot.sampleOrigin)
+            )
+        }
+        let directMusicState: (QishuiDirectTrack) -> MusicState = { directTrack in
+            let effectiveIsPlaying = self.playback.pendingTarget(
+                title: directTrack.title,
+                artist: directTrack.artist
+            )
+                ?? directTrack.isPlaying
+                ?? self.qishuiInference.inferredIsPlaying
+                ?? false
+            return MusicState(
+                track: self.realTrack(from: directTrack, statusLine: statusLine),
+                isPlaying: effectiveIsPlaying,
+                progress: directTrack.progress ?? 0,
+                lyricIndex: 0,
+                elapsedTime: nil,
+                duration: nil,
+                canSeek: false,
+                isPlaybackPending: self.playback.hasPendingOperation,
+                canPlayPause: controlsAvailable,
+                canPreviousTrack: controlsAvailable,
+                canNextTrack: controlsAvailable,
+                controlUnavailableReason: controlUnavailableReason,
+                controlRecoveryAction: controlRecoveryAction,
+                hasCurrentTrack: true,
+                playbackStateKnown: self.playback.pendingTarget(
+                    title: directTrack.title,
+                    artist: directTrack.artist
+                ) != nil
+                    || directTrack.isPlaying != nil
+                    || self.qishuiInference.inferredIsPlaying != nil
+            )
+        }
+        if let snapshot = latestMediaRemoteSnapshot,
+           let track = snapshot.currentTrack,
+           QishuiPlaybackInstancePolicy.acceptsSnapshot(
+               snapshotProcessIdentifier: track.sourceProcessIdentifier,
+               runningProcessIdentifiers: runningIdentifiers
+           ),
+           QishuiMediaRemoteAdmissionPolicy.accepts(
+               mediaTitle: track.title,
+               mediaArtist: track.artist,
+               directTitle: latestQishuiSnapshot?.currentTrack?.title,
+               directArtist: latestQishuiSnapshot?.currentTrack?.artist,
+               directCheckedAt: latestQishuiSnapshot?.checkedAt,
+               mediaIdentityObservedAt: snapshot.trackIdentityObservedAt,
+               mediaHasCompleteMetadata: snapshot.isVerifiedQishuiSource
+                   && snapshot.sampleSource == .adapterStream && snapshot.sampleOrigin != .cached
+                   && track.duration.map { $0 > 0 } == true && track.artworkData != nil,
+               directHasPlaybackEvidence: latestQishuiSnapshot?.currentTrack.map {
+                   $0.isPlaying != nil || $0.progress != nil
+               } ?? false,
+               mediaHasFreshProcessPlaybackEvidence: mediaRemoteAdapterStreamSource
+                   .hasFreshProcessPlaybackEvidence(maxAge: QishuiMediaRemoteAdmissionPolicy.maximumPlaybackEvidenceAge,
+                       expectedSampleID: snapshot.sampleID,
+                       expectedProcessIdentifier: track.sourceProcessIdentifier)
+           ) {
+            let isCachedMediaFocus = cachedStatus.availability == .qishuiMediaRemoteCached
+            let liveTrack = playback.liveTrack(
+                from: track,
+                checkedAt: snapshot.checkedAt,
+                allowsTimelineFloorRelease: !isCachedMediaFocus
+                    && snapshot.sampleOrigin != .cached && snapshot.sampleOrigin != .unknown
+            )
+            let effectiveTrack = isCachedMediaFocus
+                ? playback.cachedPlaybackTrack(from: liveTrack)
+                : liveTrack
+            let canGuardedSeek = QishuiSeekSafety.allowsGuardedSeek(
+                hasVerifiedQishuiSource: snapshot.isVerifiedQishuiSource,
+                hasCurrentTrack: true,
+                hasDuration: effectiveTrack.duration.map { $0 > 0 } ?? false,
+                isCached: isCachedMediaFocus
+                    || snapshot.sampleOrigin == .cached,
+                hasCompetingPlayback: host?.qishuiHasCompetingPlayback(excluding: .qishui) ?? true
+            )
+            return MusicState(
+                track: realTrack(from: effectiveTrack, statusLine: statusLine),
+                isPlaying: effectiveTrack.isPlaying ?? false,
+                progress: effectiveTrack.progress,
+                lyricIndex: 0,
+                elapsedTime: effectiveTrack.elapsedTime,
+                duration: effectiveTrack.duration,
+                canSeek: canGuardedSeek,
+                isPlaybackPending: playback.hasPendingOperation,
+                canPlayPause: controlsAvailable,
+                canPreviousTrack: controlsAvailable,
+                canNextTrack: controlsAvailable,
+                controlUnavailableReason: controlUnavailableReason,
+                controlRecoveryAction: controlRecoveryAction,
+                hasCurrentTrack: true,
+                playbackStateKnown: true
+            )
+        }
+
+        if let snapshot = latestQishuiSnapshot,
+           let track = snapshot.currentTrack,
+           QishuiPlaybackInstancePolicy.acceptsSnapshot(
+               snapshotProcessIdentifier: snapshot.processIdentifier,
+               runningProcessIdentifiers: runningIdentifiers
+           ) {
+            return directMusicState(track)
+        }
+
+        let pendingIsPlaying = playback.pendingOperation?.targetIsPlaying ?? false
+        return MusicState(
+            track: placeholderTrack(statusLine: statusLine),
+            isPlaying: pendingIsPlaying,
+            progress: 0,
+            lyricIndex: 0,
+            elapsedTime: nil,
+            duration: nil,
+            canSeek: false,
+            isPlaybackPending: playback.hasPendingOperation,
+            canPlayPause: controlsAvailable,
+            canPreviousTrack: controlsAvailable,
+            canNextTrack: controlsAvailable,
+            controlUnavailableReason: controlUnavailableReason,
+            controlRecoveryAction: controlRecoveryAction,
+            hasCurrentTrack: false
+        )
+    }
+
+    private func realTrack(from track: MediaRemoteNowPlayingTrack, statusLine _: String) -> MusicTrack {
+        let lyricSnapshot = host?.lyricPipeline.lyrics(for: track)
+        var result = MusicTrack(
+            title: track.title,
+            artist: track.artist,
+            palette: [Color(red: 0.10, green: 0.72, blue: 0.58), Color(red: 0.05, green: 0.15, blue: 0.18)],
+            lyrics: lyricSnapshot?.lines ?? [],
+            hasArtwork: track.artworkData != nil,
+            artworkData: track.artworkData,
+            artworkURL: nil,
+            sourceBundleIdentifier: track.sourceBundleIdentifier,
+            lyricsAreDesktopSnapshot: lyricSnapshot?.isDesktopSnapshot ?? false
+        )
+        if host?.lyricPipeline.timedIdentity == lyricSnapshot?.identity,
+           let current = lyricSnapshot?.lines.first {
+            result.timedWords = QishuiTimedLyricParser.words(
+                for: current, at: track.elapsedTime, in: host?.lyricPipeline.timedLines ?? [], trackDuration: track.duration
+            )
+        }
+        return result
+    }
+
+    private func realTrack(from track: QishuiDirectTrack, statusLine _: String) -> MusicTrack {
+        let lyrics = host?.lyricPipeline.lyrics(for: track)
+        let identity = latestQishuiSnapshot?.processIdentifier.map {
+            QishuiLyricIdentity(processIdentifier: $0, title: track.title, artist: track.artist)
+        }
+        let artwork = QishuiArtworkFallbackPolicy.artwork(from: latestMediaRemoteSnapshot, for: identity)
+        return MusicTrack(
+            title: track.title,
+            artist: track.artist,
+            palette: [Color(red: 0.12, green: 0.70, blue: 0.56), Color(red: 0.08, green: 0.16, blue: 0.18)],
+            lyrics: lyrics?.lines ?? [],
+            hasArtwork: artwork != nil || track.artworkURL != nil,
+            artworkData: artwork,
+            artworkURL: track.artworkURL,
+            sourceBundleIdentifier: "com.soda.music",
+            lyricsAreDesktopSnapshot: lyrics?.isDesktopSnapshot ?? false
+        )
+    }
+
+    func placeholderTrack(statusLine _: String) -> MusicTrack {
+        MusicTrack(
+            title: "汽水音乐",
+            artist: "直接适配中",
+            palette: [Color(red: 0.12, green: 0.70, blue: 0.56), Color(red: 0.10, green: 0.32, blue: 0.86)],
+            lyrics: [],
+            hasArtwork: false,
+            artworkData: nil,
+            artworkURL: nil,
+            sourceBundleIdentifier: "com.soda.music"
+        )
+    }
+
+    private func fallbackStatusLine(for availability: MusicSourceAvailability) -> String {
+        switch availability {
+        case .qishuiNotRunning:
+            return "未检测到汽水音乐"
+        case .accessibilityRequired:
+            return "汽水语义控制需要辅助功能权限"
+        case .qishuiMediaRemoteSynced:
+            return latestMediaRemoteSnapshot?.diagnostic ?? "已接入 macOS Now Playing 实时事件源"
+        case .qishuiMediaRemoteCached:
+            return latestMediaRemoteSnapshot?.diagnostic ?? "已保持最近一次汽水音乐状态"
+        case .qishuiDetectedAXLimited:
+            return latestQishuiSnapshot?.diagnostic ?? "等待汽水直接适配"
+        case .systemNowPlayingRecognized:
+            return "来自手动系统诊断，不作为自动同步源"
+        case .systemNowPlayingUnavailable:
+            return "手动系统诊断暂不可读"
+        case .qishuiControlSent:
+            return "已触发汽水语义控制，等待真实状态回读"
+        case .neteaseMusicSynced:
+            return "已接入网易云音乐专属状态"
+        case .neteaseMusicControlSent:
+            return "已向网易云音乐当前 PID 发送语义控制"
+        case .appleMusicSynced:
+            return "已接入 Apple Music"
+        case .appleMusicControlSent:
+            return "已向 Apple Music 发送控制"
+        case .appleMusicPermissionRequired:
+            return "Apple Music 需要自动化权限"
+        case .preview:
+            return "等待汽水音乐真实数据"
+        }
+    }
+
+    private func updatePendingPlaybackConfirmation(checkedAt: Date) -> Bool {
+        let directTrack = latestQishuiSnapshot?.currentTrack.map {
+            PlaybackTrackIdentity(title: $0.title, artist: $0.artist)
+        }
+        guard let confirmed = playback.confirmFromInferredPlayback(
+            directTrack: directTrack,
+            inferredIsPlaying: qishuiInference.inferredIsPlaying,
+            checkedAt: checkedAt
+        ) else { return false }
+        recordPlaybackConfirmed(confirmed, evidence: "ax_progress", confirmedAt: checkedAt)
+        return true
+    }
+
+    private func updateMediaRemotePlaybackConfirmation(snapshot: MediaRemoteNowPlayingSnapshot) {
+        guard let confirmed = playback.confirmFromMediaRemote(snapshot: snapshot) else { return }
+        recordPlaybackConfirmed(confirmed, evidence: "mediaremote", confirmedAt: snapshot.checkedAt)
+    }
+
+    @discardableResult
+    func beginPendingPlaybackOperation(requestedState: MusicState) -> Int {
+        playback.begin(
+            requestedState: requestedState,
+            baselineSampleID: latestMediaRemoteSnapshot?.sampleID ?? 0,
+            baselineSampleSource: latestMediaRemoteSnapshot?.sampleSource ?? .unknown
+        )
+    }
+
+    func schedulePendingPlaybackConfirmationTimeout(id: Int) {
+        playback.scheduleConfirmationTimeout(id: id) { [weak self] id in
+            self?.expirePendingPlaybackOperation(id: id)
+        }
+    }
+
+    private func recordPlaybackConfirmed(
+        _ operation: PendingPlaybackOperation,
+        evidence: String,
+        confirmedAt: Date
+    ) {
+        host?.qishuiRecord("playback_confirmed", fields: [
+            "evidence": evidence,
+            "latency_ms": String(max(
+                Int(confirmedAt.timeIntervalSince(operation.issuedAt) * 1_000),
+                0
+            )),
+            "source": "qishui",
+            "target_playback": operation.targetIsPlaying ? "playing" : "paused"
+        ])
+    }
+
+    private func expirePendingPlaybackOperation(id: Int) {
+        if let operation = playback.pendingOperation,
+           operation.id == id {
+            host?.qishuiRecord("playback_confirmation_timeout", fields: [
+                "latency_ms": String(max(
+                    Int(Date().timeIntervalSince(operation.issuedAt) * 1_000),
+                    0
+                )),
+                "source": "qishui",
+                "target_playback": operation.targetIsPlaying ? "playing" : "paused"
+            ])
+        }
+        let timeoutStatus = MusicSourceStatus(
+            sourceName: "汽水音乐",
+            availability: .qishuiMediaRemoteCached,
+            headline: "播放状态确认超时",
+            detail: "未收到匹配的汽水状态回读，已恢复请求前的可信播放状态。",
+            checkedAt: Date()
+        )
+        rollbackPendingPlaybackOperation(id: id, status: timeoutStatus)
+    }
+
+    func rollbackPendingPlaybackOperation(
+        id: Int,
+        status: MusicSourceStatus
+    ) {
+        guard playback.rollback(id: id) else { return }
+        cachedStatus = status
+        host?.qishuiPublish()
+    }
 }
