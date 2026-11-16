@@ -251,11 +251,6 @@ struct MusicControlOutcome: Equatable {
     }
 }
 
-private struct ControlDispatchResult {
-    let didPress: Bool
-    let diagnostic: String
-}
-
 enum AppleMusicRefreshPolicy {
     static func interval(
         isSelected: Bool,
@@ -764,161 +759,11 @@ final class MusicAdapterCoordinator {
         if binding.source == .neteaseMusic {
             return await performNeteaseMusicControl(command)
         }
-        let canAttemptControl = qishui.runningQishuiApplication() != nil
-        guard canAttemptControl else {
-            qishui.markQishuiNotRunning()
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-        }
-
-        let now = Date()
-        let followsRecentTrackControl = command == .playPause
-            && qishui.lastTrackControlStartedAt.map { now.timeIntervalSince($0) < 1.0 } == true
-        qishui.controlGeneration += 1
-        let controlAttemptGeneration = qishui.controlGeneration
-        if command != .playPause {
-            qishui.lastTrackControlStartedAt = now
-        }
-        if followsRecentTrackControl {
-            guard await synchronizeAfterQueuedTrackControl(
-                generation: controlAttemptGeneration
-            ) else {
-                return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-            }
-            guard authorization.isValid(for: selectedMusicSelection()) else {
-                return staleDisplayedSourceOutcome(
-                    command: command,
-                    binding: binding,
-                    selectedSource: musicSourceSelector.selection.source
-                )
-            }
-        }
-
-        let targetProcessIdentifier = qishui.runningQishuiApplication()?.processIdentifier
-        guard let targetProcessIdentifier else {
-            qishui.markQishuiNotRunning()
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-        }
-
-        let controlAvailability: QishuiControlAvailability
-        if qishui.latestQishuiControlAvailability.requiresPreflightBeforeControl {
-            controlAvailability = await qishui.probeQishuiControlAvailability(
-                processIdentifier: targetProcessIdentifier
-            )
-            qishui.latestQishuiControlAvailability = controlAvailability
-        } else {
-            controlAvailability = qishui.latestQishuiControlAvailability
-        }
-        guard controlAttemptGeneration == qishui.controlGeneration else {
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-        }
-        guard authorization.isValid(for: selectedMusicSelection()) else {
-            return staleDisplayedSourceOutcome(
-                command: command,
-                binding: binding,
-                selectedSource: musicSourceSelector.selection.source
-            )
-        }
-        // A previous availability probe can legitimately be stale: Qishui may
-        // have been minimized when the probe ran and expose its full AX tree
-        // again after returning to the foreground.  Do not let that cached
-        // `controlTreeUnavailable` result prevent the semantic controller from
-        // performing its own PID-bound, unique-control discovery.  The
-        // controller remains the final safety gate and rejects ambiguous or
-        // missing controls without sending a command.
-        let canAttemptSemanticControl: Bool
-        switch controlAvailability {
-        case .available, .controlTreeUnavailable, .unknown:
-            canAttemptSemanticControl = true
-        case .windowClosed, .accessibilityRequired, .notRunning:
-            canAttemptSemanticControl = false
-        }
-        guard canAttemptSemanticControl else {
-            qishui.cachedStatus = MusicSourceStatus(
-                sourceName: "汽水音乐",
-                availability: controlAvailability == .accessibilityRequired
-                    ? .accessibilityRequired
-                    : .qishuiMediaRemoteCached,
-                headline: "当前无法执行\(command.label)",
-                detail: controlAvailability.unavailableReason
-                    ?? "汽水播放控件当前不可用。",
-                checkedAt: Date()
-            )
-            publishCurrentState()
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-        }
-
-        _ = refreshSourceStatus()
-        if command != .playPause {
-            qishui.playback.reset(clearTimelineFloor: true)
-        }
-        let requestedState = qishui.currentQishuiMusicState()
-        let playbackOperationID: Int?
-        if command == .playPause {
-            playbackOperationID = qishui.beginPendingPlaybackOperation(
-                requestedState: requestedState
-            )
-            qishui.cachedStatus = MusicSourceStatus(
-                sourceName: "汽水音乐",
-                availability: .qishuiControlSent,
-                headline: "正在执行\(command.label)",
-                detail: "已立即切换本地播放状态，等待汽水状态回读确认。",
-                checkedAt: Date()
-            )
-            publishCurrentState()
-        } else {
-            playbackOperationID = nil
-        }
-        let controlResult = await sendControl(
+        return await qishui.performQishuiControl(
             command,
-            generation: controlAttemptGeneration,
-            processIdentifier: targetProcessIdentifier
+            binding: binding,
+            authorization: authorization
         )
-        guard controlAttemptGeneration == qishui.controlGeneration else {
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: false)
-        }
-        let didPost = controlResult.didPress
-        if !didPost {
-            qishui.latestQishuiControlAvailability = .controlTreeUnavailable
-            qishui.scheduleQishuiControlAvailabilityRefresh()
-        }
-
-        if let playbackOperationID {
-            if didPost {
-                if qishui.playback.isCurrent(playbackOperationID) {
-                    qishui.schedulePendingPlaybackConfirmationTimeout(id: playbackOperationID)
-                }
-                qishui.cachedStatus = MusicSourceStatus(
-                    sourceName: "汽水音乐",
-                    availability: .qishuiControlSent,
-                    headline: "已执行\(command.label)",
-                    detail: controlResult.diagnostic,
-                    checkedAt: Date()
-                )
-                publishCurrentState()
-            } else {
-                let failureStatus = MusicSourceStatus(
-                    sourceName: "汽水音乐",
-                    availability: .qishuiMediaRemoteCached,
-                    headline: "未执行\(command.label)",
-                    detail: controlResult.diagnostic,
-                    checkedAt: Date()
-                )
-                qishui.rollbackPendingPlaybackOperation(id: playbackOperationID, status: failureStatus)
-            }
-            return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: didPost)
-        }
-
-        if !didPost {
-            qishui.playback.reset(clearTimelineFloor: false)
-        }
-        qishui.cachedStatus = MusicSourceStatus(
-            sourceName: "汽水音乐",
-            availability: didPost ? .qishuiControlSent : .qishuiMediaRemoteCached,
-            headline: didPost ? "已执行\(command.label)" : "未执行\(command.label)",
-            detail: controlResult.diagnostic,
-            checkedAt: Date()
-        )
-        return MusicControlOutcome(status: qishui.cachedStatus, didSendCommand: didPost)
     }
 
     private func performAppleMusicControl(
@@ -1166,93 +1011,6 @@ final class MusicAdapterCoordinator {
         )
     }
 
-    private func sendControl(
-        _ command: MusicControlCommand,
-        generation: Int,
-        processIdentifier: pid_t
-    ) async -> ControlDispatchResult {
-        guard generation == qishui.controlGeneration else {
-            return ControlDispatchResult(
-                didPress: false,
-                diagnostic: "旧控制操作已失效，未触发汽水语义控件。"
-            )
-        }
-        let semanticResult = await pressSemanticControl(
-            command,
-            processIdentifier: processIdentifier
-        )
-        guard generation == qishui.controlGeneration else {
-            return ControlDispatchResult(
-                didPress: false,
-                diagnostic: "旧控制操作已失效，忽略其执行结果。"
-            )
-        }
-        return ControlDispatchResult(
-            didPress: semanticResult.didPress,
-            diagnostic: semanticResult.diagnostic
-        )
-    }
-
-    private func pressSemanticControl(
-        _ command: MusicControlCommand,
-        processIdentifier: pid_t
-    ) async -> QishuiSemanticAXControlResult {
-        let semanticController = qishui.qishuiSemanticAXController
-        let queuedAt = Date()
-        let measured: (QishuiSemanticAXControlResult, Int, Int) = await withCheckedContinuation { continuation in
-            qishui.qishuiWorkQueues.controls.async {
-                let startedAt = Date()
-                let result = semanticController.press(
-                    command,
-                    processIdentifier: processIdentifier
-                )
-                continuation.resume(returning: (result,
-                    max(0, Int(startedAt.timeIntervalSince(queuedAt) * 1_000)),
-                    max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))))
-            }
-        }
-        recordUsage("control_dispatch", fields: [
-            "command": Self.commandLabel(command),
-            "source": "qishui",
-            "queue_wait_ms": String(measured.1),
-            "press_ms": String(measured.2),
-            "dispatch_path": measured.0.dispatchPath ?? "not_sent"
-        ])
-        return measured.0
-    }
-
-    private func synchronizeAfterQueuedTrackControl(
-        generation: Int
-    ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            qishui.qishuiWorkQueues.controls.async {
-                continuation.resume()
-            }
-        }
-        guard generation == qishui.controlGeneration,
-              !Task.isCancelled else { return false }
-        do {
-            try await Task.sleep(nanoseconds: 120_000_000)
-        } catch {
-            return false
-        }
-        guard generation == qishui.controlGeneration else { return false }
-        while qishui.playbackPositionRefreshInFlight {
-            guard generation == qishui.controlGeneration,
-                  !Task.isCancelled else { return false }
-            do {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            } catch {
-                return false
-            }
-        }
-        guard generation == qishui.controlGeneration else { return false }
-        qishui.playbackPositionRefreshInFlight = true
-        _ = await qishui.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-        qishui.playbackPositionRefreshInFlight = false
-        return generation == qishui.controlGeneration
-    }
-
     func tick(_ state: MusicState) -> (music: MusicState, sourceStatus: MusicSourceStatus?) {
         qishui.scheduleQishuiIdentityRefresh()
         qishuiLyrics.scheduleRefresh()
@@ -1446,81 +1204,12 @@ final class MusicAdapterCoordinator {
             return (neteaseMusicState(), SeekCoordinator.Status.neteaseUnsupported())
         }
 
-        let refreshedSnapshot = await qishui.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-        if let status = SeekCoordinator.trackChangeRejection(
-            displayed: qishui.latestMediaRemoteSnapshot?.currentTrack,
-            refreshed: refreshedSnapshot?.currentTrack
-        ) {
-            return (qishui.currentQishuiMusicState(), status)
-        }
-        if let refreshedSnapshot, refreshedSnapshot.isVerifiedQishuiSource {
-            qishui.latestMediaRemoteSnapshot = refreshedSnapshot
-        }
-        let track: MediaRemoteNowPlayingTrack
-        let duration: TimeInterval
-        let targetProgress: Double
-        let targetElapsed: TimeInterval
-        switch SeekCoordinator.qishuiAdmission(
-            progress: progress,
-            snapshot: qishui.latestMediaRemoteSnapshot,
-            refreshFailedWhileCached: refreshedSnapshot == nil
-                && qishui.cachedStatus.availability == .qishuiMediaRemoteCached,
-            hasCompetingPlayback: { hasCompetingMusicPlayback(excluding: .qishui) }
-        ) {
-        case let .rejected(status):
-            return (qishui.currentQishuiMusicState(), status)
-        case let .admitted(admittedTrack, admittedDuration, admittedProgress, admittedElapsed):
-            track = admittedTrack
-            duration = admittedDuration
-            targetProgress = admittedProgress
-            targetElapsed = admittedElapsed
-        }
-
-        guard authorization.isValid(for: selectedMusicSelection()) else {
-            return (selectedMusicState(), SeekCoordinator.Status.sourceSwitchedBeforeSend())
-        }
-
-        let seekControlGeneration = qishui.controlGeneration
-        let didSeek = await qishui.mediaRemoteAdapterStreamSource.seek(
-            to: targetElapsed,
-            coalescingDelayNanoseconds: interaction.coalescingDelayNanoseconds
+        return await qishui.performQishuiSeek(
+            to: progress,
+            interaction: interaction,
+            authorization: authorization,
+            seekGeneration: seekGeneration
         )
-        guard authorization.isValid(for: selectedMusicSelection()) else {
-            return (selectedMusicState(), SeekCoordinator.Status.sourceSwitchedBeforeResult())
-        }
-        let status = SeekCoordinator.Status.qishuiSent(didSeek)
-        guard didSeek else {
-            return (qishui.currentQishuiMusicState(), status)
-        }
-
-        qishui.playback.reset(clearTimelineFloor: true)
-        var optimisticMusic = qishui.currentQishuiMusicState()
-        optimisticMusic.progress = targetProgress
-        optimisticMusic.elapsedTime = targetElapsed
-        optimisticMusic.duration = duration
-        qishui.cachedStatus = status
-        if let processIdentifier = track.sourceProcessIdentifier {
-            seeks.scheduleResumeIfPaused(
-                identity: .init(processIdentifier: processIdentifier, title: track.title, artist: track.artist),
-                generation: seekGeneration,
-                isStillValid: { [weak self] in
-                    guard let self else { return false }
-                    return self.isRealtimeObservationRunning
-                        && self.qishui.controlGeneration == seekControlGeneration
-                        && self.selectedMusicSource() == .qishui
-                },
-                refresh: { [weak self] in
-                    await self?.qishui.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-                },
-                startPlayback: { [weak self] processIdentifier in
-                    guard let self else { return }
-                    let result = await self.pressSemanticControl(.playPause, processIdentifier: processIdentifier)
-                    self.recordUsage("seek_start_playback", fields: ["outcome": result.didPress ? "sent" : "unavailable"])
-                    self.qishui.schedulePlaybackPositionRefresh()
-                }
-            )
-        }
-        return (optimisticMusic, status)
     }
 
     private func seekAppleMusic(
@@ -1633,15 +1322,7 @@ final class MusicAdapterCoordinator {
             }
             return (selectedMusicState(), selectedMusicStatus())
         }
-        if (forcePositionRefresh
-            || qishui.playback.hasPendingOperation
-            || qishui.mediaRemoteAdapterStreamSource.hasPendingSeekTimeline()),
-           !qishui.playbackPositionRefreshInFlight {
-            qishui.playbackPositionRefreshInFlight = true
-            _ = await qishui.mediaRemoteAdapterStreamSource.refreshPlaybackPositionAsync()
-            qishui.playbackPositionRefreshInFlight = false
-        }
-        _ = refreshSourceStatus()
+        await qishui.refreshQishuiControlFollowUp(forcePositionRefresh: forcePositionRefresh)
         return (selectedMusicState(), selectedMusicStatus())
     }
 
@@ -2345,7 +2026,7 @@ final class MusicAdapterCoordinator {
         selectedMusicSelection().source
     }
 
-    nonisolated private static func commandLabel(_ command: MusicControlCommand) -> String {
+    nonisolated static func commandLabel(_ command: MusicControlCommand) -> String {
         switch command {
         case .playPause:
             return "play_pause"
@@ -2875,5 +2556,23 @@ extension MusicAdapterCoordinator: QishuiMusicAdapterHost {
 
     func qishuiSelectedSource() -> MusicSourceID? {
         selectedMusicSource()
+    }
+
+    var qishuiSelectorSource: MusicSourceID? { musicSourceSelector.selection.source }
+
+    func qishuiControlSelection() -> MusicSourceSelection {
+        selectedMusicSelection()
+    }
+
+    func qishuiSelectedMusicState() -> MusicState {
+        selectedMusicState()
+    }
+
+    func qishuiStaleDisplayedSourceOutcome(
+        command: MusicControlCommand,
+        binding: DisplayedMusicControlBinding,
+        selectedSource: MusicSourceID?
+    ) -> MusicControlOutcome {
+        staleDisplayedSourceOutcome(command: command, binding: binding, selectedSource: selectedSource)
     }
 }

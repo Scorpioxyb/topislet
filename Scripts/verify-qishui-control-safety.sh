@@ -44,7 +44,9 @@ if ! grep -qF 'QishuiSeekSafety.allowsGuardedSeek(' "$SEEK_COORDINATOR"; then
   echo "error: SeekCoordinator admission no longer checks QishuiSeekSafety.allowsGuardedSeek" >&2
   exit 1
 fi
-if ! grep -qF 'SeekCoordinator.qishuiAdmission(' "$MEDIA_ADAPTER"; then
+# The Qishui seek path moved to QishuiMusicAdapter (coordinator split step 4.7).
+QISHUI_ADAPTER="$ROOT/Sources/MacBookIsland/QishuiMusicAdapter.swift"
+if ! grep -qF 'SeekCoordinator.qishuiAdmission(' "$QISHUI_ADAPTER"; then
   echo "error: the Qishui seek path no longer goes through SeekCoordinator.qishuiAdmission" >&2
   exit 1
 fi
