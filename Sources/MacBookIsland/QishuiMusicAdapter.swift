@@ -19,8 +19,6 @@ protocol QishuiMusicAdapterHost: AnyObject {
     /// Has side effects (selector update, `source_change`, seek invalidation):
     /// call it exactly where the coordinator did.
     func qishuiSelectedSource() -> MusicSourceID?
-    func qishuiScheduleControlAvailabilityRefresh()
-    func qishuiCancelControlAvailabilityScheduling()
 }
 
 /// Qishui (汽水音乐) state, status ingestion and state building, owned apart from the coordinator.
@@ -206,7 +204,7 @@ final class QishuiMusicAdapter {
             "had_direct": latestQishuiSnapshot?.currentTrack == nil ? "0" : "1"
         ])
         controlGeneration += 1
-        host?.qishuiCancelControlAvailabilityScheduling()
+        cancelQishuiControlAvailabilityScheduling()
         clearQishuiPlaybackState()
         latestQishuiControlAvailability = .notRunning
         lastSourceRefreshAt = checkedAt
@@ -683,14 +681,14 @@ final class QishuiMusicAdapter {
     /// position, before the 250ms wait.
     func resetForQishuiLaunch() {
         controlGeneration += 1
-        host?.qishuiCancelControlAvailabilityScheduling()
+        cancelQishuiControlAvailabilityScheduling()
         latestQishuiControlAvailability = .unknown
         clearQishuiPlaybackState()
         lastSourceRefreshAt = nil
         qishuiAdapter.invalidateAXCache()
         qishuiSemanticAXController.invalidateCache()
         mediaRemoteAdapterStreamSource.rebindAfterQishuiRelaunch()
-        host?.qishuiScheduleControlAvailabilityRefresh()
+        scheduleQishuiControlAvailabilityRefresh()
         scheduleQishuiLifecycleMetadataRefresh()
     }
 
@@ -839,5 +837,202 @@ final class QishuiMusicAdapter {
               track.sourceBundleIdentifier == QishuiProcessLocator.bundleIdentifier,
               let processIdentifier = track.sourceProcessIdentifier else { return nil }
         return .init(processIdentifier: processIdentifier, title: track.title, artist: track.artist)
+    }
+
+    // MARK: Control availability and health check (coordinator split step 4.6)
+
+    /// Periodic health check, called from the coordinator's `tick` at the original position.
+    func scheduleControlHealthCheckIfNeeded() {
+        if host?.qishuiIsObserving == true,
+           latestQishuiControlAvailability == .available,
+           !qishuiControlAvailabilityRefreshInFlight,
+           QishuiProcessLocator.isRunning(),
+           MusicControlRecoveryPolicy.needsHealthCheck(
+               lastCheck: lastQishuiControlHealthCheckAt, now: Date()
+           ) {
+            scheduleQishuiControlAvailabilityRefresh()
+        }
+    }
+
+    func resetQishuiControlVerificationForRecovery() {
+        cancelQishuiControlAvailabilityScheduling()
+        latestQishuiControlAvailability = .unknown
+        qishuiAdapter.invalidateAXCache()
+        qishuiSemanticAXController.invalidateCache()
+    }
+
+    func verifyQishuiControlsAfterRecovery() async {
+        // Recovery resets cancel the ordinary retry loop. Metadata refreshes
+        // cannot substitute for a completed semantic control probe.
+        cancelQishuiControlAvailabilityScheduling()
+        let generation = qishuiControlAvailabilityGeneration
+        guard let processIdentifier = runningQishuiApplication()?.processIdentifier else {
+            latestQishuiControlAvailability = .notRunning
+            host?.qishuiPublish()
+            return
+        }
+        let availability = await probeQishuiControlAvailability(
+            processIdentifier: processIdentifier
+        )
+        let queues = qishuiWorkQueues
+        let snapshot = await withCheckedContinuation { continuation in
+            queues.metadata.async {
+                continuation.resume(returning: queues.metadataSnapshot())
+            }
+        }
+        guard MusicControlRecoveryPolicy.acceptsVerification(
+            requestedGeneration: generation,
+            currentGeneration: qishuiControlAvailabilityGeneration,
+            requestedProcess: processIdentifier,
+            currentProcess: runningQishuiApplication()?.processIdentifier,
+            isCancelled: Task.isCancelled
+        ), snapshot.processIdentifier == processIdentifier else { return }
+        _ = applyQishuiDirectSnapshot(snapshot)
+        latestQishuiControlAvailability = availability
+        lastQishuiControlHealthCheckAt = Date()
+        host?.qishuiPublish()
+        if availability != .available {
+            scheduleQishuiControlAvailabilityRetry()
+        }
+    }
+
+    func probeQishuiControlAvailability(
+        processIdentifier: pid_t
+    ) async -> QishuiControlAvailability {
+        let semanticController = qishuiSemanticAXController
+        return await withCheckedContinuation { continuation in
+            qishuiWorkQueues.controls.async {
+                continuation.resume(returning:
+                    semanticController.controlAvailability(
+                        processIdentifier: processIdentifier
+                    )
+                )
+            }
+        }
+    }
+
+    func runningQishuiApplication() -> NSRunningApplication? {
+        let runningApplications = QishuiProcessLocator.runningApplications()
+        let runningProcessIdentifiers = Set(
+            runningApplications.map(\.processIdentifier)
+        )
+        let verifiedMediaRemoteProcessIdentifier: pid_t?
+        if latestMediaRemoteSnapshot?.isVerifiedQishuiSource == true {
+            verifiedMediaRemoteProcessIdentifier = latestMediaRemoteSnapshot?
+                .currentTrack?
+                .sourceProcessIdentifier
+        } else {
+            verifiedMediaRemoteProcessIdentifier = nil
+        }
+        let preferredProcessIdentifier = QishuiProcessSelectionPolicy
+            .preferredProcessIdentifier(
+                verifiedMediaRemoteProcessIdentifier: verifiedMediaRemoteProcessIdentifier,
+                directSnapshotProcessIdentifier: latestQishuiSnapshot?.processIdentifier,
+                runningProcessIdentifiers: runningProcessIdentifiers
+            )
+        if let preferredProcessIdentifier {
+            return runningApplications.first {
+                $0.processIdentifier == preferredProcessIdentifier
+            }
+        }
+        guard runningApplications.count == 1 else { return nil }
+        return runningApplications.first
+    }
+
+    func scheduleQishuiControlAvailabilityRefresh(
+        cancelPendingRetry: Bool = true
+    ) {
+        if cancelPendingRetry {
+            qishuiControlAvailabilityRetryTask?.cancel()
+            qishuiControlAvailabilityRetryTask = nil
+        }
+        guard !qishuiControlAvailabilityRefreshInFlight else {
+            qishuiControlAvailabilityRefreshQueued = true
+            return
+        }
+        qishuiControlAvailabilityGeneration &+= 1
+        let generation = qishuiControlAvailabilityGeneration
+        guard let processIdentifier = runningQishuiApplication()?.processIdentifier else {
+            qishuiControlAvailabilityRefreshQueued = false
+            qishuiControlAvailabilityRetryAttempt = 0
+            guard latestQishuiControlAvailability != .notRunning else { return }
+            latestQishuiControlAvailability = .notRunning
+            host?.qishuiPublish()
+            return
+        }
+
+        qishuiControlAvailabilityRefreshInFlight = true
+        lastQishuiControlHealthCheckAt = Date()
+        let semanticController = qishuiSemanticAXController
+        qishuiWorkQueues.controls.async { [self] in
+            let availability = semanticController.controlAvailability(
+                processIdentifier: processIdentifier
+            )
+            Task { @MainActor [weak self] in
+                guard let self,
+                      generation == self.qishuiControlAvailabilityGeneration else {
+                    return
+                }
+                self.qishuiControlAvailabilityRefreshInFlight = false
+                let runningIdentifiers = Set(QishuiProcessLocator.runningApplications()
+                    .map(\.processIdentifier))
+                switch QishuiControlProbeCompletionPolicy.resolution(
+                    requestedProcessIdentifier: processIdentifier,
+                    runningProcessIdentifiers: runningIdentifiers
+                ) {
+                case .accept:
+                    break
+                case .discardAndRefresh:
+                    // A retired probe cannot tear down the replacement's
+                    // metadata/lyrics/position stream. Rebind this one probe.
+                    self.scheduleQishuiControlAvailabilityRefresh()
+                    return
+                case .sourceExited:
+                    self.markQishuiNotRunning(reason: "control_probe_inventory_empty")
+                    return
+                }
+                if availability != self.latestQishuiControlAvailability {
+                    self.latestQishuiControlAvailability = availability
+                    self.host?.qishuiPublish()
+                }
+                if self.qishuiControlAvailabilityRefreshQueued {
+                    self.qishuiControlAvailabilityRefreshQueued = false
+                    self.scheduleQishuiControlAvailabilityRefresh()
+                    return
+                }
+                if availability == .available {
+                    self.qishuiControlAvailabilityRetryAttempt = 0
+                } else {
+                    self.scheduleQishuiControlAvailabilityRetry()
+                }
+            }
+        }
+    }
+
+    private func scheduleQishuiControlAvailabilityRetry() {
+        qishuiControlAvailabilityRetryTask?.cancel()
+        let attempt = qishuiControlAvailabilityRetryAttempt
+        let delay = min(3.0 * pow(2.0, Double(attempt)), 12.0)
+        qishuiControlAvailabilityRetryAttempt = min(attempt + 1, 2)
+        qishuiControlAvailabilityRetryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.qishuiControlAvailabilityRetryTask = nil
+            self.scheduleQishuiControlAvailabilityRefresh(cancelPendingRetry: false)
+        }
+    }
+
+    func cancelQishuiControlAvailabilityScheduling() {
+        lastQishuiControlHealthCheckAt = nil
+        qishuiControlAvailabilityGeneration &+= 1
+        qishuiControlAvailabilityRefreshInFlight = false
+        qishuiControlAvailabilityRefreshQueued = false
+        qishuiControlAvailabilityRetryAttempt = 0
+        qishuiControlAvailabilityRetryTask?.cancel()
+        qishuiControlAvailabilityRetryTask = nil
     }
 }
