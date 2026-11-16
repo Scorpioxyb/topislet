@@ -10,11 +10,16 @@ protocol QishuiMusicAdapterHost: AnyObject {
     var qishuiForegroundSource: MusicSourceID? { get }
     var qishuiUsage: MusicUsageEmitter { get }
     var lyricPipeline: QishuiLyricPipeline { get }
+    /// Realtime observation is running.
+    var qishuiIsObserving: Bool { get }
+    var qishuiSeeks: SeekCoordinator { get }
     func qishuiHasCompetingPlayback(excluding source: MusicSourceID) -> Bool
     func qishuiPublish()
     func qishuiRecord(_ name: String, fields: [String: String])
-    func qishuiScheduleTransitionIdentityReconciliation()
-    func qishuiScheduleIdentityRefresh(force: Bool)
+    /// Has side effects (selector update, `source_change`, seek invalidation):
+    /// call it exactly where the coordinator did.
+    func qishuiSelectedSource() -> MusicSourceID?
+    func qishuiScheduleControlAvailabilityRefresh()
     func qishuiCancelControlAvailabilityScheduling()
 }
 
@@ -90,7 +95,7 @@ final class QishuiMusicAdapter {
            ) {
             latestMediaRemoteSnapshot = adapterSnapshot
             lastSourceRefreshAt = adapterSnapshot.checkedAt
-            host?.qishuiScheduleTransitionIdentityReconciliation()
+            scheduleQishuiTransitionIdentityReconciliation()
             let hasVerifiedClientState = mediaRemoteAdapterStreamSource.hasVerifiedQishuiClientState()
             if hasVerifiedClientState {
                 if !playback.hasPendingOperation {
@@ -99,7 +104,7 @@ final class QishuiMusicAdapter {
                 updateMediaRemotePlaybackConfirmation(snapshot: adapterSnapshot)
             } else if playback.shouldRefreshCachedOverride {
                 playback.noteCachedOverrideRefreshAttempt()
-                host?.qishuiScheduleIdentityRefresh(force: true)
+                scheduleQishuiIdentityRefresh(force: true)
             }
             cachedStatus = MusicSourceStatus(
                 sourceName: "汽水实时适配器",
@@ -124,7 +129,7 @@ final class QishuiMusicAdapter {
             return cachedStatus
         }
 
-        host?.qishuiScheduleIdentityRefresh(force: true)
+        scheduleQishuiIdentityRefresh(force: true)
         return cachedStatus
     }
 
@@ -670,5 +675,169 @@ final class QishuiMusicAdapter {
         guard playback.rollback(id: id) else { return }
         cachedStatus = status
         host?.qishuiPublish()
+    }
+
+    // MARK: Identity refresh and lifecycle (coordinator split step 4.5)
+
+    /// Qishui part of the coordinator's launch observer, called at the original
+    /// position, before the 250ms wait.
+    func resetForQishuiLaunch() {
+        controlGeneration += 1
+        host?.qishuiCancelControlAvailabilityScheduling()
+        latestQishuiControlAvailability = .unknown
+        clearQishuiPlaybackState()
+        lastSourceRefreshAt = nil
+        qishuiAdapter.invalidateAXCache()
+        qishuiSemanticAXController.invalidateCache()
+        mediaRemoteAdapterStreamSource.rebindAfterQishuiRelaunch()
+        host?.qishuiScheduleControlAvailabilityRefresh()
+        scheduleQishuiLifecycleMetadataRefresh()
+    }
+
+    func refreshForegroundQishuiState() async {
+        guard host?.qishuiForegroundSource == .qishui,
+              let processIdentifier = QishuiProcessLocator.application()?.processIdentifier else { return }
+        _ = await refreshQishuiAXMetadata(processIdentifier: processIdentifier)
+    }
+
+    func scheduleQishuiLifecycleMetadataRefresh() {
+        qishuiLifecycleMetadataTask?.cancel()
+        guard let processIdentifier = QishuiProcessLocator.application()?.processIdentifier else {
+            qishuiLifecycleMetadataTask = nil
+            return
+        }
+        qishuiLifecycleMetadataTask = Task { @MainActor [weak self] in
+            // Only bootstrap a new observation/instance; no periodic metadata polling.
+            for delay: UInt64 in [0, 350_000_000, 400_000_000, 500_000_000,
+                                   650_000_000, 900_000_000, 1_200_000_000] {
+                if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+                guard !Task.isCancelled, let self, self.host?.qishuiIsObserving == true,
+                      QishuiProcessLocator.isRunning(processIdentifier: processIdentifier) else { return }
+                if await self.refreshQishuiAXMetadata(processIdentifier: processIdentifier) { return }
+                // A newly launched Electron process can report zero windows before
+                // its main window is created. Exhaust the bounded read-only retries
+                // in that case; observing a closed window never reveals it.
+                if self.latestQishuiSnapshot?.windowAvailability == .accessibilityRequired { return }
+            }
+        }
+    }
+
+    private func refreshQishuiAXMetadata(processIdentifier: pid_t) async -> Bool {
+        _ = refreshSourceStatus()
+        let controller = qishuiSemanticAXController
+        // AX exposes recommendation cards alongside the playback card. When
+        // MediaRemote already has a verified Qishui identity, constrain the
+        // AX scan to that identity so a recommendation cannot replace the
+        // actual playing song.
+        let expectedTitle = latestMediaRemoteSnapshot?.currentTrack?.title
+        let expectedArtist = latestMediaRemoteSnapshot?.currentTrack?.artist
+        let requestedIdentity = qishuiMediaIdentity()
+        let requestedControlGeneration = controlGeneration
+        guard let requestedSeekGeneration = host?.qishuiSeeks.generation else { return false }
+        let queues = qishuiWorkQueues
+        let snapshot = await withCheckedContinuation { continuation in
+            queues.metadata.async {
+                _ = controller.prepareAccessibilityTree()
+                continuation.resume(returning: queues.metadataSnapshot(
+                    preferredTitle: expectedTitle,
+                    preferredArtist: expectedArtist
+                ))
+            }
+        }
+        guard !Task.isCancelled, let host, host.qishuiIsObserving,
+              requestedControlGeneration == controlGeneration,
+              host.qishuiSeeks.isCurrent(requestedSeekGeneration),
+              snapshot.processIdentifier == processIdentifier,
+              QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
+              QishuiIdentityRefreshPolicy.accepts(
+                  requested: requestedIdentity, current: qishuiMediaIdentity(),
+                  result: snapshot.currentTrack.map {
+                      .init(processIdentifier: processIdentifier, title: $0.title, artist: $0.artist)
+                  }
+              ) else { return false }
+        _ = applyQishuiDirectSnapshot(snapshot)
+        host.qishuiPublish()
+        return snapshot.currentTrack != nil
+    }
+
+    private func scheduleQishuiTransitionIdentityReconciliation() {
+        guard let host, host.qishuiIsObserving, host.qishuiSelectedSource() == .qishui,
+              latestMediaRemoteSnapshot?.isVerifiedQishuiSource == true,
+              let media = qishuiMediaIdentity(),
+              let snapshot = latestQishuiSnapshot,
+              let track = snapshot.currentTrack,
+              let processIdentifier = snapshot.processIdentifier else { return }
+        let direct = QishuiLyricIdentity(
+            processIdentifier: processIdentifier, title: track.title, artist: track.artist
+        )
+        guard QishuiIdentityRefreshPolicy.needsTransitionReconciliation(
+            media: media, direct: direct, directCheckedAt: snapshot.checkedAt,
+            lastRequested: lastQishuiTransitionIdentityRequested,
+            isReadInFlight: qishuiIdentityRefreshInFlight
+        ) else { return }
+        // Reconcile once for this new stream identity rather than waiting for
+        // the normal identity tick. Existing PID/coherence gates still apply.
+        lastQishuiTransitionIdentityRequested = media
+        host.qishuiRecord("identity_reconcile_requested", fields: [
+            "source": "qishui",
+            "direct_age_ms": String(max(0, Int(Date().timeIntervalSince(snapshot.checkedAt) * 1_000)))
+        ])
+        scheduleQishuiIdentityRefresh(force: true)
+    }
+
+    func scheduleQishuiIdentityRefresh(force: Bool = false) {
+        guard let host, host.qishuiIsObserving,
+              host.qishuiSelectedSource() == .qishui,
+              !qishuiIdentityRefreshInFlight,
+              (force || Date().timeIntervalSince(lastQishuiIdentityRefreshAt) >= 1.0),
+              let processIdentifier = QishuiProcessLocator.application()?.processIdentifier else {
+            return
+        }
+        qishuiIdentityRefreshInFlight = true
+        qishuiIdentityRefreshGeneration &+= 1
+        let generation = qishuiIdentityRefreshGeneration
+        let requestedControlGeneration = controlGeneration
+        let requestedSeekGeneration = host.qishuiSeeks.generation
+        lastQishuiIdentityRefreshAt = Date()
+        let requestedIdentity = qishuiMediaIdentity()
+        let expectedTitle = latestMediaRemoteSnapshot?.currentTrack?.title
+        let expectedArtist = latestMediaRemoteSnapshot?.currentTrack?.artist
+        let queues = qishuiWorkQueues
+        queues.metadata.async { [weak self] in
+            let snapshot = queues.metadataSnapshot(
+                preferredTitle: expectedTitle,
+                preferredArtist: expectedArtist
+            )
+            Task { @MainActor [weak self] in
+                guard let self,
+                      generation == self.qishuiIdentityRefreshGeneration else { return }
+                self.qishuiIdentityRefreshInFlight = false
+                guard let host = self.host, host.qishuiIsObserving,
+                      host.qishuiSelectedSource() == .qishui,
+                      requestedControlGeneration == self.controlGeneration,
+                      host.qishuiSeeks.isCurrent(requestedSeekGeneration),
+                      QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
+                      snapshot.processIdentifier == processIdentifier,
+                      QishuiIdentityRefreshPolicy.accepts(
+                          requested: requestedIdentity,
+                          current: self.qishuiMediaIdentity(),
+                          result: snapshot.currentTrack.map {
+                              QishuiLyricIdentity(processIdentifier: processIdentifier,
+                                                  title: $0.title, artist: $0.artist)
+                          }
+                      ) else {
+                    return
+                }
+                _ = self.applyQishuiDirectSnapshot(snapshot)
+                host.qishuiPublish()
+            }
+        }
+    }
+
+    private func qishuiMediaIdentity() -> QishuiLyricIdentity? {
+        guard let track = latestMediaRemoteSnapshot?.currentTrack,
+              track.sourceBundleIdentifier == QishuiProcessLocator.bundleIdentifier,
+              let processIdentifier = track.sourceProcessIdentifier else { return nil }
+        return .init(processIdentifier: processIdentifier, title: track.title, artist: track.artist)
     }
 }
