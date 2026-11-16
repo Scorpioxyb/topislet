@@ -21,7 +21,8 @@
 | 4.5 | 搬身份刷新，以及启动、退出、激活三个钩子（在协调器观察者中的原位置调用） | 完成：身份刷新、切歌后身份对账、生命周期元数据补读、前台刷新与 `qishuiMediaIdentity` 搬入；启动钩子的汽水部分成为 `resetForQishuiLaunch()`，在原位置、250ms 等待前调用，等待后的第二次判断留在协调器；退出与激活钩子原本已是适配器调用。三个观察者本身是三个来源共用的，留在协调器。宿主协议去掉两项身份排程，新增是否在观察、`selectedSource()`（原位置、原次数调用）、跳转代次和控制可用性排程（后者 4.6 收回）。逐函数比对：差异只在改走宿主的那几处；`host` 为空时一律放弃本次读取 |
 | 4.6 | 搬控制可用性与健康检查（`tick` 中原位置调用） | 完成：控制可用性探测、刷新、退避重试、取消排程、进程选择，以及恢复后的重置与核验搬入；`tick` 里的健康检查成为 `scheduleControlHealthCheckIfNeeded()`，在原位置调用。`resetQishuiControlVerificationForRecovery` 与 `verifyQishuiControlsAfterRecovery` 在协调器里留作转发。宿主协议去掉两项控制排程，剩 8 项。逐函数比对：差异只在发布改走宿主 |
 | 4.7 | 搬控制发送与汽水跳转；`verify-qishui-control-safety.sh` 的 `SeekCoordinator.qishuiAdmission(` 检查同一提交改指向新文件 | 完成：`sendControl`、`pressSemanticControl`、`synchronizeAfterQueuedTrackControl` 整体搬入；`performControlImplementation` 与 `performSeek` 在协调器里建立显示来源绑定与授权后，汽水分支分别交给 `performQishuiControl`、`performQishuiSeek`，`refreshControlFollowUp` 的汽水部分交给 `refreshQishuiControlFollowUp`。授权复核的位置和次数不变（控制两处、跳转两处）。宿主协议新增选择器读取、`selectedMusicSelection()`（同样只在原位置调用）、所选来源状态和“来源已切换”结果，共 12 项。安全脚本的跳转准入检查改指向 `QishuiMusicAdapter.swift`。逐段比对：差异只在改走宿主的那几处 |
-| 4.8 | 引入 `PublishedTrackToken`，先合并身份刷新的两处重复门禁，再到歌词、恢复核验、控制回读、跳转 | 待做 |
+| 4.8a | 引入 `PublishedTrackToken`（来源、PID、发布身份、控制代次、跳转代次），合并身份刷新的两处重复门禁 | 完成：AX 元数据补读与身份刷新改为发起时签发令牌、完成时经 `admitsIdentityRead` 一处比较；比较内容与原来逐项相同（控制代次、跳转代次、结果 PID、进程仍在运行、`QishuiIdentityRefreshPolicy.accepts`），是否在观察、是否选中汽水、任务是否取消仍在调用处原位置检查。新增 4 项测试 |
+| 4.8b | 令牌推广到歌词、恢复核验、控制回读、跳转 | 待做：这四处的门禁各不相同（歌词按歌词身份、恢复核验按控制可用性代次、跳转按跳转代次与续播条件），逐处单独提交 |
 | 4b | Apple Music 驱动，满足 1,500 行门禁 | 待做 |
 
 ## 不能变的顺序

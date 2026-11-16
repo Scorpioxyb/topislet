@@ -744,9 +744,7 @@ final class QishuiMusicAdapter {
         // actual playing song.
         let expectedTitle = latestMediaRemoteSnapshot?.currentTrack?.title
         let expectedArtist = latestMediaRemoteSnapshot?.currentTrack?.artist
-        let requestedIdentity = qishuiMediaIdentity()
-        let requestedControlGeneration = controlGeneration
-        guard let requestedSeekGeneration = host?.qishuiSeeks.generation else { return false }
+        guard let token = issueTrackToken(processIdentifier: processIdentifier) else { return false }
         let queues = qishuiWorkQueues
         let snapshot = await withCheckedContinuation { continuation in
             queues.metadata.async {
@@ -758,16 +756,7 @@ final class QishuiMusicAdapter {
             }
         }
         guard !Task.isCancelled, let host, host.qishuiIsObserving,
-              requestedControlGeneration == controlGeneration,
-              host.qishuiSeeks.isCurrent(requestedSeekGeneration),
-              snapshot.processIdentifier == processIdentifier,
-              QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
-              QishuiIdentityRefreshPolicy.accepts(
-                  requested: requestedIdentity, current: qishuiMediaIdentity(),
-                  result: snapshot.currentTrack.map {
-                      .init(processIdentifier: processIdentifier, title: $0.title, artist: $0.artist)
-                  }
-              ) else { return false }
+              admitsIdentityRead(snapshot, issuedWith: token, host: host) else { return false }
         _ = applyQishuiDirectSnapshot(snapshot)
         host.qishuiPublish()
         return snapshot.currentTrack != nil
@@ -809,10 +798,8 @@ final class QishuiMusicAdapter {
         qishuiIdentityRefreshInFlight = true
         qishuiIdentityRefreshGeneration &+= 1
         let generation = qishuiIdentityRefreshGeneration
-        let requestedControlGeneration = controlGeneration
-        let requestedSeekGeneration = host.qishuiSeeks.generation
         lastQishuiIdentityRefreshAt = Date()
-        let requestedIdentity = qishuiMediaIdentity()
+        let token = issueTrackToken(processIdentifier: processIdentifier, host: host)
         let expectedTitle = latestMediaRemoteSnapshot?.currentTrack?.title
         let expectedArtist = latestMediaRemoteSnapshot?.currentTrack?.artist
         let queues = qishuiWorkQueues
@@ -827,24 +814,49 @@ final class QishuiMusicAdapter {
                 self.qishuiIdentityRefreshInFlight = false
                 guard let host = self.host, host.qishuiIsObserving,
                       host.qishuiSelectedSource() == .qishui,
-                      requestedControlGeneration == self.controlGeneration,
-                      host.qishuiSeeks.isCurrent(requestedSeekGeneration),
-                      QishuiProcessLocator.isRunning(processIdentifier: processIdentifier),
-                      snapshot.processIdentifier == processIdentifier,
-                      QishuiIdentityRefreshPolicy.accepts(
-                          requested: requestedIdentity,
-                          current: self.qishuiMediaIdentity(),
-                          result: snapshot.currentTrack.map {
-                              QishuiLyricIdentity(processIdentifier: processIdentifier,
-                                                  title: $0.title, artist: $0.artist)
-                          }
-                      ) else {
+                      self.admitsIdentityRead(snapshot, issuedWith: token, host: host) else {
                     return
                 }
                 _ = self.applyQishuiDirectSnapshot(snapshot)
                 host.qishuiPublish()
             }
         }
+    }
+
+    private func issueTrackToken(processIdentifier: pid_t) -> PublishedTrackToken? {
+        guard let host else { return nil }
+        return issueTrackToken(processIdentifier: processIdentifier, host: host)
+    }
+
+    /// Captures the published identity and session generations for an
+    /// asynchronous Qishui read of `processIdentifier` (step 4.8).
+    private func issueTrackToken(
+        processIdentifier: pid_t,
+        host: QishuiMusicAdapterHost
+    ) -> PublishedTrackToken {
+        PublishedTrackToken(
+            source: .qishui,
+            processIdentifier: processIdentifier,
+            identity: qishuiMediaIdentity(),
+            controlGeneration: controlGeneration,
+            seekGeneration: host.qishuiSeeks.generation
+        )
+    }
+
+    /// The single comparison an identity read must pass before its snapshot is applied.
+    private func admitsIdentityRead(
+        _ snapshot: QishuiDirectSnapshot,
+        issuedWith token: PublishedTrackToken,
+        host: QishuiMusicAdapterHost
+    ) -> Bool {
+        token.admits(
+            resultProcessIdentifier: snapshot.processIdentifier,
+            resultTitle: snapshot.currentTrack?.title,
+            resultArtist: snapshot.currentTrack?.artist,
+            currentControlGeneration: controlGeneration,
+            currentSeekGeneration: host.qishuiSeeks.generation,
+            currentIdentity: qishuiMediaIdentity()
+        )
     }
 
     private func qishuiMediaIdentity() -> QishuiLyricIdentity? {
