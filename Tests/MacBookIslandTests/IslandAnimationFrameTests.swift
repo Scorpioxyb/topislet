@@ -36,3 +36,24 @@ func integerEndpointsAndExternalScreenAnchorsArePreserved() {
         #expect(frame.maxY == target.maxY)
     }
 }
+
+@Test("收起插值宽度与目标同奇偶：原点始终是整点，胶囊不再左右抖半点")
+func collapseFramesKeepTheTargetParity() {
+    // Measured on device 2026-11-15: collapsing 660×192 → 229×35 at x 740,
+    // odd and even widths alternated and the pill's left edge moved between
+    // 740.0 and 740.5.
+    let target = CGRect(x: 740, y: 1073, width: 229, height: 35)
+    for proposedWidth in stride(from: 660.0, through: 229.0, by: -0.37) {
+        let proposed = CGRect(x: 0, y: 0, width: proposedWidth, height: 100.4)
+        let frame = IslandAnimationFrame.anchored(proposed, to: target)
+        #expect(frame.minX == frame.minX.rounded())
+        #expect(frame.midX == target.midX)
+        #expect(frame.width >= 229 && frame.width <= 660)
+        #expect(Int(frame.width) % 2 == 1)
+    }
+    // Widths stay between the proposal and the target, in both directions.
+    #expect(IslandAnimationFrame.parityMatchedWidth(594, targetWidth: 229) == 593)
+    #expect(IslandAnimationFrame.parityMatchedWidth(230, targetWidth: 229) == 229)
+    #expect(IslandAnimationFrame.parityMatchedWidth(229.4, targetWidth: 660) == 230)
+    #expect(IslandAnimationFrame.parityMatchedWidth(659, targetWidth: 660) == 660)
+}

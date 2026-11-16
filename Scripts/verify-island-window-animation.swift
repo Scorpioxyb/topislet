@@ -295,14 +295,23 @@ private func observeUserDrivenAnimation() throws {
         }
         samplesURL = url
     }
+    var observeSeconds: TimeInterval = 20
+    if let index = CommandLine.arguments.firstIndex(of: "--observe-seconds") {
+        guard CommandLine.arguments.indices.contains(index + 1),
+              let seconds = TimeInterval(CommandLine.arguments[index + 1]),
+              seconds >= 5, seconds <= 600 else {
+            throw VerificationError.failed("--observe-seconds 需要 5–600 之间的秒数")
+        }
+        observeSeconds = seconds
+    }
     let initial = try currentSample()
-    print("观察已开始：请在 20 秒内展开并收起顶屿。脚本只读取窗口元数据。")
+    print("观察已开始：请在 \(Int(observeSeconds)) 秒内展开并收起顶屿。脚本只读取窗口元数据。")
     fflush(stdout)
     let startedAt = Date()
     // WindowServer reads already consume part of the sample period. Keep the
     // passive observer's idle gap short; the measured frequency gate remains
     // authoritative, rather than treating the requested interval as frequency.
-    let samples = try sampleFrames(duration: 20, interval: 0.001)
+    let samples = try sampleFrames(duration: observeSeconds, interval: 0.001)
     let elapsed = Date().timeIntervalSince(startedAt)
     if let samplesURL {
         // Persist only window geometry. No image, media content or input events.
