@@ -15,6 +15,11 @@ final class IslandModel: ObservableObject {
     // also ends the hover presentation is MusicInteractionPolicy's call.
     let presentationInteraction = PassthroughSubject<Void, Never>()
     @Published var mode: IslandMode = .collapsed
+    /// Whether the pointer was inside the expanded panel's target frame when the
+    /// panel was last sized for expansion. Read once when the expanded body mounts,
+    /// so it opens in the pointer-over state instead of flashing the resting one.
+    /// Not published: changing it never re-renders.
+    var pointerWasOverExpandedTarget = false
     @Published var activeFeature: IslandFeature = .activityCenter
     @Published var notchWidth: CGFloat = 185
     @Published var topBandHeight: CGFloat = 33

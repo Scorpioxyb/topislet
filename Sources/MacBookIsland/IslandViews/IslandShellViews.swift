@@ -273,7 +273,18 @@ struct ExpandedIslandBodyPanel: View {
     /// Expanded music shows its corner buttons only while the pointer is over
     /// the panel, so a resting panel is just artwork, title and lyrics.
     /// `--preview-pointer-over` renders the hover state in snapshots.
-    @State private var isPointerOverBody = CommandLine.arguments.contains("--preview-pointer-over")
+    @State private var isPointerOverBody: Bool
+    /// Latest hover report, applied once the opening animation has settled.
+    @State private var reportedPointerOver: Bool
+    @State private var openedAt = Date()
+
+    init(model: IslandModel) {
+        self.model = model
+        let initial = CommandLine.arguments.contains("--preview-pointer-over")
+            || model.pointerWasOverExpandedTarget
+        _isPointerOverBody = State(initialValue: initial)
+        _reportedPointerOver = State(initialValue: initial)
+    }
 
     private var shellScaleX: CGFloat {
         guard model.mode != .expanded else { return 1 }
@@ -384,7 +395,21 @@ struct ExpandedIslandBodyPanel: View {
             .allowsHitTesting(model.mode == .expanded)
         }
         .frame(width: model.expandedWidth, height: model.expandedBodyHeight)
-        .onHover { isPointerOverBody = $0 }
+        .onHover { hovering in
+            reportedPointerOver = hovering
+            // While the window is still growing, tracking areas can report the
+            // pointer leaving and re-entering a panel it never left; that made
+            // the resting hairline and the control row alternate on open.
+            if ExpandedMusicPointerPolicy.appliesHoverChange(
+                secondsSinceOpen: Date().timeIntervalSince(openedAt)
+            ) {
+                isPointerOverBody = hovering
+            }
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(ExpandedMusicPointerPolicy.openingGraceSeconds))
+            if !Task.isCancelled { isPointerOverBody = reportedPointerOver }
+        }
         .onChange(of: model.mode) { _, mode in
             if mode != .expanded { isPointerOverBody = false }
         }

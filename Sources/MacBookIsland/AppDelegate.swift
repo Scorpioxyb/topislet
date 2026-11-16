@@ -945,6 +945,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = targetMode ?? model.mode
         let size = panelSize(for: mode)
         let frame = panelFrame(for: size, on: screen)
+        if mode == .expanded {
+            model.pointerWasOverExpandedTarget = frame.contains(NSEvent.mouseLocation)
+        }
 
         let animationDuration = IslandMotion.frameDuration(
             for: mode,

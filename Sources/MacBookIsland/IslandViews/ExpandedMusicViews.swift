@@ -91,6 +91,16 @@ struct ExpandedMusic: View {
     }
 }
 
+enum ExpandedMusicPointerPolicy {
+    /// Expand animation (0.24s) plus margin. Hover reports inside it are held
+    /// and the latest one applied when it ends.
+    static let openingGraceSeconds: Double = 0.32
+
+    static func appliesHoverChange(secondsSinceOpen: Double) -> Bool {
+        secondsSinceOpen >= openingGraceSeconds
+    }
+}
+
 enum MusicExpandedChrome {
     /// Controls show on hover, and stay up when they carry a recovery action
     /// or when VoiceOver is reading the panel.

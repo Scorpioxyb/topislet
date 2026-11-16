@@ -508,3 +508,11 @@ private struct MacBookDisplayProfile {
         )
     }
 }
+
+@Test("展开音乐打开时先按指针位置定控制行，开场动画内的悬停变化暂不生效")
+func expandedMusicHoldsHoverChangesDuringOpening() {
+    #expect(!ExpandedMusicPointerPolicy.appliesHoverChange(secondsSinceOpen: 0))
+    #expect(!ExpandedMusicPointerPolicy.appliesHoverChange(secondsSinceOpen: 0.24))
+    #expect(ExpandedMusicPointerPolicy.appliesHoverChange(secondsSinceOpen: 0.32))
+    #expect(ExpandedMusicPointerPolicy.openingGraceSeconds > IslandMotion.duration(for: .expanded))
+}
