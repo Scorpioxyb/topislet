@@ -251,7 +251,8 @@ private struct MusicMetaLine: View {
         }
         .lineLimit(1)
         .truncationMode(.tail)
-        .frame(height: 18, alignment: .leading)
+        // Centered over the centered lyric lines.
+        .frame(maxWidth: .infinity, minHeight: 18, maxHeight: 18, alignment: .center)
         .accessibilityElement(children: .combine)
     }
 }
@@ -270,17 +271,17 @@ private struct MusicTitleBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
             Text(model.music.track.title)
                 .font(IslandTheme.Typeface.musicStageTitle)
                 .foregroundStyle(.white.opacity(IslandTheme.Ink.musicTitle))
                 .minimumScaleFactor(LyricFitPolicy.minimumScale)
-                .frame(height: 32, alignment: .leading)
+                .frame(height: 32, alignment: .center)
                 .padding(.top, 6)
             Text(model.music.track.artist)
                 .font(IslandTheme.Typeface.musicStageArtist)
                 .foregroundStyle(.white.opacity(IslandTheme.Ink.musicArtist))
-                .frame(height: 21, alignment: .leading)
+                .frame(height: 21, alignment: .center)
                 .padding(.top, 2)
             if let statusLine {
                 Text(statusLine)
@@ -291,6 +292,7 @@ private struct MusicTitleBlock: View {
         }
         .lineLimit(1)
         .truncationMode(.tail)
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .combine)
     }
 }
