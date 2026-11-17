@@ -17,14 +17,23 @@ enum MusicExpansionMode: String, CaseIterable, Identifiable {
         switch self {
         case .hover: "鼠标移入音乐岛时展开，移开后收起；在面板里点按后移开也会收起。"
         case .click: "鼠标经过时保持原样，点击音乐岛即可展开。"
-        case .pinned: "音乐出现时展开，移开鼠标或点击其他窗口仍保持；可随时手动收起。"
+        case .pinned: "音乐出现时展开，移开鼠标或点击其他窗口仍保持；手动收起后，鼠标再移入会重新展开。"
         }
     }
 }
 
 enum MusicInteractionPolicy {
     static func allowsHover(feature: IslandFeature, expansion: MusicExpansionMode) -> Bool {
-        feature != .music || expansion == .hover
+        feature != .music || expansion != .click
+    }
+
+    /// Whether a hover expansion collapses again when the pointer leaves.
+    /// Pinned music treats a hover like a click: after a manual collapse,
+    /// moving the pointer back onto the island reopens it, and it then stays
+    /// open. The pointer has to leave and re-enter first, so the collapse
+    /// click itself never reopens it.
+    static func hoverExpansionFollowsPointer(feature: IslandFeature, expansion: MusicExpansionMode) -> Bool {
+        !(feature == .music && expansion == .pinned)
     }
 
     /// Whether a click or control press inside a hover-expanded panel ends

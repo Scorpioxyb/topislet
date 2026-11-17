@@ -647,6 +647,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         feature: model.activeFeature, expansion: model.appSettings.musicExpansionMode
                       ),
                       model.mode != .expanded else { return }
+                guard MusicInteractionPolicy.hoverExpansionFollowsPointer(
+                    feature: model.activeFeature, expansion: model.appSettings.musicExpansionMode
+                ) else {
+                    // Pinned music: open as if clicked; leaving does not collapse it.
+                    hoverEnterTask = nil
+                    model.requestIslandMode(.expanded, bypassCooldown: true)
+                    return
+                }
                 didExpandFromHover = true
                 hoverReturnMode = returnMode
                 hoverExpectedModeChange = .expanded

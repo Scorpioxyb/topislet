@@ -39,11 +39,14 @@ func musicTapUsesSelectedExpansionMode() {
     }
 }
 
-@Test("展开方式只影响音乐；保持展开不因外部点击收起且不抢占其他活动")
+@Test("展开方式只影响音乐；保持展开不因外部点击收起、悬停重新展开后不随鼠标收起，且不抢占其他活动")
 func musicExpansionIsScopedAndRespectsExplicitCollapse() {
     for expansion in MusicExpansionMode.allCases {
         #expect(MusicInteractionPolicy.allowsHover(feature: .music, expansion: expansion)
-            == (expansion == .hover))
+            == (expansion != .click))
+        #expect(MusicInteractionPolicy.hoverExpansionFollowsPointer(feature: .music, expansion: expansion)
+            == (expansion != .pinned))
+        #expect(MusicInteractionPolicy.hoverExpansionFollowsPointer(feature: .timer, expansion: expansion))
         #expect(MusicInteractionPolicy.allowsHover(feature: .timer, expansion: expansion))
         #expect(MusicInteractionPolicy.allowsOutsideCollapse(feature: .music, expansion: expansion)
             == (expansion != .pinned))
