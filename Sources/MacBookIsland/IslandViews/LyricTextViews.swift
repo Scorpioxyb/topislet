@@ -29,6 +29,7 @@ private struct MarqueeLine: View {
     let color: Color
     let offset: CGFloat
     let lineHeight: CGFloat
+    var alignment: Alignment = .leading
 
     var body: some View {
         Text(text)
@@ -44,7 +45,7 @@ private struct MarqueeLine: View {
                 maxWidth: .infinity,
                 minHeight: lineHeight,
                 maxHeight: lineHeight,
-                alignment: .leading
+                alignment: alignment
             )
     }
 }
@@ -55,6 +56,8 @@ struct MarqueeText: View {
     let color: Color
     let lineHeight: CGFloat
     var clock: MarqueeClock? = nil
+    /// Center the line while it fits; see `MarqueeTextLayoutPolicy.centersLine`.
+    var centered = false
     @State private var measurement: MarqueeTextMeasurement?
     @State private var animationStart = Date()
 
@@ -79,7 +82,10 @@ struct MarqueeText: View {
                     font: font,
                     color: color,
                     offset: offset,
-                    lineHeight: lineHeight
+                    lineHeight: lineHeight,
+                    alignment: MarqueeTextLayoutPolicy.centersLine(
+                        overflow: overflow, prefersCentered: centered
+                    ) ? .center : .leading
                 )
             }
             // Constrain TimelineView to the measured column: its fixed-size
@@ -166,6 +172,8 @@ struct KaraokeLyricText: View {
     let words: [QishuiTimedWord]
     let elapsedTime: TimeInterval
     let sampledAt: Date
+    /// Center the line while it fits; see `MarqueeTextLayoutPolicy.centersLine`.
+    var centered = false
     @State private var measurement: MarqueeTextMeasurement?
 
     var body: some View {
@@ -201,7 +209,12 @@ struct KaraokeLyricText: View {
                 .font(font)
                 .fixedSize(horizontal: true, vertical: true)
                 .offset(x: -offset)
-                .frame(maxWidth: .infinity, minHeight: lineHeight, maxHeight: lineHeight, alignment: .leading)
+                .frame(
+                    maxWidth: .infinity, minHeight: lineHeight, maxHeight: lineHeight,
+                    alignment: MarqueeTextLayoutPolicy.centersLine(
+                        overflow: overflow, prefersCentered: centered
+                    ) ? .center : .leading
+                )
             }
             .frame(width: proxy.size.width, height: lineHeight, alignment: .leading)
             .clipped()

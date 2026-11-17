@@ -158,6 +158,13 @@ func marqueeMeasurementMustBelongToCurrentText() {
     ) == 0)
 }
 
+@Test("居中歌词只在放得下时居中，需要滚动的长句从左边开始")
+func centeredLyricLineFallsBackToLeadingWhenItScrolls() {
+    #expect(MarqueeTextLayoutPolicy.centersLine(overflow: 0, prefersCentered: true))
+    #expect(!MarqueeTextLayoutPolicy.centersLine(overflow: 0.5, prefersCentered: true))
+    #expect(!MarqueeTextLayoutPolicy.centersLine(overflow: 0, prefersCentered: false))
+}
+
 @Test("中英相邻歌词合并为当前句译文，译文索引不会被误当成下一句")
 func bilingualLyricsPairWithTranslation() {
     let lines = [

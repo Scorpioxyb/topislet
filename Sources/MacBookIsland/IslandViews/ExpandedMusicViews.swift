@@ -482,7 +482,7 @@ private struct LyricsShelf: View {
     }
 
     private var lyricLines: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
             let currentFont = IslandTheme.Typeface.lyricCurrent(size: currentLineSize)
             Group {
                 if let elapsedTime, !timedWords.isEmpty {
@@ -496,7 +496,8 @@ private struct LyricsShelf: View {
                         isPlaying: isPlaying,
                         words: timedWords,
                         elapsedTime: elapsedTime,
-                        sampledAt: sampledAt
+                        sampledAt: sampledAt,
+                        centered: true
                     )
                 } else {
                     MarqueeText(
@@ -504,7 +505,8 @@ private struct LyricsShelf: View {
                         font: currentFont,
                         color: .white.opacity(IslandTheme.Ink.lyricHighlighted),
                         lineHeight: 32,
-                        clock: lyricClock
+                        clock: lyricClock,
+                        centered: true
                     )
                 }
             }
@@ -516,7 +518,8 @@ private struct LyricsShelf: View {
                     font: IslandTheme.Typeface.lyricTranslation,
                     color: .white.opacity(IslandTheme.Ink.lyricTranslation),
                     lineHeight: 20,
-                    clock: lyricClock
+                    clock: lyricClock,
+                    centered: true
                 )
                 .frame(height: 20)
                 .padding(.top, 4)
@@ -528,7 +531,8 @@ private struct LyricsShelf: View {
                     font: IslandTheme.Typeface.lyricNext,
                     color: .white.opacity(IslandTheme.Ink.lyricNext),
                     lineHeight: 21,
-                    clock: lyricClock
+                    clock: lyricClock,
+                    centered: true
                 )
                 .frame(height: 21)
                 .padding(.top, 2)

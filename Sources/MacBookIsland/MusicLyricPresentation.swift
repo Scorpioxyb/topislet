@@ -191,6 +191,13 @@ enum MarqueeTextLayoutPolicy {
         guard let measurement, measurement.text == text else { return 0 }
         return max(measurement.width - viewportWidth, 0)
     }
+
+    /// A centered lyric line is centered only while it fits. A line that has
+    /// to scroll starts at the leading edge, so its first glyph is readable
+    /// before it moves, and the scroll offset stays measured from that edge.
+    static func centersLine(overflow: CGFloat, prefersCentered: Bool) -> Bool {
+        prefersCentered && overflow <= 0
+    }
 }
 
 /// Presentation of supplied lyric lines only. This does not infer timing or loop a song.
