@@ -23,7 +23,8 @@
 | 4.7 | 搬控制发送与汽水跳转；`verify-qishui-control-safety.sh` 的 `SeekCoordinator.qishuiAdmission(` 检查同一提交改指向新文件 | 完成：`sendControl`、`pressSemanticControl`、`synchronizeAfterQueuedTrackControl` 整体搬入；`performControlImplementation` 与 `performSeek` 在协调器里建立显示来源绑定与授权后，汽水分支分别交给 `performQishuiControl`、`performQishuiSeek`，`refreshControlFollowUp` 的汽水部分交给 `refreshQishuiControlFollowUp`。授权复核的位置和次数不变（控制两处、跳转两处）。宿主协议新增选择器读取、`selectedMusicSelection()`（同样只在原位置调用）、所选来源状态和“来源已切换”结果，共 12 项。安全脚本的跳转准入检查改指向 `QishuiMusicAdapter.swift`。逐段比对：差异只在改走宿主的那几处 |
 | 4.8a | 引入 `PublishedTrackToken`（来源、PID、发布身份、控制代次、跳转代次），合并身份刷新的两处重复门禁 | 完成：AX 元数据补读与身份刷新改为发起时签发令牌、完成时经 `admitsIdentityRead` 一处比较；比较内容与原来逐项相同（控制代次、跳转代次、结果 PID、进程仍在运行、`QishuiIdentityRefreshPolicy.accepts`），是否在观察、是否选中汽水、任务是否取消仍在调用处原位置检查。新增 4 项测试 |
 | 4.8b | 令牌推广到歌词、恢复核验、控制回读、跳转 | 结论：不推广，代码不改。四处逐一核对后，令牌的比较内容与这四处的门禁都不相同，套用会放宽或收紧门禁，不再是行为不变的重构。逐处原因见下文“4.8b 核对结果” |
-| 4b | Apple Music 驱动，满足 1,500 行门禁 | 待做 |
+| 4b.1 | Apple Music 状态与刷新搬成 `AppleMusicDriver` | 完成：17 个存储属性，以及刷新排程、瞬时重试、快照准入、播放控制预期、缓存封面、来源候选、发布状态与状态文案搬入；`musicStatus` 的 Apple Music 分支和 `noteMusicUIPublished` 的 Apple Music 尾段成为驱动函数，在原位置调用。宿主协议 `AppleMusicDriverHost`（弱引用）4 项：选择器读取、前台来源、发布、记录。逐函数比对：差异只在改走宿主的那几处 |
+| 4b.2 | Apple Music 控制与跳转搬入驱动 | 完成：`performAppleMusicControl`、`seekAppleMusic` 整体搬入；显示来源绑定、授权和启用开关仍在协调器里先检查。宿主协议新增 `selectedMusicSelection()`（原位置、原次数调用）与所选来源状态，共 6 项；`host` 为空时跳转直接返回原有的“已取消进度跳转”，不发送控制。只在驱动内使用的函数改为 private。协调器类型 1,349 行，满足 1,500 行门禁 |
 
 ## 4.8b 核对结果（2026-11-16）
 
@@ -46,6 +47,6 @@
 
 ## 门禁
 
-4.3–4.8a 已合并进开发构建 `0.1.4 build 193`，汽水专属控制短实机于 2026-11-16 通过（见 GATES_v0.2.0）。4.8b 核对后不改代码，不需要新构建；4b 进下一个构建后再做一轮。
+4.3–4.8a 已合并进开发构建 `0.1.4 build 193`，汽水专属控制短实机于 2026-11-16 通过（见 GATES_v0.2.0）。4.8b 核对后不改代码，不需要新构建。4b.1–4b.2 进下一个开发构建后，做一轮短实机：汽水三键与拖动进度（确认协调器改动没有波及汽水），以及 Apple Music 播放暂停、切歌、拖动进度（Apple Music 是 Alpha，有条件时再做）。
 
 每个子步骤：`swift test` 全过、脚本测试、`verify-qishui-control-safety.sh`。4.3–4.8 合并进一个开发构建后，做一轮“汽水专属控制”短实机（三键、拖动进度、暂停中拖动续播）。这些改动不与界面改动进同一个构建。
