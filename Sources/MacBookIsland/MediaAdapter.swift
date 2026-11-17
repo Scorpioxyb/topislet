@@ -738,7 +738,7 @@ final class MusicAdapterCoordinator {
                     didSendCommand: false
                 )
             }
-            return await performAppleMusicControl(command)
+            return await appleMusic.performAppleMusicControl(command)
         }
         if binding.source == .neteaseMusic {
             return await performNeteaseMusicControl(command)
@@ -747,131 +747,6 @@ final class MusicAdapterCoordinator {
             command,
             binding: binding,
             authorization: authorization
-        )
-    }
-
-    private func performAppleMusicControl(
-        _ command: MusicControlCommand
-    ) async -> MusicControlOutcome {
-        guard let snapshot = appleMusic.latestAppleMusicSnapshot,
-              let instance = snapshot.instance,
-              let track = snapshot.track else {
-            return MusicControlOutcome(
-                status: appleMusic.appleMusicControlStatus(
-                    command: command,
-                    succeeded: false,
-                    diagnostic: "Apple Music 当前控制目标不可用。"
-                ),
-                didSendCommand: false
-            )
-        }
-        let controlKind: MusicControlKind
-        let defaultAction: MusicControlAction
-        switch command {
-        case .playPause:
-            controlKind = .playPause
-            defaultAction = .playPause
-        case .previousTrack:
-            controlKind = .previousTrack
-            defaultAction = .previousTrack
-        case .nextTrack:
-            controlKind = .nextTrack
-            defaultAction = .nextTrack
-        }
-        guard case let .ready(target, mechanism, _) = snapshot.controls.values[controlKind],
-              target == instance,
-              mechanism == .appleEvent else {
-            return MusicControlOutcome(
-                status: appleMusic.appleMusicControlStatus(
-                    command: command,
-                    succeeded: false,
-                    diagnostic: "Apple Music 未提供匹配当前进程的控制能力。"
-                ),
-                didSendCommand: false
-            )
-        }
-
-        appleMusic.appleMusicControlGeneration &+= 1
-        let controlGeneration = appleMusic.appleMusicControlGeneration
-        let controlIssuedAt = Date()
-        appleMusic.lastAppleMusicControlAt = controlIssuedAt
-        appleMusic.appleMusicTransitionTimeline.beginControl(
-            command: command.label,
-            baseline: "\(track.title) - \(track.artist ?? "")"
-        )
-        appleMusic.clearAppleMusicPlaybackControlExpectation()
-        let resolvedAction: MusicControlAction
-        if controlKind == .playPause,
-           let optimisticSnapshot = appleMusic.appleMusicSnapshot(
-            togglingPlaybackIn: snapshot,
-            at: controlIssuedAt
-           ),
-           let targetedAction = AppleMusicPlaybackControlExpectation.action(
-            for: optimisticSnapshot.playbackState
-           ) {
-            resolvedAction = targetedAction
-            let expectation = AppleMusicPlaybackControlExpectation(
-                instance: instance,
-                trackIdentity: track.identity,
-                targetState: optimisticSnapshot.playbackState,
-                issuedAt: controlIssuedAt
-            )
-            appleMusic.beginAppleMusicPlaybackControlExpectation(
-                expectation,
-                generation: controlGeneration
-            )
-            appleMusic.latestAppleMusicSnapshot = optimisticSnapshot
-            publishCurrentState()
-        } else {
-            resolvedAction = defaultAction
-        }
-        appleMusic.appleMusicControlRequestID &+= 1
-        let request = MusicControlRequest(
-            id: appleMusic.appleMusicControlRequestID,
-            target: instance,
-            expectedTrack: track.identity,
-            action: resolvedAction
-        )
-        let result = await appleMusic.appleMusicAdapter.perform(request)
-        let dispositionLabel: String
-        switch result.disposition {
-        case .accepted:
-            dispositionLabel = "accepted"
-        case .rejected:
-            dispositionLabel = "rejected"
-        case .failed:
-            dispositionLabel = "failed"
-        }
-        appleMusic.appleMusicTransitionTimeline.record(
-            .controlCompleted,
-            detail: "command=\(command.label) disposition=\(dispositionLabel)"
-        )
-        let succeeded = result.disposition == .accepted
-        guard controlGeneration == appleMusic.appleMusicControlGeneration else {
-            return MusicControlOutcome(
-                status: appleMusic.appleMusicControlStatus(
-                    command: command,
-                    succeeded: succeeded,
-                    diagnostic: result.diagnostic
-                ),
-                didSendCommand: succeeded
-            )
-        }
-        if succeeded {
-            if controlKind != .previousTrack && controlKind != .nextTrack {
-                appleMusic.scheduleAppleMusicRefresh(force: true)
-            }
-        } else if controlKind == .playPause {
-            appleMusic.clearAppleMusicPlaybackControlExpectation()
-            appleMusic.scheduleAppleMusicRefresh(force: true)
-        }
-        return MusicControlOutcome(
-            status: appleMusic.appleMusicControlStatus(
-                command: command,
-                succeeded: succeeded,
-                diagnostic: result.diagnostic
-            ),
-            didSendCommand: succeeded
         )
     }
 
@@ -1147,7 +1022,7 @@ final class MusicAdapterCoordinator {
             return (selectedMusicState(), SeekCoordinator.Status.sourceSwitched())
         }
         if binding.source == .appleMusic {
-            return await seekAppleMusic(
+            return await appleMusic.seekAppleMusic(
                 to: progress,
                 interaction: interaction,
                 authorization: authorization
@@ -1163,89 +1038,6 @@ final class MusicAdapterCoordinator {
             authorization: authorization,
             seekGeneration: seekGeneration
         )
-    }
-
-    private func seekAppleMusic(
-        to progress: Double,
-        interaction: MusicSeekInteraction,
-        authorization: MusicControlAuthorization
-    ) async -> (music: MusicState, status: MusicSourceStatus) {
-        guard appleMusic.appleMusicEnabled,
-              progress.isFinite,
-              (0...1).contains(progress),
-              let snapshot = appleMusic.latestAppleMusicSnapshot,
-              let instance = snapshot.instance,
-              let track = snapshot.track,
-              track.identity.providerIdentifier != nil,
-              let timeline = snapshot.timeline,
-              timeline.duration > 0,
-              case let .ready(target, mechanism, _) = snapshot.controls.values[.absoluteSeek],
-              target == instance,
-              mechanism == .appleEvent else {
-            let status = MusicSourceStatus(
-                sourceName: "Apple Music",
-                availability: .appleMusicSynced,
-                headline: "当前不能拖动进度",
-                detail: "Apple Music 当前曲目缺少稳定 ID、时长或定向进度能力。",
-                checkedAt: Date()
-            )
-            return (selectedMusicState(), status)
-        }
-
-        try? await Task.sleep(nanoseconds: interaction.coalescingDelayNanoseconds)
-        guard appleMusic.appleMusicEnabled,
-              AppleMusicAppAdapter.isRunning,
-              appleMusic.latestAppleMusicSnapshot?.instance == instance,
-              appleMusic.latestAppleMusicSnapshot?.track?.identity == track.identity,
-              authorization.isValid(for: selectedMusicSelection()) else {
-            let status = MusicSourceStatus(
-                sourceName: "Apple Music",
-                availability: .appleMusicSynced,
-                headline: "已取消进度跳转",
-                detail: "拖动期间 Apple Music 控制目标已变化，未发送控制。",
-                checkedAt: Date()
-            )
-            return (selectedMusicState(), status)
-        }
-
-        appleMusic.appleMusicControlRequestID &+= 1
-        appleMusic.appleMusicControlGeneration &+= 1
-        let controlGeneration = appleMusic.appleMusicControlGeneration
-        let result = await appleMusic.appleMusicAdapter.perform(MusicControlRequest(
-            id: appleMusic.appleMusicControlRequestID,
-            target: instance,
-            expectedTrack: track.identity,
-            action: .seekNormalized(progress)
-        ))
-        let succeeded = result.disposition == .accepted
-        guard appleMusic.appleMusicEnabled,
-              controlGeneration == appleMusic.appleMusicControlGeneration else {
-            let status = MusicSourceStatus(
-                sourceName: "Apple Music",
-                availability: .appleMusicSynced,
-                headline: "已取消进度跳转",
-                detail: "操作期间 Apple Music 适配已关闭或目标已失效。",
-                checkedAt: Date()
-            )
-            return (selectedMusicState(), status)
-        }
-        let status = MusicSourceStatus(
-            sourceName: "Apple Music",
-            availability: succeeded ? .appleMusicControlSent : .appleMusicSynced,
-            headline: succeeded ? "已跳转播放进度" : "未跳转播放进度",
-            detail: result.diagnostic,
-            checkedAt: Date()
-        )
-        guard succeeded,
-              AppleMusicAppAdapter.isRunning else {
-            return (selectedMusicState(), status)
-        }
-
-        appleMusic.scheduleAppleMusicRefresh(force: true)
-        var optimisticState = appleMusic.appleMusicState()
-        optimisticState.progress = progress
-        optimisticState.elapsedTime = timeline.duration * progress
-        return (optimisticState, status)
     }
 
     func refreshControlFollowUp(
@@ -2013,5 +1805,13 @@ extension MusicAdapterCoordinator: AppleMusicDriverHost {
 
     func appleMusicRecord(_ name: String, fields: [String: String]) {
         recordUsage(name, fields: fields)
+    }
+
+    func appleMusicControlSelection() -> MusicSourceSelection {
+        selectedMusicSelection()
+    }
+
+    func appleMusicSelectedMusicState() -> MusicState {
+        selectedMusicState()
     }
 }
