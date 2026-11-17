@@ -22,8 +22,17 @@
 | 4.6 | 搬控制可用性与健康检查（`tick` 中原位置调用） | 完成：控制可用性探测、刷新、退避重试、取消排程、进程选择，以及恢复后的重置与核验搬入；`tick` 里的健康检查成为 `scheduleControlHealthCheckIfNeeded()`，在原位置调用。`resetQishuiControlVerificationForRecovery` 与 `verifyQishuiControlsAfterRecovery` 在协调器里留作转发。宿主协议去掉两项控制排程，剩 8 项。逐函数比对：差异只在发布改走宿主 |
 | 4.7 | 搬控制发送与汽水跳转；`verify-qishui-control-safety.sh` 的 `SeekCoordinator.qishuiAdmission(` 检查同一提交改指向新文件 | 完成：`sendControl`、`pressSemanticControl`、`synchronizeAfterQueuedTrackControl` 整体搬入；`performControlImplementation` 与 `performSeek` 在协调器里建立显示来源绑定与授权后，汽水分支分别交给 `performQishuiControl`、`performQishuiSeek`，`refreshControlFollowUp` 的汽水部分交给 `refreshQishuiControlFollowUp`。授权复核的位置和次数不变（控制两处、跳转两处）。宿主协议新增选择器读取、`selectedMusicSelection()`（同样只在原位置调用）、所选来源状态和“来源已切换”结果，共 12 项。安全脚本的跳转准入检查改指向 `QishuiMusicAdapter.swift`。逐段比对：差异只在改走宿主的那几处 |
 | 4.8a | 引入 `PublishedTrackToken`（来源、PID、发布身份、控制代次、跳转代次），合并身份刷新的两处重复门禁 | 完成：AX 元数据补读与身份刷新改为发起时签发令牌、完成时经 `admitsIdentityRead` 一处比较；比较内容与原来逐项相同（控制代次、跳转代次、结果 PID、进程仍在运行、`QishuiIdentityRefreshPolicy.accepts`），是否在观察、是否选中汽水、任务是否取消仍在调用处原位置检查。新增 4 项测试 |
-| 4.8b | 令牌推广到歌词、恢复核验、控制回读、跳转 | 待做：这四处的门禁各不相同（歌词按歌词身份、恢复核验按控制可用性代次、跳转按跳转代次与续播条件），逐处单独提交 |
+| 4.8b | 令牌推广到歌词、恢复核验、控制回读、跳转 | 结论：不推广，代码不改。四处逐一核对后，令牌的比较内容与这四处的门禁都不相同，套用会放宽或收紧门禁，不再是行为不变的重构。逐处原因见下文“4.8b 核对结果” |
 | 4b | Apple Music 驱动，满足 1,500 行门禁 | 待做 |
+
+## 4.8b 核对结果（2026-11-16）
+
+令牌比较的是：控制代次、跳转代次、结果 PID、进程仍在运行，以及 `QishuiIdentityRefreshPolicy.accepts`（读取期间身份没变就接受；变了只接受已经描述新歌的结果）。四处门禁逐一对照：
+
+- **歌词读取**（`QishuiLyricPipeline.scheduleRefresh` 与逐字歌词拉取）：门禁是歌词代次加 `currentIdentity() == identity` 的严格相等，不看控制代次和跳转代次。套用令牌会多出两项代次检查，暂停、拖动进度时正在进行的歌词读取会被丢掉，要等下一个刷新间隔；身份判断也会从“必须仍是请求的那首”变成“可以是新歌”，而歌词结果本来就绑定在请求的身份上。两个方向都会改行为。不推广。
+- **控制回读**（`synchronizeAfterQueuedTrackControl`）：只等控制队列排空、再刷新一次状态流，自己不写任何结果，只按控制代次判断是否继续。没有结果可比，令牌用不上。不推广。
+- **跳转后续播**（`SeekCoordinator.scheduleResumeIfPaused`）：门禁是跳转代次、`isStillValid`（在观察、控制代次、仍选中汽水），再由 `resumeDecision` 判断是否同一首。换歌时这里必须停止续播，而令牌在换歌后会接受描述新歌的结果，语义相反。不推广。
+- **恢复核验**（`verifyQishuiControlsAfterRecovery`）：门禁是控制可用性代次、进程仍是首选进程、任务未取消、快照 PID 一致，写入元数据快照时不看身份、控制代次和跳转代次。这是四处里唯一令牌能直接套用的地方，但套用就是收紧门禁，属于修复而不是重构，不能和重构进同一个构建。另外，这里的 AX 读取没有像身份刷新那样按 MediaRemote 身份限定扫描（`metadataSnapshot()` 不带首选标题和歌手），推荐卡片理论上可能被当成当前歌曲；令牌挡不住这一点（身份没变时 `accepts` 一律接受），要靠传入首选身份。两项一起作为单独的修复候选，入口是用户手动触发的“恢复控制”，频率低，暂不排进构建。
 
 ## 不能变的顺序
 
@@ -37,6 +46,6 @@
 
 ## 门禁
 
-4.3–4.8a 已合并进开发构建 `0.1.4 build 193`，汽水专属控制短实机于 2026-11-16 通过（见 GATES_v0.2.0）。4.8b 与 4b 进下一个构建后再做一轮。
+4.3–4.8a 已合并进开发构建 `0.1.4 build 193`，汽水专属控制短实机于 2026-11-16 通过（见 GATES_v0.2.0）。4.8b 核对后不改代码，不需要新构建；4b 进下一个构建后再做一轮。
 
 每个子步骤：`swift test` 全过、脚本测试、`verify-qishui-control-safety.sh`。4.3–4.8 合并进一个开发构建后，做一轮“汽水专属控制”短实机（三键、拖动进度、暂停中拖动续播）。这些改动不与界面改动进同一个构建。
